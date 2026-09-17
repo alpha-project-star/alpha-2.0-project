@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global helper: Is the user authenticated?
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Global helper: Is the user email verified?
+    function isVerified() {
+      return request.auth.token.email_verified == true;
+    }
+
+    // Global helper: Is the document owner the current user?
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    // Validation helper for Notes
+    function isValidNote(data) {
+      return data.content is string && data.content.size() <= 5000 &&
+             data.createdAt is string &&
+             data.ownerId is string;
+    }
+
+    // Validation helper for Bills
+    function isValidBill(data) {
+      return data.amount is number && data.amount >= 0 &&
+             data.dueDate is string &&
+             data.description is string && data.description.size() <= 200 &&
+             data.ownerId is string;
+    }
+
+    // Validation helper for Reminders
+    function isValidReminder(data) {
+      return data.title is string && data.dueAt is number &&
+             data.userId is string && data.reminderState in ['active', 'completed', 'cancelled'] &&
+             data.notificationState in ['pending', 'claimed', 'accepted', 'failed'];
+    }
+
+    // Validation helper for Acknowledgements
+    function isValidAcknowledgement(data) {
+      return data.ackId is string &&
+             data.eventId is string &&
+             data.reminderId is string &&
+             data.userId is string &&
+             data.channel is string &&
+             data.status in ['pending', 'delivered', 'acknowledged', 'failed'] &&
+             data.createdAt is number &&
+             data.updatedAt is number;
+    }
+
+    // Validation helper for Notification Diagnostics
+    function isValidDiagnostic(data) {
+      return data.diagnosticId is string &&
+             data.userId is string &&
+             data.correlationId is string &&
+             data.stage is string &&
+             data.action is string &&
+             data.status is string &&
+             data.timestamp is number;
+    }
+
+    // Default deny-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Notes collection: Only owners can read/write their notes
+    match /notes/{noteId} {
+      allow read: if isOwner(resource.data.ownerId);
+      allow create: if isVerified() && isValidNote(request.resource.data) && isOwner(request.resource.data.ownerId);
+      allow update: if isOwner(resource.data.ownerId) && isValidNote(request.resource.data) && 
+                       request.resource.data.ownerId == resource.data.ownerId &&
+                       request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isOwner(resource.data.ownerId);
+    }
+
+    // Bills collection: Only owners can read/write their bills
+    match /bills/{billId} {
+      allow read: if isOwner(resource.data.ownerId);
+      allow create: if isVerified() && isValidBill(request.resource.data) && isOwner(request.resource.data.ownerId);
+      allow update: if isOwner(resource.data.ownerId) && isValidBill(request.resource.data) &&
+                       request.resource.data.ownerId == resource.data.ownerId;
+      allow delete: if isOwner(resource.data.ownerId);
+    }
+
+    // Reminders collection: User-scoped, field-level restrictions
+    match /users/{userId}/reminders/{reminderId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidReminder(request.resource.data) && request.resource.data.userId == userId;
+      allow update: if isOwner(userId) && isValidReminder(request.resource.data) &&
+                       request.resource.data.userId == userId &&
+                       // Prevent client from writing server-controlled fields
+                       !('workerId' in request.resource.data) &&
+                       !('claimedAt' in request.resource.data) &&
+                       !('acceptedAt' in request.resource.data) &&
+                       !('failedAt' in request.resource.data);
+      allow delete: if isOwner(userId);
+    }
+
+    // Acknowledgements collection: User-scoped
+    match /users/{userId}/acknowledgements/{ackId} {
+      allow read: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidAcknowledgement(request.resource.data) && request.resource.data.userId == userId;
+      allow update: if isOwner(userId) && isValidAcknowledgement(request.resource.data) && request.resource.data.userId == userId;
+      allow delete: if isOwner(userId);
+    }
+
+    // Notification Diagnostics collection: User-scoped
+    match /users/{userId}/notificationDiagnostics/{diagnosticId} {
+      allow read: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidDiagnostic(request.resource.data) && request.resource.data.userId == userId;
+      allow delete: if isOwner(userId);
+    }
+
+    // Push Subscriptions collection: User-scoped
+    match /users/{userId}/pushSubscriptions/{subscriptionId} {
+      allow read, write: if isOwner(userId);
+    }
+
+    // Migration state: Only owners can read/write their migration status
+    match /users/{userId}/migration/state {
+      allow read, write: if isOwner(userId);
+    }
+  }
+}

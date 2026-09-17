@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "acknowledgement": {
+      "title": "Acknowledgement",
+      "description": "A user-scoped acknowledgement record for reminder notifications",
+      "type": "object",
+      "properties": {
+        "ackId": { "type": "string" },
+        "eventId": { "type": "string" },
+        "reminderId": { "type": "string" },
+        "userId": { "type": "string" },
+        "channel": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["ackId", "eventId", "reminderId", "userId", "channel", "status", "createdAt", "updatedAt"]
+    },
+    "notificationDiagnostic": {
+      "title": "NotificationDiagnostic",
+      "description": "A user-scoped diagnostic historical event for notification pipelines",
+      "type": "object",
+      "properties": {
+        "diagnosticId": { "type": "string" },
+        "userId": { "type": "string" },
+        "correlationId": { "type": "string" },
+        "stage": { "type": "string" },
+        "action": { "type": "string" },
+        "status": { "type": "string" },
+        "timestamp": { "type": "number" }
+      },
+      "required": ["diagnosticId", "userId", "correlationId", "stage", "action", "status", "timestamp"]
+    },
+    "note": {
+      "title": "Note",
+      "description": "A user-created note",
+      "type": "object",
+      "properties": {
+        "content": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["content", "createdAt", "ownerId"]
+    },
+    "bill": {
+      "title": "Bill",
+      "description": "A tracked bill",
+      "type": "object",
+      "properties": {
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string", "format": "date" },
+        "description": { "type": "string" },
+        "ownerId": { "type": "string" }
+      },
+      "required": ["amount", "dueDate", "description", "ownerId"]
+    }
+  },
+  "firestore": {
+    "/notes/{noteId}": {
+      "schema": "note",
+      "description": "Collection of user notes"
+    },
+    "/bills/{billId}": {
+      "schema": "bill",
+      "description": "Collection of user bills"
+    },
+    "/users/{userId}/acknowledgements/{ackId}": {
+      "schema": "acknowledgement",
+      "description": "User-scoped notification acknowledgement records"
+    },
+    "/users/{userId}/notificationDiagnostics/{diagnosticId}": {
+      "schema": "notificationDiagnostic",
+      "description": "User-scoped notification diagnostic historical records"
+    }
+  }
+}

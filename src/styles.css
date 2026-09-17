@@ -1,0 +1,933 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * Design system definition.
+ *
+ * The @theme inline block maps CSS custom properties to Tailwind utility
+ * classes (e.g. --color-primary -> bg-primary, text-primary).
+ *
+ * The :root and .dark blocks define the actual color values using oklch.
+ * All colors MUST use oklch format.
+ *
+ * To add a new semantic color:
+ * 1. Add the variable to :root (light value) and .dark (dark value)
+ * 2. Register it in @theme inline as --color-<name>: var(--<name>)
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-ring-offset-background: var(--background);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0 0 0);
+  --foreground: oklch(0.9 0.01 240);
+  --card: oklch(0.06 0.03 260 / 0.72);
+  --card-foreground: oklch(0.9 0.01 240);
+  --popover: oklch(0.05 0.025 262);
+  --popover-foreground: oklch(0.9 0.01 240);
+  --primary: oklch(0.68 0.26 258);
+  --primary-foreground: oklch(0.98 0.01 240);
+  --secondary: oklch(0.14 0.05 260);
+  --secondary-foreground: oklch(0.95 0.01 240);
+  --muted: oklch(0.11 0.03 260);
+  --muted-foreground: oklch(0.78 0.14 258);
+  --accent: oklch(0.62 0.26 258);
+  --accent-foreground: oklch(0.98 0.01 240);
+  --destructive: oklch(0.66 0.26 25);
+  --destructive-foreground: oklch(0.98 0.01 250);
+  --border: oklch(0.9 0.01 240 / 0.32);
+  --input: oklch(0.14 0.04 260 / 0.75);
+  --ring: oklch(0.7 0.26 258);
+  --neon: oklch(0.7 0.28 258);
+  --neon-glow: oklch(0.82 0.26 254);
+  --silver: oklch(0.96 0.008 240);
+  --silver-dark: oklch(0.68 0.012 240);
+  --shadow-glow: 0 0 26px oklch(0.72 0.28 258 / 0.85), 0 0 78px oklch(0.55 0.3 258 / 0.55);
+  --gradient-aurora: conic-gradient(
+    from var(--angle, 0deg),
+    var(--silver-dark),
+    var(--silver),
+    oklch(0.42 0.16 260),
+    var(--silver),
+    var(--silver-dark),
+    oklch(0.2 0.05 260),
+    var(--silver),
+    oklch(0.42 0.16 260),
+    var(--silver-dark)
+  );
+  --gradient-brushed: repeating-linear-gradient(
+    90deg,
+    oklch(0.82 0.01 240) 0px,
+    oklch(0.6 0.01 240) 1px,
+    oklch(0.86 0.01 240) 2px,
+    oklch(0.5 0.01 240) 3px
+  );
+  --hud-cyan: oklch(0.75 0.28 258);
+  --hud-cyan-soft: oklch(0.6 0.24 258 / 0.65);
+  --alpha-neon: oklch(0.72 0.28 258);
+  --alpha-neon-strong: oklch(0.85 0.26 254);
+  --space-deep: oklch(0.04 0.03 260);
+  --shadow-hud:
+    0 0 28px oklch(0.65 0.28 258 / 0.6), inset 0 0 26px oklch(0.55 0.26 258 / 0.22),
+    0 0 1px oklch(0.96 0.01 240 / 0.7);
+  --gradient-hud-panel: linear-gradient(
+    180deg,
+    oklch(0.08 0.05 260 / 0.78),
+    oklch(0.02 0.02 260 / 0.92)
+  );
+  --gradient-nebula: radial-gradient(
+    circle at 50% 50%,
+    oklch(0.4 0.28 258 / 0.7),
+    oklch(0.08 0.08 260 / 0.2) 60%,
+    transparent 78%
+  );
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.05 0.02 260);
+  --sidebar-foreground: oklch(0.9 0.01 240);
+  --sidebar-primary: oklch(0.5 0.15 260);
+  --sidebar-primary-foreground: oklch(0.96 0.01 240);
+  --sidebar-accent: oklch(0.12 0.04 260);
+  --sidebar-accent-foreground: oklch(0.9 0.01 240);
+  --sidebar-border: oklch(0.7 0.01 240 / 0.2);
+  --sidebar-ring: oklch(0.5 0.15 260);
+}
+
+.dark {
+  --background: oklch(0.129 0.042 264.695);
+  --foreground: oklch(0.984 0.003 247.858);
+  --card: oklch(0.208 0.042 265.755);
+  --card-foreground: oklch(0.984 0.003 247.858);
+  --popover: oklch(0.208 0.042 265.755);
+  --popover-foreground: oklch(0.984 0.003 247.858);
+  --primary: oklch(0.929 0.013 255.508);
+  --primary-foreground: oklch(0.208 0.042 265.755);
+  --secondary: oklch(0.279 0.041 260.031);
+  --secondary-foreground: oklch(0.984 0.003 247.858);
+  --muted: oklch(0.279 0.041 260.031);
+  --muted-foreground: oklch(0.704 0.04 256.788);
+  --accent: oklch(0.279 0.041 260.031);
+  --accent-foreground: oklch(0.984 0.003 247.858);
+  --destructive: oklch(0.704 0.191 22.216);
+  --destructive-foreground: oklch(0.984 0.003 247.858);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.551 0.027 264.364);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.208 0.042 265.755);
+  --sidebar-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-accent: oklch(0.279 0.041 260.031);
+  --sidebar-accent-foreground: oklch(0.984 0.003 247.858);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.551 0.027 264.364);
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  body {
+    background-color: #000;
+    color: var(--color-foreground);
+    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+}
+
+@property --angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes spin-angle {
+  to {
+    --angle: 360deg;
+  }
+}
+
+@keyframes aurora-drift {
+  0%,
+  100% {
+    transform: rotate(0deg) scale(1);
+    opacity: 0.8;
+  }
+  50% {
+    transform: rotate(180deg) scale(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 30px oklch(0.4 0.15 260 / 0.35),
+      0 0 80px oklch(0.3 0.16 260 / 0.22);
+  }
+  50% {
+    box-shadow:
+      0 0 60px oklch(0.5 0.16 260 / 0.6),
+      0 0 140px oklch(0.35 0.18 260 / 0.45);
+  }
+}
+
+@keyframes orb-beat {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@layer utilities {
+  .glass {
+    background: linear-gradient(135deg, oklch(0.1 0.04 262 / 0.6), oklch(0.03 0.02 262 / 0.75));
+    backdrop-filter: blur(18px) saturate(140%);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid oklch(0.7 0.01 240 / 0.22);
+  }
+  .neon-text {
+    color: oklch(0.82 0.28 258);
+    text-shadow:
+      0 0 10px oklch(0.75 0.3 258 / 0.9),
+      0 0 28px oklch(0.6 0.3 258 / 0.65);
+  }
+  .neon-border {
+    box-shadow: var(--shadow-glow);
+  }
+  .conic-ring {
+    background: var(--gradient-aurora);
+    animation: spin-angle 8s linear infinite;
+  }
+  .starfield {
+    background:
+      /* bright silver sweep */
+      linear-gradient(115deg, transparent 38%, oklch(0.96 0.01 240 / 0.12) 50%, transparent 62%) 0
+        0 / 300% 100%,
+      /* vivid navy neon vignette */
+        radial-gradient(1400px 800px at 50% -10%, oklch(0.42 0.3 258 / 0.55), transparent 62%),
+      radial-gradient(1000px 700px at 50% 110%, oklch(0.32 0.28 258 / 0.48), transparent 62%),
+      /* deep obsidian base */ radial-gradient(circle at 50% 50%, oklch(0.05 0.05 260) 0%, #000 80%);
+    animation: circuit-sweep 22s linear infinite;
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    scrollbar-width: none;
+  }
+}
+
+@utility wordmark {
+  font-family: Orbitron, "Space Grotesk", ui-sans-serif, sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.35em;
+  color: oklch(0.82 0.28 258);
+  text-shadow:
+    0 0 8px oklch(0.75 0.3 258 / 0.95),
+    0 0 24px oklch(0.6 0.3 258 / 0.7),
+    0 0 40px oklch(0.5 0.3 258 / 0.4);
+}
+
+@utility hud-frame {
+  position: relative;
+  background: var(--gradient-hud-panel);
+  border: 1px solid oklch(0.9 0.01 240 / 0.55);
+  border-radius: 20px;
+  box-shadow: var(--shadow-hud);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+}
+
+@utility hud-frame-corners {
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-color: var(--hud-cyan);
+    border-style: solid;
+    pointer-events: none;
+  }
+  &::before {
+    top: -1px;
+    left: -1px;
+    border-width: 2px 0 0 2px;
+    border-top-left-radius: 20px;
+  }
+  &::after {
+    bottom: -1px;
+    right: -1px;
+    border-width: 0 2px 2px 0;
+    border-bottom-right-radius: 20px;
+  }
+}
+
+@utility hud-bubble {
+  background: linear-gradient(180deg, oklch(0.12 0.06 260 / 0.7), oklch(0.04 0.03 260 / 0.85));
+  border: 1px solid oklch(0.75 0.22 258 / 0.45);
+  border-radius: 14px;
+  box-shadow:
+    0 0 14px oklch(0.65 0.28 258 / 0.4),
+    inset 0 0 10px oklch(0.55 0.28 258 / 0.18);
+  color: oklch(0.96 0.03 240);
+}
+
+@keyframes hud-scan {
+  0% {
+    transform: translateY(-100%);
+    opacity: 0;
+  }
+  40% {
+    opacity: 0.5;
+  }
+  100% {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * KITT Scanner (Knight Rider style horizontal bar)
+ * ------------------------------------------------------------------------- */
+.kitt-scanner {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  width: 100%;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, oklch(0.07 0.03 260 / 0.5), oklch(0.03 0.02 260 / 0.65));
+  border: 1px solid oklch(0.7 0.01 240 / 0.22);
+  box-shadow: inset 0 0 10px oklch(0.35 0.15 260 / 0.18);
+  overflow: hidden;
+}
+.kitt-bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  border-radius: 2px;
+  background: linear-gradient(180deg, oklch(0.88 0.28 254), oklch(0.55 0.3 258));
+  box-shadow: 0 0 8px oklch(0.78 0.3 258 / 0.95);
+  opacity: var(--kitt-min, 0.2);
+  animation-name: kitt-wave;
+  animation-duration: var(--kitt-dur, 1800ms);
+  animation-iteration-count: infinite;
+  animation-timing-function: ease-in-out;
+  animation-direction: alternate;
+}
+@keyframes kitt-wave {
+  0% {
+    opacity: var(--kitt-min, 0.2);
+    transform: scaleY(0.35);
+  }
+  50% {
+    opacity: var(--kitt-max, 1);
+    transform: scaleY(1);
+  }
+  100% {
+    opacity: var(--kitt-min, 0.2);
+    transform: scaleY(0.35);
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * KITT Scanner v2 — split with center gap, curved variant, states.
+ * ------------------------------------------------------------------------- */
+.kitt-split {
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+}
+.kitt-half {
+  display: flex;
+  align-items: stretch;
+  gap: 3px;
+  flex: 1 1 0;
+  padding: 2px 4px;
+  border-radius: 6px;
+  background: linear-gradient(180deg, oklch(0.07 0.03 260 / 0.5), oklch(0.03 0.02 260 / 0.65));
+  border: 1px solid oklch(0.7 0.01 240 / 0.22);
+  box-shadow: inset 0 0 10px oklch(0.35 0.15 260 / 0.18);
+  overflow: hidden;
+  min-width: 0;
+}
+.kitt-half.right {
+  flex-direction: row-reverse;
+}
+/* Central divider gap between halves */
+.kitt-gap {
+  flex: 0 0 10px;
+  align-self: stretch;
+  border-left: 1px solid oklch(0.86 0.01 240 / 0.55);
+  border-right: 1px solid oklch(0.86 0.01 240 / 0.55);
+  box-shadow: 0 0 8px oklch(0.4 0.16 260 / 0.5);
+}
+.kitt-scanner.kitt-off .kitt-bar,
+.kitt-split.kitt-off .kitt-bar {
+  animation: none;
+  opacity: 0;
+}
+.kitt-split.kitt-off .kitt-gap {
+  opacity: 0.15;
+  box-shadow: none;
+}
+/* Curved variant — arc under the orb. Uses border-radius on halves + a slight
+ * translate/rotate so the ends sweep upward along the orb's circumference. */
+.kitt-curved .kitt-half {
+  border-radius: 999px;
+  transform-origin: center;
+  padding: 3px 10px;
+}
+.kitt-curved .kitt-half.left {
+  transform: rotate(-6deg) translateY(2px);
+}
+.kitt-curved .kitt-half.right {
+  transform: rotate(6deg) translateY(2px);
+}
+/* Alert state = fast aggressive amber pulse — attention grabbing. */
+.kitt-alert .kitt-bar {
+  background: linear-gradient(180deg, oklch(0.9 0.22 60), oklch(0.65 0.22 40));
+  box-shadow: 0 0 10px oklch(0.85 0.22 55 / 0.95);
+}
+
+.kitt-arc {
+  display: block;
+  width: 100%;
+  overflow: visible;
+  filter: drop-shadow(0 0 10px oklch(0.4 0.16 260 / 0.7));
+}
+.kitt-arc-rail {
+  fill: none;
+  stroke: oklch(0.7 0.01 240 / 0.28);
+  stroke-width: 18;
+  stroke-linecap: round;
+}
+.kitt-arc-frame {
+  fill: none;
+  stroke: oklch(0.45 0.15 260 / 0.5);
+  stroke-width: 22;
+  stroke-linecap: round;
+  opacity: 0.35;
+  filter: drop-shadow(0 0 6px oklch(0.4 0.16 260 / 0.45));
+}
+.kitt-arc-segment {
+  fill: oklch(0.78 0.3 258);
+  opacity: 0.25;
+  filter: drop-shadow(0 0 8px oklch(0.78 0.3 258 / 1));
+  animation: kitt-arc-pulse var(--kitt-dur, 1800ms) ease-in-out infinite alternate;
+}
+.kitt-arc-gap {
+  fill: oklch(0.06 0.04 260 / 0.96);
+  stroke: oklch(0.86 0.01 240 / 0.55);
+  stroke-width: 1;
+  filter: drop-shadow(0 0 6px oklch(0.4 0.16 260 / 0.55));
+}
+.kitt-arc.kitt-off .kitt-arc-segment {
+  animation: none;
+  opacity: 0.05;
+}
+.kitt-arc.kitt-off .kitt-arc-rail,
+.kitt-arc.kitt-off .kitt-arc-gap {
+  opacity: 0.15;
+  filter: none;
+}
+.kitt-arc.kitt-alert .kitt-arc-segment {
+  fill: oklch(0.88 0.22 58);
+  filter: drop-shadow(0 0 7px oklch(0.85 0.22 55 / 0.95));
+}
+@keyframes kitt-arc-pulse {
+  0% {
+    opacity: 0.16;
+  }
+  48% {
+    opacity: 0.42;
+  }
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0.2;
+  }
+}
+
+/* -------------------------------------------------------------------------
+ * Cyber-Lens Eye — brushed silver bezel + dark groove.
+ * ------------------------------------------------------------------------- */
+@keyframes cyber-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes circuit-sweep {
+  0% {
+    background-position:
+      0% 0,
+      0 0,
+      0 0,
+      0 0;
+  }
+  100% {
+    background-position:
+      300% 0,
+      0 0,
+      0 0,
+      0 0;
+  }
+}
+
+.cyber-bezel {
+  background:
+    radial-gradient(circle at 50% 50%, transparent 0 62%, oklch(1 0 0 / 0.18) 63%, transparent 64%),
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      transparent 0 0.55px,
+      oklch(0 0 0 / 0.18) 0.65px 1.15px,
+      transparent 1.25px 1.9px
+    ),
+    conic-gradient(
+      from 0deg,
+      oklch(0.2 0.006 240),
+      oklch(0.74 0.018 238),
+      oklch(0.48 0.012 242),
+      oklch(0.96 0.012 232),
+      oklch(0.36 0.008 240),
+      oklch(0.8 0.016 238),
+      oklch(0.42 0.01 242),
+      oklch(0.9 0.012 235),
+      oklch(0.28 0.006 240),
+      oklch(0.78 0.015 238),
+      oklch(0.2 0.006 240)
+    );
+  box-shadow:
+    inset 0 0 0 2px oklch(0.08 0.01 240),
+    inset 0 0 0 9px oklch(0.95 0.01 235 / 0.12),
+    inset 0 0 28px oklch(0 0 0 / 0.78),
+    inset 0 0 54px oklch(0.88 0.03 235 / 0.16),
+    0 0 22px oklch(0.7 0.24 240 / 0.32),
+    0 10px 34px oklch(0 0 0 / 0.86);
+  -webkit-mask: radial-gradient(circle, transparent 58%, #000 59%, #000 100%);
+  mask: radial-gradient(circle, transparent 58%, #000 59%, #000 100%);
+}
+
+/* Thin polished silver lip just inside the main bezel */
+.cyber-bezel-lip {
+  background:
+    radial-gradient(circle, transparent 68%, oklch(0.92 0.01 235 / 0.9) 69%, transparent 71%),
+    conic-gradient(
+      from 180deg,
+      oklch(0.42 0.008 240),
+      oklch(0.97 0.012 235),
+      oklch(0.54 0.01 240),
+      oklch(0.88 0.012 238),
+      oklch(0.38 0.008 240),
+      oklch(0.96 0.012 235),
+      oklch(0.42 0.008 240)
+    );
+  -webkit-mask: radial-gradient(circle, transparent 76%, #000 77%, #000 91%, transparent 92%);
+  mask: radial-gradient(circle, transparent 76%, #000 77%, #000 91%, transparent 92%);
+  box-shadow:
+    inset 0 0 8px oklch(0 0 0 / 0.7),
+    0 0 10px oklch(0.72 0.22 238 / 0.28);
+}
+
+.cyber-groove {
+  background:
+    radial-gradient(circle at 50% 42%, oklch(0.13 0.13 255 / 0.42), transparent 54%),
+    radial-gradient(circle, oklch(0.015 0.025 260) 52%, oklch(0.07 0.02 250) 78%, oklch(0 0 0) 100%);
+  box-shadow:
+    inset 0 0 0 1px oklch(0.42 0.01 240),
+    inset 0 0 0 7px oklch(0 0 0 / 0.45),
+    inset 0 0 24px oklch(0 0 0 / 0.95),
+    inset 0 0 38px oklch(0.75 0.24 240 / 0.24);
+  border-radius: 9999px;
+}
+
+/* -------------------------------------------------------------------------
+ * Cyber-Lens — life signs: ripples, breathing, blink, pupil pulse.
+ * ------------------------------------------------------------------------- */
+@keyframes alpha-ripple {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+    border-width: 2px;
+  }
+  18% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+    border-width: 0.5px;
+  }
+}
+.alpha-ripple {
+  border-style: solid;
+  border-color: oklch(0.78 0.3 258 / 0.75);
+  box-shadow:
+    0 0 32px oklch(0.72 0.3 258 / 0.55),
+    inset 0 0 22px oklch(0.7 0.3 258 / 0.4);
+  animation-name: alpha-ripple;
+  animation-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1);
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes cyber-breath {
+  0%,
+  100% {
+    transform: scale(1);
+    filter: brightness(1) saturate(1.1);
+  }
+  50% {
+    transform: scale(1.018);
+    filter: brightness(1.08) saturate(1.2);
+  }
+}
+@keyframes cyber-pupil-pulse {
+  0%,
+  100% {
+    transform: scale(0.94);
+    opacity: 0.85;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+}
+@keyframes cyber-blink {
+  0%,
+  92%,
+  100% {
+    transform: scaleY(1);
+    opacity: 0;
+  }
+  94%,
+  98% {
+    transform: scaleY(0.06);
+    opacity: 0.92;
+  }
+  96% {
+    transform: scaleY(0.02);
+    opacity: 1;
+  }
+}
+.cyber-blink {
+  background: linear-gradient(
+    180deg,
+    oklch(0 0 0 / 0.98) 0%,
+    oklch(0.06 0.02 250 / 0.9) 50%,
+    oklch(0 0 0 / 0.98) 100%
+  );
+  transform-origin: 50% 50%;
+  animation: cyber-blink 7.5s ease-in-out infinite;
+  mix-blend-mode: multiply;
+}
+
+/* ===========================================================================
+   .alpha-prose — the one typography contract for every piece of Alpha-generated
+   content (chat replies, notes, memories, reminders, plans, bills, tool output).
+   The model chooses structure; these rules choose spacing and size.
+   =========================================================================== */
+.alpha-prose {
+  font-size: 16px;
+  line-height: 1.6;
+  font-weight: 400;
+  color: var(--color-foreground);
+  max-width: 72ch;
+  width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.alpha-prose-compact {
+  font-size: 15px;
+}
+
+.alpha-prose > :first-child {
+  margin-top: 0 !important;
+}
+.alpha-prose > :last-child {
+  margin-bottom: 0 !important;
+}
+
+.alpha-prose p {
+  margin: 0 0 16px 0;
+}
+
+.alpha-prose h1,
+.alpha-prose h2,
+.alpha-prose h3,
+.alpha-prose h4 {
+  color: var(--color-foreground);
+  letter-spacing: -0.01em;
+}
+.alpha-prose h1 {
+  font-size: 24px;
+  line-height: 1.25;
+  font-weight: 700;
+  margin: 24px 0 12px;
+}
+.alpha-prose h2 {
+  font-size: 20px;
+  line-height: 1.3;
+  font-weight: 700;
+  margin: 24px 0 10px;
+}
+.alpha-prose h3 {
+  font-size: 18px;
+  line-height: 1.35;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+.alpha-prose h4 {
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 600;
+  margin: 20px 0 8px;
+}
+
+.alpha-prose strong {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.alpha-prose em {
+  font-style: italic;
+}
+
+.alpha-prose ul,
+.alpha-prose ol {
+  margin: 8px 0 16px 0;
+  padding-left: 24px;
+}
+.alpha-prose ol {
+  padding-left: 28px;
+}
+.alpha-prose li {
+  margin: 0 0 8px 0;
+  padding-left: 4px;
+}
+.alpha-prose li:last-child {
+  margin-bottom: 0;
+}
+.alpha-prose li > p {
+  margin: 0 0 8px 0;
+}
+.alpha-prose li > p:last-child {
+  margin-bottom: 0;
+}
+.alpha-prose ul ul,
+.alpha-prose ul ol,
+.alpha-prose ol ul,
+.alpha-prose ol ol {
+  margin: 6px 0 6px 0;
+}
+.alpha-prose ul ul li,
+.alpha-prose ol ol li,
+.alpha-prose ul ol li,
+.alpha-prose ol ul li {
+  margin-bottom: 5px;
+}
+.alpha-prose ul > li::marker {
+  color: oklch(0.8 0.25 258);
+}
+.alpha-prose ol > li::marker {
+  color: oklch(0.8 0.25 258);
+  font-weight: 600;
+}
+
+.alpha-prose hr {
+  margin: 24px 0;
+  border: 0;
+  border-top: 1px solid oklch(0.7 0.12 258 / 0.25);
+}
+
+.alpha-prose blockquote {
+  margin: 16px 0;
+  padding: 2px 0 2px 16px;
+  border-left: 2px solid oklch(0.7 0.2 258 / 0.5);
+  color: var(--color-muted-foreground);
+}
+.alpha-prose blockquote p {
+  margin-bottom: 12px;
+}
+.alpha-prose blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.alpha-prose .alpha-link {
+  color: oklch(0.82 0.25 258);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+/* Tables — real semantic structure, generous cells, horizontal scroll on narrow screens */
+.alpha-prose .alpha-table-wrap,
+.alpha-prose .table-scroll-container {
+  margin: 16px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid oklch(0.7 0.12 258 / 0.28);
+  border-radius: 12px;
+  -webkit-overflow-scrolling: touch;
+  background: oklch(0.1 0.03 260 / 0.5);
+  display: block;
+}
+.alpha-prose .table-scroll-container:focus-visible {
+  outline: 2px solid oklch(0.8 0.25 258 / 0.5);
+  outline-offset: 2px;
+}
+.alpha-prose .alpha-table-wrap table,
+.alpha-prose table.alpha-table,
+.alpha-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.5;
+  text-align: left;
+  table-layout: auto;
+}
+.alpha-prose th,
+.alpha-prose .alpha-th,
+.alpha-prose td,
+.alpha-prose .alpha-td {
+  padding: 11px 14px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 100px;
+}
+.alpha-prose th,
+.alpha-prose .alpha-th {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: oklch(0.92 0.05 258);
+  background: oklch(0.18 0.06 260 / 0.85);
+  border-bottom: 2px solid oklch(0.7 0.15 258 / 0.4);
+}
+.alpha-prose td,
+.alpha-prose .alpha-td {
+  font-size: 13.5px;
+  color: var(--color-foreground);
+  border-bottom: 1px solid oklch(0.7 0.1 258 / 0.16);
+}
+.alpha-prose tbody tr:last-child td,
+.alpha-prose tbody tr.alpha-tr:last-child .alpha-td {
+  border-bottom: none;
+}
+.alpha-prose tbody tr:hover td,
+.alpha-prose tbody tr.alpha-tr:hover .alpha-td {
+  background: oklch(0.7 0.1 258 / 0.05);
+}
+
+/* Code */
+.alpha-prose code {
+  font-size: 13.5px;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: oklch(0.12 0.03 260 / 0.85);
+  color: oklch(0.9 0.12 200);
+  overflow-wrap: anywhere;
+}
+.alpha-prose .alpha-pre {
+  margin: 16px 0;
+  padding: 16px;
+  border-radius: 12px;
+  background: oklch(0.08 0.02 260 / 0.92);
+  border: 1px solid oklch(0.7 0.12 258 / 0.28);
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.alpha-prose .alpha-pre code {
+  display: block;
+  background: none;
+  padding: 0;
+  font-size: 13.5px;
+  line-height: 1.5;
+  white-space: pre;
+  color: oklch(0.92 0.02 240);
+}
+
+/* Maths */
+.alpha-prose .katex {
+  font-size: 1.03em;
+}
+.alpha-prose .katex-display {
+  margin: 16px 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 4px;
+}
+
+.alpha-prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 12px;
+  margin: 16px 0;
+}
