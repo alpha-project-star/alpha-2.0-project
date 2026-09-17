@@ -15,6 +15,7 @@ export const ReminderDueEventSchema = z.object({
   dueAt: z.number().finite().positive('dueAt must be a valid positive timestamp'),
   detectedAt: z.number().finite().positive('detectedAt must be a valid positive timestamp'),
   title: z.string().default(''),
+  notes: z.string().optional(),
 });
 
 export type ReminderDueEvent = z.infer<typeof ReminderDueEventSchema>;

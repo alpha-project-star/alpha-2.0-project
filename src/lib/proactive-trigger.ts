@@ -17,6 +17,14 @@ import {
   type ProactiveResponseRecord,
 } from './notification-delivery';
 
+function extractEventField(raw: unknown, field: string): string {
+  if (raw && typeof raw === 'object' && raw !== null && field in raw) {
+    const val = (raw as Record<string, unknown>)[field];
+    if (typeof val === 'string') return val;
+  }
+  return '';
+}
+
 export type ProactiveErrorCode =
   | 'INVALID_EVENT'
   | 'UNAUTHENTICATED'
@@ -95,11 +103,11 @@ export class ProactiveTrigger {
     return this.enqueue(async () => {
       const effectiveUserId = isExplicitAuthProvided
         ? authenticatedUserId
-        : (rawEvent as any)?.userId;
+        : extractEventField(rawEvent, 'userId');
 
       // 1. Authentication Check
       if (!effectiveUserId || typeof effectiveUserId !== 'string' || !effectiveUserId.trim()) {
-        const fallbackId = (rawEvent as any)?.eventId || '';
+        const fallbackId = extractEventField(rawEvent, 'eventId');
         return {
           success: false,
           eventId: fallbackId,
@@ -114,7 +122,7 @@ export class ProactiveTrigger {
       // 2. Event Schema Validation
       const validation = validateReminderDueEvent(rawEvent);
       if (!validation.success) {
-        const fallbackId = (rawEvent as any)?.eventId || '';
+        const fallbackId = extractEventField(rawEvent, 'eventId');
         return {
           success: false,
           eventId: fallbackId,
@@ -300,7 +308,7 @@ export class ProactiveTrigger {
           generatedAt: Date.now(),
           title: event.title,
           dueAt: event.dueAt,
-          notes: reminder?.notes || (event as any).notes,
+          notes: reminder?.notes || event.notes,
         };
 
         const deliveryMgr = this.options.deliveryManager ?? notificationDelivery;
@@ -367,7 +375,7 @@ export class ProactiveTrigger {
     rawEvent: unknown,
     authenticatedUserId?: string,
   ): Promise<ProactiveTriggerResult> {
-    const eventId = (rawEvent as any)?.eventId;
+    const eventId = extractEventField(rawEvent, 'eventId');
     if (!eventId) {
       return this.handleReminderDue(rawEvent, authenticatedUserId);
     }
@@ -415,7 +423,7 @@ export class ProactiveTrigger {
     if (!authenticatedUserId || typeof authenticatedUserId !== 'string' || !authenticatedUserId.trim()) {
       return {
         success: false,
-        eventId: (rawEvent as any)?.eventId || '',
+        eventId: extractEventField(rawEvent, 'eventId'),
         error: { code: 'UNAUTHENTICATED', message: 'Authenticated user ID is required' },
       };
     }
@@ -423,7 +431,7 @@ export class ProactiveTrigger {
     if (!validation.success) {
       return {
         success: false,
-        eventId: (rawEvent as any)?.eventId || '',
+        eventId: extractEventField(rawEvent, 'eventId'),
         error: { code: 'INVALID_EVENT', message: validation.error },
       };
     }
@@ -453,7 +461,7 @@ export class ProactiveTrigger {
         generatedAt: Date.now(),
         title: event.title,
         dueAt: event.dueAt,
-        notes: (event as any).notes,
+        notes: event.notes,
       };
 
       return { success: true, record };

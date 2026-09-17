@@ -178,7 +178,7 @@ export class NotificationDeliveryManager {
    * Enforces authentication, user isolation, idempotency, atomic claiming, and safe in-app store commit.
    */
   public async deliverProactiveResponse(
-    input: DeliverProactiveInput | any,
+    input: DeliverProactiveInput,
   ): Promise<NotificationDeliveryResult> {
     const rawAuth = input?.authenticatedUserId;
     const rawChannel = input?.channel;
@@ -186,16 +186,16 @@ export class NotificationDeliveryManager {
     // Normalize flat record structure if provided
     let rawRecord = input?.record;
     if (!rawRecord && input && typeof input === 'object' && ('eventId' in input || 'reminderId' in input)) {
-      const flat = input as any;
+      const flat = input as Record<string, unknown>;
       rawRecord = {
-        eventId: flat.eventId,
-        reminderId: flat.reminderId,
-        userId: flat.userId || rawAuth,
-        messageId: flat.messageId || `msg-${flat.eventId || flat.reminderId}`,
-        text: flat.text || flat.proactiveText || '',
-        title: flat.title,
-        dueAt: flat.dueAt,
-        notes: flat.notes,
+        eventId: typeof flat.eventId === 'string' ? flat.eventId : '',
+        reminderId: typeof flat.reminderId === 'string' ? flat.reminderId : '',
+        userId: typeof flat.userId === 'string' ? flat.userId : (rawAuth || ''),
+        messageId: typeof flat.messageId === 'string' ? flat.messageId : `msg-${flat.eventId || flat.reminderId}`,
+        text: typeof flat.text === 'string' ? flat.text : (typeof flat.proactiveText === 'string' ? flat.proactiveText : ''),
+        title: typeof flat.title === 'string' ? flat.title : undefined,
+        dueAt: typeof flat.dueAt === 'number' ? flat.dueAt : undefined,
+        notes: typeof flat.notes === 'string' ? flat.notes : undefined,
       };
     }
 
@@ -310,16 +310,17 @@ export class NotificationDeliveryManager {
 
     // If a non-in_app channel provider is resolved, delegate directly to the provider
     if (channel !== 'in_app' && resolution.provider) {
-      if (this.repo && typeof (resolution.provider as any).setDeliveryRepo === 'function') {
-        (resolution.provider as any).setDeliveryRepo(this.repo);
+      const providerObj = resolution.provider as unknown as Record<string, unknown>;
+      if (this.repo && typeof providerObj.setDeliveryRepo === 'function') {
+        (providerObj.setDeliveryRepo as (repo: DeliveryRepository) => void)(this.repo);
       }
       const channelResult = await resolution.provider.deliver(
         {
           eventId: rawRecord.eventId,
           reminderId: rawRecord.reminderId,
           userId: rawRecord.userId,
-          title: rawRecord.title,
-          body: rawRecord.text,
+          title: rawRecord.title || '',
+          body: rawRecord.text || '',
           messageId: rawRecord.messageId,
           dueAt: rawRecord.dueAt,
           notes: rawRecord.notes,
