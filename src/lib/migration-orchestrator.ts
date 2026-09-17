@@ -4,7 +4,7 @@ import { db } from './firebase';
 import { AlphaState, alphaStore } from './alpha-store';
 import { MigrationValidator } from './migration-contract';
 import { MigrationWriter, MigrationWriteResult } from './migration-writer';
-import { FirestoreReminderRepository } from './reminder-repo';
+import { LocalReminderRepository } from './reminder-repo';
 
 export type MigrationStatus = 'not_started' | 'eligible' | 'in_progress' | 'completed' | 'failed';
 
@@ -33,7 +33,7 @@ export class MigrationOrchestrator {
 
   constructor(
     private userId: string,
-    private repo = new FirestoreReminderRepository(),
+    private repo = new LocalReminderRepository(),
     private writer = new MigrationWriter(repo)
   ) {}
 

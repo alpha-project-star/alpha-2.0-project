@@ -35,7 +35,7 @@ import { normalizeWhen, formatWhen } from "./when";
 import { activity, actionActivity } from "./activity";
 import { getAuth } from "firebase/auth";
 import {
-  FirestoreReminderRepository,
+  LocalReminderRepository,
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
@@ -526,7 +526,7 @@ export function executeActionTags(input: string): { text: string; results: Actio
 
 /**
  * Asynchronous action-tag executor that routes reminder actions through the canonical
- * FirestoreReminderRepository / ReminderRepository and awaits persistence.
+ * LocalReminderRepository / ReminderRepository and awaits persistence.
  */
 export async function executeActionTagsAsync(
   input: string,
@@ -539,13 +539,12 @@ export async function executeActionTagsAsync(
     (r) => !["ADD_REMINDER", "UPDATE_REMINDER", "DELETE_REMINDER", "MARK_REMINDER_DONE", "CLEAR_ALL_REMINDERS"].includes(r.tag)
   );
 
-  const userId = options?.userId ?? (getAuth().currentUser?.uid || null);
-  const repo = options?.repo ?? new FirestoreReminderRepository();
+  const effectiveUserId = options?.userId ?? (getAuth().currentUser?.uid || "local-user");
+  const repo = options?.repo ?? new LocalReminderRepository();
 
   async function findReminderHits(query: string): Promise<FirestoreReminder[]> {
-    if (!userId) return [];
     try {
-      const list = await repo.listReminders(userId);
+      const list = await repo.listReminders(effectiveUserId);
       const q = (query || "").toLowerCase().trim().replace(/^all\s+/, "");
       if (!q) return [];
       const exact = list.filter((r) => (r.title || "").toLowerCase().trim() === q);
@@ -564,7 +563,8 @@ export async function executeActionTagsAsync(
   while ((match = addRemRe.exec(input)) !== null) {
     const fullMatch = match[0];
     const title = match[1].trim();
-    const w = normalizeWhen(match[2].trim());
+    const rawWhen = match[2].trim();
+    const w = normalizeWhen(rawWhen);
     const notes = (match[3] || "").trim();
     activity.set(actionActivity("ADD_REMINDER"));
 
@@ -577,25 +577,26 @@ export async function executeActionTagsAsync(
       text = text.replace(fullMatch, "");
       continue;
     }
-    if (!userId) {
+
+    const parsedMs = Date.parse(w.iso);
+    if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
       activity.set("action_failed");
       results.push({
         tag: "ADD_REMINDER",
         status: "failed",
-        message: "You need to be signed in to add reminders.",
+        message: `I couldn't understand when to remind you about "${title}" from "${rawWhen}". When would you like to be reminded? (e.g. "in 30 minutes" or "tomorrow at 9am")`,
       });
       text = text.replace(fullMatch, "");
       continue;
     }
 
     const id = uid();
-    const parsedMs = Date.parse(w.iso);
-    const dueAt = Number.isNaN(parsedMs) ? Date.now() + 3600000 : parsedMs;
+    const dueAt = parsedMs;
     const now = Date.now();
     try {
-      await repo.createReminder(userId, {
+      await repo.createReminder(effectiveUserId, {
         id,
-        userId,
+        userId: effectiveUserId,
         title,
         notes,
         dueAt,
@@ -604,19 +605,11 @@ export async function executeActionTagsAsync(
         reminderState: "active",
         notificationState: "pending",
       });
-      results.push(
-        w.parsed
-          ? {
-              tag: "ADD_REMINDER",
-              status: "success",
-              message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
-            }
-          : {
-              tag: "ADD_REMINDER",
-              status: "success",
-              message: `Reminder saved: "${title}" — but I could not turn "${w.phrase}" into a real time, so no alarm is scheduled. Give me a clear time (e.g. "today at 9pm").`,
-            },
-      );
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "success",
+        message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
+      });
     } catch (err: any) {
       activity.set("action_failed");
       results.push({
@@ -673,13 +666,17 @@ export async function executeActionTagsAsync(
     }
 
     const patch: Partial<FirestoreReminder> = { updatedAt: Date.now() };
-    let unparsed = "";
+    let invalidWhen = false;
     for (const k of keys) {
       if (k === "when") {
-        const w = normalizeWhen(fields[k]);
+        const rawWhen = fields[k];
+        const w = normalizeWhen(rawWhen);
         const parsedMs = Date.parse(w.iso);
-        if (!Number.isNaN(parsedMs)) patch.dueAt = parsedMs;
-        if (!w.parsed) unparsed = w.phrase;
+        if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
+          invalidWhen = true;
+        } else {
+          patch.dueAt = parsedMs;
+        }
       } else if (k === "title") {
         patch.title = fields[k];
       } else if (k === "notes") {
@@ -690,17 +687,26 @@ export async function executeActionTagsAsync(
       }
     }
 
+    if (invalidWhen) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "failed",
+        message: `Could not update reminder "${target.title}": I couldn't understand the time "${fields["when"]}". Please specify a clear time (e.g. "tomorrow at 9am").`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
+
     try {
-      await repo.updateReminder(userId!, target.id, patch);
+      await repo.updateReminder(effectiveUserId, target.id, patch);
       const what = keys
         .map((k) => `${k} → ${k === "when" && patch.dueAt ? formatWhen(new Date(patch.dueAt).toISOString()) : fields[k]}`)
         .join(", ");
       results.push({
         tag: "UPDATE_REMINDER",
         status: "success",
-        message:
-          `Updated reminder "${target.title}": ${what}` +
-          (unparsed ? ` — but "${unparsed}" is not a time I can schedule, so no alarm is set.` : ""),
+        message: `Updated reminder "${target.title}": ${what}`,
       });
     } catch (err: any) {
       activity.set("action_failed");
@@ -745,7 +751,7 @@ export async function executeActionTagsAsync(
 
     try {
       for (const h of hits) {
-        await repo.deleteReminder(userId!, h.id);
+        await repo.deleteReminder(effectiveUserId, h.id);
       }
       results.push({
         tag: "DELETE_REMINDER",
@@ -794,7 +800,7 @@ export async function executeActionTagsAsync(
 
     const target = hits[0];
     try {
-      await repo.updateReminder(userId!, target.id, {
+      await repo.updateReminder(effectiveUserId, target.id, {
         reminderState: "completed",
         notificationState: "accepted",
         updatedAt: Date.now(),
@@ -820,13 +826,7 @@ export async function executeActionTagsAsync(
   while ((match = delLastRemRe.exec(input)) !== null) {
     const fullMatch = match[0];
     activity.set(actionActivity("DELETE_LAST"));
-    if (!userId) {
-      activity.set("action_failed");
-      results.push({ tag: "DELETE_LAST", status: "failed", message: "You need to be signed in." });
-      text = text.replace(fullMatch, "");
-      continue;
-    }
-    const list = await repo.listReminders(userId);
+    const list = await repo.listReminders(effectiveUserId);
     if (!list.length) {
       activity.set("action_failed");
       results.push({ tag: "DELETE_LAST", status: "not_found", message: "There are no reminders to delete." });
@@ -835,7 +835,7 @@ export async function executeActionTagsAsync(
     }
     const victim = list[0];
     try {
-      await repo.deleteReminder(userId, victim.id);
+      await repo.deleteReminder(effectiveUserId, victim.id);
       results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".` });
     } catch (err: any) {
       activity.set("action_failed");
@@ -849,13 +849,7 @@ export async function executeActionTagsAsync(
   while ((match = clearRemRe.exec(input)) !== null) {
     const fullMatch = match[0];
     activity.set(actionActivity("CLEAR_ALL"));
-    if (!userId) {
-      activity.set("action_failed");
-      results.push({ tag: "CLEAR_ALL", status: "failed", message: "You need to be signed in." });
-      text = text.replace(fullMatch, "");
-      continue;
-    }
-    const list = await repo.listReminders(userId);
+    const list = await repo.listReminders(effectiveUserId);
     if (!list.length) {
       activity.set("action_failed");
       results.push({ tag: "CLEAR_ALL", status: "not_found", message: "There are no reminders to clear." });
@@ -864,7 +858,7 @@ export async function executeActionTagsAsync(
     }
     try {
       for (const r of list) {
-        await repo.deleteReminder(userId, r.id);
+        await repo.deleteReminder(effectiveUserId, r.id);
       }
       results.push({ tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} reminders.` });
     } catch (err: any) {

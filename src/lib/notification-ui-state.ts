@@ -11,7 +11,7 @@ import {
 } from './notification-recovery';
 import { formatReminderDate } from './reminder-date-utils';
 import { alphaStore, useAlpha } from './alpha-store';
-import { FirestoreReminderRepository } from './reminder-repo';
+import { LocalReminderRepository } from './reminder-repo';
 
 export type NotificationDisplayStatus =
   | 'awaiting_acknowledgement'
@@ -60,7 +60,7 @@ export async function resolveNotificationStatus(
 
     // B. Durable authority
     try {
-      const reminderRepo = new FirestoreReminderRepository();
+      const reminderRepo = new LocalReminderRepository();
       const durableMatch = await reminderRepo.getReminder(cleanUid, reminderId);
       if (durableMatch && (durableMatch.reminderState === 'completed')) {
         return 'completed';

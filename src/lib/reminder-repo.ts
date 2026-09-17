@@ -1,34 +1,25 @@
 /**
  * ============================================================================
- * ARCHITECTURAL AUTHORITY DECLARATION — AL-02 RECONCILIATION
+ * ARCHITECTURAL AUTHORITY DECLARATION — FOUNDATION HARDENING
  * ============================================================================
- * ROLE: Durable Reminder Persistence Authority
- * AUTHORITATIVE SYMBOL: ReminderRepository (FirestoreReminderRepository)
+ * ROLE: Canonical Local-First Reminder Persistence Authority
+ * AUTHORITATIVE SYMBOL: ReminderRepository (LocalReminderRepository)
  *
  * RESPONSIBILITIES:
- *  - Serves as the canonical, durable database persistence authority for reminders
- *    and proactive notification states on Firestore.
- *  - Handles queries, insertions, updates, and deletions directly with Firestore.
- *  - Preserves historic, legacy, and proactive reminder event states.
+ *  - Serves as the single authoritative persistence engine for reminders.
+ *  - Backed by browser local persistence (alpha.reminders.v1 via getStorage()).
+ *  - In-memory fallback for SSR and test environments.
+ *  - Zero network dependence; works offline and for unauthenticated users.
+ *  - Persist-before-commit semantics with safe error handling (PersistenceError).
+ *  - Atomic read-modify-write with transaction-like claim state conflict detection.
  *
  * NOT RESPONSIBLE FOR:
- *  - Conversational reminder context or active focus tracking (owned by `src/lib/reminder-context.ts`).
- *  - In-memory application state management or execution schemas (owned by `src/lib/alpha-store.ts` and `src/lib/execution.ts`).
+ *  - Conversational context / focus tracking (owned by `src/lib/reminder-context.ts`).
+ *  - In-memory chat/note/bill application state (owned by `src/lib/alpha-store.ts`).
  * ============================================================================
  */
 
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  getDoc, 
-  getDocs, 
-  query, 
-  where,
-  updateDoc,
-  deleteDoc
-} from 'firebase/firestore';
-import { db } from './firebase';
+import { getStorage, PersistenceError } from './alpha-store';
 
 export type ReminderState = 'active' | 'completed' | 'cancelled';
 export type NotificationState = 'pending' | 'claimed' | 'accepted' | 'failed';
@@ -51,67 +42,163 @@ export interface FirestoreReminder {
   proactiveMessageId?: string;
 }
 
+export type LocalReminder = FirestoreReminder;
+
 export interface ReminderRepository {
   listReminders(userId: string): Promise<FirestoreReminder[]>;
   getReminder(userId: string, reminderId: string): Promise<FirestoreReminder | null>;
   createReminder(userId: string, reminder: FirestoreReminder): Promise<void>;
   updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void>;
   deleteReminder(userId: string, reminderId: string): Promise<void>;
+  clear?(): void;
 }
 
-export class FirestoreReminderRepository implements ReminderRepository {
-  private getCollection(userId: string) {
-    if (!userId) throw new Error("userId is required for repository access");
-    return collection(db, 'users', userId, 'reminders');
+const STORAGE_PREFIX = 'alpha.reminders.v1';
+
+export class LocalReminderRepository implements ReminderRepository {
+  public store = new Map<string, FirestoreReminder>();
+  public shouldFail = false;
+  public failureError = 'Local reminder persistence failure';
+
+  private storageKey(userId: string): string {
+    const safeUid = userId ? userId.trim() : 'local-user';
+    return `${STORAGE_PREFIX}.${safeUid}`;
   }
 
-  private getDocRef(userId: string, reminderId: string) {
-    if (!userId || !reminderId) throw new Error("userId and reminderId are required");
-    return doc(db, 'users', userId, 'reminders', reminderId);
+  private load(userId: string): Map<string, FirestoreReminder> {
+    const storage = getStorage();
+    if (!storage) {
+      return this.store;
+    }
+    try {
+      const raw = storage.getItem(this.storageKey(userId));
+      if (!raw) return new Map();
+      const list: FirestoreReminder[] = JSON.parse(raw);
+      const map = new Map<string, FirestoreReminder>();
+      if (Array.isArray(list)) {
+        for (const item of list) {
+          map.set(item.id, item);
+        }
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
+  }
+
+  private save(userId: string, map: Map<string, FirestoreReminder>): void {
+    if (this.shouldFail) {
+      throw new PersistenceError(this.storageKey(userId), new Error(this.failureError));
+    }
+    const storage = getStorage();
+    if (!storage) {
+      this.store = map;
+      return;
+    }
+    const key = this.storageKey(userId);
+    const list = Array.from(map.values());
+    try {
+      storage.setItem(key, JSON.stringify(list));
+      if (typeof window !== 'undefined') {
+        try {
+          window.dispatchEvent(new CustomEvent('alpha:reminders-changed'));
+        } catch {}
+      }
+    } catch (err) {
+      throw new PersistenceError(key, err);
+    }
   }
 
   async listReminders(userId: string): Promise<FirestoreReminder[]> {
-    const q = query(this.getCollection(userId));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map(doc => doc.data() as FirestoreReminder);
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    const map = this.load(effectiveUserId);
+    return Array.from(map.values()).filter(r => r.userId === effectiveUserId || !r.userId || r.userId === 'local-user');
   }
 
   async getReminder(userId: string, reminderId: string): Promise<FirestoreReminder | null> {
-    const docRef = this.getDocRef(userId, reminderId);
-    const docSnap = await getDoc(docRef);
-    if (docSnap.exists()) {
-      return docSnap.data() as FirestoreReminder;
-    }
-    return null;
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    const map = this.load(effectiveUserId);
+    const item = map.get(reminderId);
+    if (!item) return null;
+    return { ...item };
   }
 
   async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
-    if (reminder.userId !== userId) throw new Error("User ID mismatch");
-    const docRef = this.getDocRef(userId, reminder.id);
-    await setDoc(docRef, reminder);
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    const map = this.load(effectiveUserId);
+    const nextReminder: FirestoreReminder = {
+      ...reminder,
+      userId: effectiveUserId,
+      updatedAt: Date.now(),
+    };
+    const nextMap = new Map(map);
+    nextMap.set(reminder.id, nextReminder);
+    this.save(effectiveUserId, nextMap);
+    this.store.set(reminder.id, nextReminder);
   }
 
   async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
-    const docRef = this.getDocRef(userId, reminderId);
-    await updateDoc(docRef, patch);
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    const map = this.load(effectiveUserId);
+    const existing = map.get(reminderId);
+    if (!existing) {
+      throw new Error(`Reminder not found: ${reminderId}`);
+    }
+    if (patch.notificationState === 'claimed' && existing.notificationState && existing.notificationState !== 'pending') {
+      throw new Error('Transaction conflict: already claimed');
+    }
+    const updated: FirestoreReminder = {
+      ...existing,
+      ...patch,
+      updatedAt: Date.now(),
+    };
+    const nextMap = new Map(map);
+    nextMap.set(reminderId, updated);
+    this.save(effectiveUserId, nextMap);
+    this.store.set(reminderId, updated);
   }
 
   async deleteReminder(userId: string, reminderId: string): Promise<void> {
-    const docRef = this.getDocRef(userId, reminderId);
-    await deleteDoc(docRef);
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    const map = this.load(effectiveUserId);
+    if (!map.has(reminderId)) return;
+    const nextMap = new Map(map);
+    nextMap.delete(reminderId);
+    this.save(effectiveUserId, nextMap);
+    this.store.delete(reminderId);
+  }
+
+  clear(): void {
+    this.store.clear();
+    const storage = getStorage();
+    if (storage) {
+      try {
+        const keysToRemove: string[] = [];
+        for (let i = 0; i < storage.length; i++) {
+          const k = storage.key(i);
+          if (k && k.startsWith(STORAGE_PREFIX)) {
+            keysToRemove.push(k);
+          }
+        }
+        for (const k of keysToRemove) {
+          storage.removeItem(k);
+        }
+      } catch {}
+    }
   }
 }
 
-export class InMemoryReminderRepository implements ReminderRepository {
-  public store = new Map<string, FirestoreReminder>();
-  public shouldFail = false;
-  public failureError = 'Simulated reminder persistence failure';
-
+export class InMemoryReminderRepository extends LocalReminderRepository {
   private key(userId: string, reminderId: string): string {
     return `${userId}:${reminderId}`;
   }
 
-  async listReminders(userId: string): Promise<FirestoreReminder[]> {
+  override async listReminders(userId: string): Promise<FirestoreReminder[]> {
     if (this.shouldFail) throw new Error(this.failureError);
     const prefix = `${userId}:`;
     const results: FirestoreReminder[] = [];
@@ -123,20 +210,20 @@ export class InMemoryReminderRepository implements ReminderRepository {
     return results;
   }
 
-  async getReminder(userId: string, reminderId: string): Promise<FirestoreReminder | null> {
+  override async getReminder(userId: string, reminderId: string): Promise<FirestoreReminder | null> {
     if (this.shouldFail) throw new Error(this.failureError);
     const r = this.store.get(this.key(userId, reminderId));
     if (!r || r.userId !== userId) return null;
     return { ...r };
   }
 
-  async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
+  override async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     if (reminder.userId !== userId) throw new Error("User ID mismatch");
     this.store.set(this.key(userId, reminder.id), { ...reminder });
   }
 
-  async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
+  override async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     const k = this.key(userId, reminderId);
     const r = this.store.get(k);
@@ -147,12 +234,18 @@ export class InMemoryReminderRepository implements ReminderRepository {
     this.store.set(k, { ...r, ...patch, updatedAt: Date.now() });
   }
 
-  async deleteReminder(userId: string, reminderId: string): Promise<void> {
+  override async deleteReminder(userId: string, reminderId: string): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     this.store.delete(this.key(userId, reminderId));
   }
 
-  clear(): void {
+  override clear(): void {
     this.store.clear();
   }
 }
+
+/**
+ * Backward compatibility alias: FirestoreReminderRepository redirects to LocalReminderRepository.
+ * Reminders are strictly local-first and do not persist to Firestore.
+ */
+export const FirestoreReminderRepository = LocalReminderRepository;

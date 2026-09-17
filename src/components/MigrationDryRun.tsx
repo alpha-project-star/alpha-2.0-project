@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { performDryRun } from '../lib/migration-dry-run';
 import { alphaStore } from '../lib/alpha-store';
-import { FirestoreReminderRepository } from '../lib/reminder-repo';
+import { LocalReminderRepository } from '../lib/reminder-repo';
 import { toast } from 'sonner';
 import { useAuth } from '../lib/auth';
 import { MigrationOrchestrator, MigrationState } from '../lib/migration-orchestrator';
@@ -42,7 +42,7 @@ export function MigrationDryRun() {
   const runDryRun = async () => {
     setIsLoading(true);
     try {
-      const repo = new FirestoreReminderRepository();
+      const repo = new LocalReminderRepository();
       const existingReminders = await repo.listReminders(auth.user.uid);
       const existingIds = new Set(existingReminders.map(r => r.id));
       

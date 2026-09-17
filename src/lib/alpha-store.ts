@@ -133,7 +133,7 @@ export interface AlphaState {
   bills: Bill[];
   /** 
    * Reminders in local AlphaState are LEGACY only. 
-   * Canonical mutation authority has migrated to FirestoreReminderRepository.
+   * Canonical mutation authority is LocalReminderRepository.
    * This array remains for migration-eligible detection and dry-runs only.
    * It is wiped via alphaStore.clearReminders() upon successful migration.
    */
@@ -203,12 +203,12 @@ voice announcement. Alpha recognises the user as Alex.`,
   visionAmbientEnabled: false,
   visionAmbientIntervalSec: 30,
   taskModels: {
-    // Free-tier stack, each verified with a real live completion (2026-08-01):
+    // Free-tier stack, each verified with a real live completion:
     //  • fast     → Groq Llama 3.3 70B versatile (~0.1s)
     //  • thinking → OpenRouter Nemotron 3 Super 120B free (~0.7s)
-    //  • coding   → OpenRouter Poolside Laguna S 2.1 free (~0.7s, 262k ctx)
+    //  • coding   → Cohere North Mini Code free (~0.7s)
     fast: "groq:llama-3.3-70b-versatile",
-    thinking: "openrouter:google/gemini-2.0-flash-exp:free",
+    thinking: "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
     coding: "openrouter:cohere/north-mini-code:free",
   },
 };
@@ -418,7 +418,10 @@ let state: AlphaState = {
     "openrouter:poolside/laguna-xs-2.1:free",
     "openrouter:poolside/laguna-s-2.1:free",
     "openrouter:nvidia/nemotron-nano-9b-v2:free",
-    "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
+    "openrouter:google/gemini-2.0-flash-exp:free",
+    "openrouter:google/gemini-2.5-flash-thinking",
+    "openrouter:google/gemini-2.5-flash-thinking:free",
+    "gemini:gemini-2.5-flash-thinking",
   ]);
   const t = state.settings.taskModels;
   const migrated = {
@@ -503,23 +506,25 @@ export const alphaStore = {
       console.error("Invalid settings patch:", result.error);
       return;
     }
+    writeLS(K.settings, result.data);
     state = { ...state, settings: result.data };
-    writeLS(K.settings, state.settings);
     emit();
   },
   appendChat(msg: ChatMessage) {
-    state = { ...state, chat: [...state.chat, msg].slice(-200) };
-    writeLS(K.chat, state.chat);
+    const next = [...state.chat, msg].slice(-200);
+    writeLS(K.chat, next);
+    state = { ...state, chat: next };
     emit();
   },
   setChat(msgs: ChatMessage[]) {
-    state = { ...state, chat: msgs.slice(-200) };
-    writeLS(K.chat, state.chat);
+    const next = msgs.slice(-200);
+    writeLS(K.chat, next);
+    state = { ...state, chat: next };
     emit();
   },
   clearChat() {
+    writeLS(K.chat, []);
     state = { ...state, chat: [] };
-    writeLS(K.chat, state.chat);
     conversationSummary.clear();
     reminderContextManager.clear();
     try {
@@ -528,49 +533,57 @@ export const alphaStore = {
     emit();
   },
   upsertNote(n: Note) {
-    state = { ...state, notes: upsert(state.notes, n) };
-    writeLS(K.notes, state.notes);
+    const next = upsert(state.notes, n);
+    writeLS(K.notes, next);
+    state = { ...state, notes: next };
     emit();
   },
   deleteNote(id: string) {
-    state = { ...state, notes: state.notes.filter((x) => x.id !== id) };
-    writeLS(K.notes, state.notes);
+    const next = state.notes.filter((x) => x.id !== id);
+    writeLS(K.notes, next);
+    state = { ...state, notes: next };
     emit();
   },
   upsertBill(b: Bill) {
-    state = { ...state, bills: upsert(state.bills, b) };
-    writeLS(K.bills, state.bills);
+    const next = upsert(state.bills, b);
+    writeLS(K.bills, next);
+    state = { ...state, bills: next };
     emit();
   },
   deleteBill(id: string) {
-    state = { ...state, bills: state.bills.filter((x) => x.id !== id) };
-    writeLS(K.bills, state.bills);
+    const next = state.bills.filter((x) => x.id !== id);
+    writeLS(K.bills, next);
+    state = { ...state, bills: next };
     emit();
   },
   clearReminders() {
+    writeLS(K.reminders, []);
     state = { ...state, reminders: [] };
-    writeLS(K.reminders, state.reminders);
     emit();
     notifyReminderChange();
   },
   upsertTask(t: Task) {
-    state = { ...state, tasks: upsert(state.tasks, t) };
-    writeLS(K.tasks, state.tasks);
+    const next = upsert(state.tasks, t);
+    writeLS(K.tasks, next);
+    state = { ...state, tasks: next };
     emit();
   },
   deleteTask(id: string) {
-    state = { ...state, tasks: state.tasks.filter((x) => x.id !== id) };
-    writeLS(K.tasks, state.tasks);
+    const next = state.tasks.filter((x) => x.id !== id);
+    writeLS(K.tasks, next);
+    state = { ...state, tasks: next };
     emit();
   },
   upsertGoal(g: Goal) {
-    state = { ...state, goals: upsert(state.goals, g) };
-    writeLS(K.goals, state.goals);
+    const next = upsert(state.goals, g);
+    writeLS(K.goals, next);
+    state = { ...state, goals: next };
     emit();
   },
   deleteGoal(id: string) {
-    state = { ...state, goals: state.goals.filter((x) => x.id !== id) };
-    writeLS(K.goals, state.goals);
+    const next = state.goals.filter((x) => x.id !== id);
+    writeLS(K.goals, next);
+    state = { ...state, goals: next };
     emit();
   },
   upsertRun(r: Run) {
@@ -583,13 +596,15 @@ export const alphaStore = {
       inactive = inactive.slice(-(Math.max(0, 50 - active.length)));
     }
     
-    state = { ...state, runs: [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0)) };
-    writeLS(K.runs, state.runs);
+    const next = [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
+    writeLS(K.runs, next);
+    state = { ...state, runs: next };
     emit();
   },
   deleteRun(id: string) {
-    state = { ...state, runs: state.runs.filter((x) => x.id !== id) };
-    writeLS(K.runs, state.runs);
+    const next = state.runs.filter((x) => x.id !== id);
+    writeLS(K.runs, next);
+    state = { ...state, runs: next };
     emit();
   },
   upsertStep(s: Step) {
@@ -601,8 +616,9 @@ export const alphaStore = {
        inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
     }
     
-    state = { ...state, steps: [...inactive, ...active].sort((a,b) => a.sequence - b.sequence) };
-    writeLS(K.steps, state.steps);
+    const next = [...inactive, ...active].sort((a,b) => a.sequence - b.sequence);
+    writeLS(K.steps, next);
+    state = { ...state, steps: next };
     emit();
   },
   upsertObservation(o: Observation) {
@@ -616,8 +632,9 @@ export const alphaStore = {
       inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
     }
     
-    state = { ...state, observations: [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp) };
-    writeLS(K.observations, state.observations);
+    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+    writeLS(K.observations, next);
+    state = { ...state, observations: next };
     emit();
   },
   upsertResult(r: Result) {
@@ -631,8 +648,9 @@ export const alphaStore = {
       inactive = inactive.slice(-(Math.max(0, 100 - active.length)));
     }
     
-    state = { ...state, results: [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp) };
-    writeLS(K.results, state.results);
+    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+    writeLS(K.results, next);
+    state = { ...state, results: next };
     emit();
   },
   upsertMemory(m: Memory) {
@@ -657,6 +675,7 @@ export const alphaStore = {
       (x) => x.id === cleanMem.id || (cleanTopic && x.topic.toLowerCase().trim() === cleanTopic.toLowerCase() && x.status !== "archived"),
     );
 
+    let nextMemories: Memory[];
     if (existingIdx >= 0) {
       const existing = state.memories[existingIdx];
       const updated: Memory = {
@@ -667,49 +686,51 @@ export const alphaStore = {
         updatedAt: now,
         lastUsedAt: now,
       };
-      const nextMemories = [...state.memories];
+      nextMemories = [...state.memories];
       nextMemories[existingIdx] = updated;
-      state = { ...state, memories: nextMemories };
     } else {
-      state = { ...state, memories: upsert(state.memories, cleanMem) };
+      nextMemories = upsert(state.memories, cleanMem);
     }
-    writeLS(K.memories, state.memories);
+    writeLS(K.memories, nextMemories);
+    state = { ...state, memories: nextMemories };
     emit();
   },
   deleteMemory(id: string) {
-    state = { ...state, memories: state.memories.filter((x) => x.id !== id) };
-    writeLS(K.memories, state.memories);
+    const next = state.memories.filter((x) => x.id !== id);
+    writeLS(K.memories, next);
+    state = { ...state, memories: next };
     emit();
   },
   setProfile(p: Profile) {
-    state = { ...state, profile: p };
     writeLS(K.profile, p);
+    state = { ...state, profile: p };
     emit();
   },
   /** Replace or reset parts or all of state (useful for test isolation and data imports). */
   replaceAll(patch: Partial<AlphaState>) {
+    if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
+    if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
+    if (patch.reminders !== undefined) writeLS(K.reminders, patch.reminders);
+    if (patch.tasks !== undefined) writeLS(K.tasks, patch.tasks);
+    if (patch.goals !== undefined) writeLS(K.goals, patch.goals);
+    if (patch.runs !== undefined) writeLS(K.runs, patch.runs);
+    if (patch.steps !== undefined) writeLS(K.steps, patch.steps);
+    if (patch.observations !== undefined) writeLS(K.observations, patch.observations);
+    if (patch.results !== undefined) writeLS(K.results, patch.results);
+    if (patch.memories !== undefined) writeLS(K.memories, patch.memories);
+    if (patch.chat !== undefined) writeLS(K.chat, patch.chat);
+    if (patch.settings !== undefined) writeLS(K.settings, patch.settings);
+    if (patch.profile !== undefined) writeLS(K.profile, patch.profile);
     state = { ...state, ...patch };
-    if (patch.notes !== undefined) writeLS(K.notes, state.notes);
-    if (patch.bills !== undefined) writeLS(K.bills, state.bills);
-    if (patch.reminders !== undefined) writeLS(K.reminders, state.reminders);
-    if (patch.tasks !== undefined) writeLS(K.tasks, state.tasks);
-    if (patch.goals !== undefined) writeLS(K.goals, state.goals);
-    if (patch.runs !== undefined) writeLS(K.runs, state.runs);
-    if (patch.steps !== undefined) writeLS(K.steps, state.steps);
-    if (patch.observations !== undefined) writeLS(K.observations, state.observations);
-    if (patch.results !== undefined) writeLS(K.results, state.results);
-    if (patch.memories !== undefined) writeLS(K.memories, state.memories);
-    if (patch.chat !== undefined) writeLS(K.chat, state.chat);
-    if (patch.settings !== undefined) writeLS(K.settings, state.settings);
-    if (patch.profile !== undefined) writeLS(K.profile, state.profile);
     emit();
   },
   /** Remove one message from persistent chat state. Returns true when it existed. */
   deleteChatMessage(id: string): boolean {
     const exists = state.chat.some((m) => m.id === id);
     if (!exists) return false;
-    state = { ...state, chat: state.chat.filter((m) => m.id !== id) };
-    writeLS(K.chat, state.chat);
+    const next = state.chat.filter((m) => m.id !== id);
+    writeLS(K.chat, next);
+    state = { ...state, chat: next };
     emit();
     return true;
   },

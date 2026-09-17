@@ -1,5 +1,6 @@
-import { speakWith, prepareUtterance } from "./voice";
+import { speakWith, prepareUtterance, stopSpeaking } from "./voice";
 import { alertBus } from "./alerts";
+import { alphaStore } from "./alpha-store";
 
 /**
  * Background alarm audio, notification, and alert presentation engine.
@@ -84,12 +85,22 @@ export async function requestAlarmPermission(): Promise<boolean> {
 
 export function fireAlarm(title: string, notes = "") {
   if (typeof window === "undefined") return;
-  prepareUtterance();
-  playChime();
+  const s = alphaStore.get().settings;
+  const isMuted = !s.voiceEnabled;
+
   notify(title, notes || "Reminder from Alpha");
   try {
     alertBus.pulse();
   } catch {}
+
+  if (isMuted) {
+    return;
+  }
+
+  // Preempt any current speech so assistant speech and alarm audio do not overlap
+  stopSpeaking();
+  prepareUtterance();
+  playChime();
   const line = notes
     ? `Excuse me — reminder: ${title}. ${notes}`
     : `Excuse me — reminder: ${title}.`;

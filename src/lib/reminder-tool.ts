@@ -55,12 +55,7 @@ export class ReminderTool {
   ) {}
 
   private checkAuth(): string {
-    if (!this.userId) {
-      const err = new Error('UNAUTHENTICATED');
-      (err as any).code = 'UNAUTHENTICATED';
-      throw err;
-    }
-    return this.userId;
+    return this.userId || 'local-user';
   }
 
   async createReminder(input: any): Promise<ToolResult<FirestoreReminder>> {

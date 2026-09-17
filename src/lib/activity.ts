@@ -224,6 +224,13 @@ export const activity = {
     listeners.forEach((l) => l(current));
   },
 
+  /**
+   * Alias for reset() to interrupt any ongoing activity.
+   */
+  interrupt(): void {
+    this.reset();
+  },
+
   sub(l: (a: Activity) => void): () => void {
     listeners.add(l);
     l(current);

@@ -2,7 +2,7 @@ import { alphaStore, uid, getStorage, PersistenceError } from "./alpha-store";
 import { speakWith, prepareUtterance } from "./voice";
 import { getAuth } from "firebase/auth";
 import {
-  FirestoreReminderRepository,
+  LocalReminderRepository,
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
@@ -71,21 +71,20 @@ export async function buildMorningBrief(options?: MorningBriefOptions): Promise<
   if (options?.reminders) {
     remindersList = options.reminders;
   } else {
-    const userId = options?.userId ?? (getAuth().currentUser?.uid || null);
-    if (userId) {
+    const currentUid = (() => {
       try {
-        const repo = options?.repo ?? new FirestoreReminderRepository();
-        remindersList = await repo.listReminders(userId);
-      } catch (err) {
-        reminderRepoFailed = true;
-        console.error("Proactive morning brief failed to read canonical reminders", err);
+        return getAuth().currentUser?.uid || null;
+      } catch {
+        return null;
       }
-    } else if (options?.repo) {
-      try {
-        remindersList = await options.repo.listReminders("anonymous");
-      } catch (err) {
-        reminderRepoFailed = true;
-      }
+    })();
+    const userId = options?.userId ?? (currentUid || "local-user");
+    try {
+      const repo = options?.repo ?? new LocalReminderRepository();
+      remindersList = await repo.listReminders(userId);
+    } catch (err) {
+      reminderRepoFailed = true;
+      console.error("Proactive morning brief failed to read canonical reminders", err);
     }
   }
 

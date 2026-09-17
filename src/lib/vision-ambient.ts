@@ -158,7 +158,7 @@ async function maybeFire() {
         text: "Ambient frame observation: In one short sentence (under 18 words) describe only what MEANINGFULLY changed in view. If nothing important changed, reply exactly: NOTHING.",
         images: [frame]
       }
-    ], { task: "fast" });
+    ], { task: "fast", disableTools: true });
 
     // Stale completion check: if disabled or superseded while in-flight, discard!
     if (executionId !== currentAmbientExecutionId || !running) {

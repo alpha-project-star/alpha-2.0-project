@@ -18,7 +18,7 @@ import { registerAlphaPWA } from "../lib/pwa";
 import { backgroundRuntime } from "../lib/background-runtime";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { useAutoMigration } from "../hooks/useAutoMigration";
-import { FirestoreReminderRepository } from "../lib/reminder-repo";
+import { LocalReminderRepository } from "../lib/reminder-repo";
 
 function NotFoundComponent() {
   return (
@@ -154,11 +154,8 @@ function MigrationAppContent() {
   const user = auth.status === 'authenticated' ? auth.user : null;
 
   useEffect(() => {
-    if (user) {
-      backgroundRuntime.setUser(user.uid, new FirestoreReminderRepository());
-    } else if (auth.status === 'unauthenticated' || auth.status === 'error') {
-      backgroundRuntime.setUser(undefined);
-    }
+    const effectiveUid = user?.uid || "local-user";
+    backgroundRuntime.setUser(effectiveUid, new LocalReminderRepository());
   }, [auth.status, user]);
 
   return (

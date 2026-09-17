@@ -55,11 +55,11 @@ describe('Phase 11 - Background Runtime & Lifecycle Coordination', () => {
     (globalThis as any).window = mockWin;
     (globalThis as any).document = mockDoc;
 
-    temporal.setMockDate(new Date('2026-09-17T08:00:00Z'));
     backgroundRuntime.stop();
   });
 
   afterEach(() => {
+    temporal.setMockDate(null);
     backgroundRuntime.stop();
     vi.restoreAllMocks();
     if (originalWindow !== undefined) {

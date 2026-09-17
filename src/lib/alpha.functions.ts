@@ -959,20 +959,20 @@ CONSTRAINTS:
 
 export async function sendChat(
   history: ChatMessage[],
-  opts: { task?: TaskType; signal?: AbortSignal } = {},
+  opts: { task?: TaskType; signal?: AbortSignal; disableTools?: boolean } = {},
 ): Promise<string> {
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
   // Duplicate submissions (double tap, re-render, voice + button) share one request.
   if (inFlight && inFlight.key === key) return inFlight.promise;
-  const promise = runChat(history, task, opts.signal).finally(() => {
+  const promise = runChat(history, task, opts.signal, opts.disableTools).finally(() => {
     if (inFlight?.key === key) inFlight = null;
   });
   inFlight = { key, promise };
   return promise;
 }
 
-async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSignal): Promise<string> {
+async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSignal, disableTools?: boolean): Promise<string> {
   const s = alphaStore.get().settings;
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
   const currentUid = getAuth().currentUser?.uid || null;
@@ -1108,7 +1108,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           allowImages: hasImages,
           maxTokens,
           historyTurns,
-          tools: REMINDER_TOOLS,
+          tools: disableTools ? [] : REMINDER_TOOLS,
           signal,
         });
       } catch (err: any) {
