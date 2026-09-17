@@ -15,9 +15,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import "katex/dist/katex.min.css";
 import { AlphaLock } from "../components/AlphaLock";
 import { registerAlphaPWA } from "../lib/pwa";
-import { startAlarmEngine } from "../lib/alarm-engine";
-import { startProactive } from "../lib/proactive";
-import { reminderScheduler } from "../lib/reminder-scheduler";
+import { backgroundRuntime } from "../lib/background-runtime";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { useAutoMigration } from "../hooks/useAutoMigration";
 import { FirestoreReminderRepository } from "../lib/reminder-repo";
@@ -137,10 +135,8 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   useEffect(() => {
     registerAlphaPWA();
-    startAlarmEngine();
-    startProactive();
-    reminderScheduler.start();
-    return () => reminderScheduler.stop();
+    backgroundRuntime.start();
+    return () => backgroundRuntime.stop();
   }, []);
 
   return (
@@ -159,9 +155,9 @@ function MigrationAppContent() {
 
   useEffect(() => {
     if (user) {
-      reminderScheduler.setUser(user.uid, new FirestoreReminderRepository());
+      backgroundRuntime.setUser(user.uid, new FirestoreReminderRepository());
     } else if (auth.status === 'unauthenticated' || auth.status === 'error') {
-      reminderScheduler.setUser(undefined);
+      backgroundRuntime.setUser(undefined);
     }
   }, [auth.status, user]);
 

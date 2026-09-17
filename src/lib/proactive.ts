@@ -1,4 +1,4 @@
-import { alphaStore, uid, getStorage } from "./alpha-store";
+import { alphaStore, uid, getStorage, PersistenceError } from "./alpha-store";
 import { speakWith, prepareUtterance } from "./voice";
 import { getAuth } from "firebase/auth";
 import {
@@ -30,13 +30,18 @@ function todayKey(): string {
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
 function readOnce(key: string): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
   try {
-    const storage = getStorage();
-    if (!storage) return false;
     if (storage.getItem(key) === todayKey()) return false;
     storage.setItem(key, todayKey());
     return true;
-  } catch { return false; }
+  } catch (err) {
+    if (err && typeof err === "object" && (err as any).name === "PersistenceError") {
+      throw err;
+    }
+    throw new PersistenceError(key, err);
+  }
 }
 
 function speakAndLog(line: string) {
@@ -166,16 +171,64 @@ export async function tick(force = false, options?: MorningBriefOptions) {
 
 let started = false;
 let intervalId: number | null = null;
+let startupTimerId: number | null = null;
+
+const onVisibilityChange = () => {
+  if (typeof document !== "undefined" && !document.hidden && started) {
+    void tick().catch((err) => console.error("Proactive visibility tick error:", err));
+  }
+};
+
+export function isProactiveStarted(): boolean {
+  return started;
+}
+
 export function startProactive() {
   if (started || typeof window === "undefined") return;
   started = true;
+
+  if (startupTimerId !== null) {
+    window.clearTimeout(startupTimerId);
+    startupTimerId = null;
+  }
+  if (intervalId !== null) {
+    window.clearInterval(intervalId);
+    intervalId = null;
+  }
+
   // Small delay after boot so chat store is warm and audio is unlockable.
-  window.setTimeout(() => tick(), 8000);
-  intervalId = window.setInterval(() => tick(), 5 * 60 * 1000) as unknown as number;
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  startupTimerId = window.setTimeout(() => {
+    startupTimerId = null;
+    if (started) {
+      void tick().catch((err) => console.error("Proactive startup tick error:", err));
+    }
+  }, 8000) as unknown as number;
+
+  intervalId = window.setInterval(() => {
+    if (started) {
+      void tick().catch((err) => console.error("Proactive interval tick error:", err));
+    }
+  }, 5 * 60 * 1000) as unknown as number;
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibilityChange);
+  }
 }
 
 export function stopProactive() {
   started = false;
-  if (intervalId != null) { clearInterval(intervalId); intervalId = null; }
+
+  if (startupTimerId !== null) {
+    if (typeof window !== "undefined") window.clearTimeout(startupTimerId);
+    startupTimerId = null;
+  }
+
+  if (intervalId !== null) {
+    if (typeof window !== "undefined") window.clearInterval(intervalId);
+    intervalId = null;
+  }
+
+  if (typeof document !== "undefined") {
+    document.removeEventListener("visibilitychange", onVisibilityChange);
+  }
 }

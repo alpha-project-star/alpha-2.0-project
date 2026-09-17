@@ -96,6 +96,10 @@ export function fireAlarm(title: string, notes = "") {
   void speakWith(line);
 }
 
+export function isAlarmEngineStarted(): boolean {
+  return started;
+}
+
 export function startAlarmEngine() {
   if (started) return;
   if (typeof window === "undefined") return;
