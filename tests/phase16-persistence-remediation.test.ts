@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { getStorage, writeLS, PersistenceError } from "../src/lib/alpha-store";
+import { getStorage, writeLS, PersistenceError, alphaStore } from "../src/lib/alpha-store";
 
 describe("Phase 16 - AL-01 LocalStorage Persistence Truthfulness Regression Tests", () => {
   let originalWindow: any;
@@ -82,5 +82,25 @@ describe("Phase 16 - AL-01 LocalStorage Persistence Truthfulness Regression Test
 
     const result = writeLS("unavailable_key", { hello: "world" });
     expect(result.status).toBe("unavailable");
+  });
+
+  it("5. When clearChat summary removal fails, alphaStore.clearChat throws PersistenceError", () => {
+    const mockLocalStorage = {
+      getItem: vi.fn(),
+      setItem: vi.fn(),
+      removeItem: vi.fn((key: string) => {
+        if (key === "alpha.summary.v1") {
+          throw new Error("Storage failure during summary deletion");
+        }
+      }),
+    };
+
+    (globalThis as any).window = {
+      localStorage: mockLocalStorage,
+    };
+
+    expect(() => {
+      alphaStore.clearChat();
+    }).toThrow(PersistenceError);
   });
 });

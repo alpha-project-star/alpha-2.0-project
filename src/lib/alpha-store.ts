@@ -520,9 +520,7 @@ export const alphaStore = {
   clearChat() {
     state = { ...state, chat: [] };
     writeLS(K.chat, state.chat);
-    try {
-      getStorage()?.removeItem(K.summary);
-    } catch {}
+    conversationSummary.clear();
     reminderContextManager.clear();
     try {
       import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
