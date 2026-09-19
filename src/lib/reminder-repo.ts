@@ -66,24 +66,61 @@ export class LocalReminderRepository implements ReminderRepository {
   }
 
   private load(userId: string): Map<string, FirestoreReminder> {
+    if (this.shouldFail) {
+      throw new PersistenceError(this.storageKey(userId), new Error(this.failureError));
+    }
     const storage = getStorage();
     if (!storage) {
       return this.store;
     }
+    const key = this.storageKey(userId);
+    let raw: string | null;
     try {
-      const raw = storage.getItem(this.storageKey(userId));
-      if (!raw) return new Map();
-      const list: FirestoreReminder[] = JSON.parse(raw);
-      const map = new Map<string, FirestoreReminder>();
-      if (Array.isArray(list)) {
-        for (const item of list) {
-          map.set(item.id, item);
-        }
-      }
-      return map;
-    } catch {
+      raw = storage.getItem(key);
+    } catch (readErr) {
+      throw new PersistenceError(key, readErr);
+    }
+
+    // Case 1: No stored reminder data (missing key or genuinely empty string)
+    if (raw === null || raw.trim() === "") {
       return new Map();
     }
+
+    // Case 2 & 3: Parse and validate stored JSON
+    let list: unknown;
+    try {
+      list = JSON.parse(raw);
+    } catch (jsonErr) {
+      throw new PersistenceError(
+        key,
+        new Error(`Malformed JSON in reminder storage: ${jsonErr instanceof Error ? jsonErr.message : String(jsonErr)}`)
+      );
+    }
+
+    if (!Array.isArray(list)) {
+      throw new PersistenceError(key, new Error("Invalid reminder storage structure: expected an array"));
+    }
+
+    const map = new Map<string, FirestoreReminder>();
+    for (const item of list) {
+      if (
+        !item ||
+        typeof item !== "object" ||
+        typeof (item as Record<string, unknown>).id !== "string" ||
+        !(item as { id: string }).id.trim() ||
+        typeof (item as Record<string, unknown>).title !== "string" ||
+        typeof (item as Record<string, unknown>).dueAt !== "number" ||
+        isNaN((item as { dueAt: number }).dueAt) ||
+        !isFinite((item as { dueAt: number }).dueAt)
+      ) {
+        throw new PersistenceError(
+          key,
+          new Error("Invalid reminder record in storage: missing id, title, or valid numeric dueAt")
+        );
+      }
+      map.set((item as FirestoreReminder).id, item as FirestoreReminder);
+    }
+    return map;
   }
 
   private save(userId: string, map: Map<string, FirestoreReminder>): void {

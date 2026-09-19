@@ -32,15 +32,22 @@ function RemindersRoute() {
 
   useEffect(() => {
     const loadReminders = () => {
-      repo.listReminders(userId).then(list => {
-        setReminders(list.map(r => ({
-          id: r.id,
-          title: r.title,
-          when: new Date(r.dueAt).toLocaleString(),
-          notes: r.notes || "",
-          state: r.reminderState
-        })));
-      });
+      repo
+        .listReminders(userId)
+        .then((list) => {
+          setReminders(
+            list.map((r) => ({
+              id: r.id,
+              title: r.title,
+              when: new Date(r.dueAt).toLocaleString(),
+              notes: r.notes || "",
+              state: r.reminderState,
+            }))
+          );
+        })
+        .catch((err) => {
+          console.error("Failed to load reminders:", err);
+        });
     };
 
     loadReminders();
@@ -50,15 +57,22 @@ function RemindersRoute() {
   }, [userId, repo]);
 
   const loadRemindersForSave = () => {
-    repo.listReminders(userId).then(list => {
-      setReminders(list.map(r => ({
-        id: r.id,
-        title: r.title,
-        when: new Date(r.dueAt).toLocaleString(),
-        notes: r.notes || "",
-        state: r.reminderState
-      })));
-    });
+    repo
+      .listReminders(userId)
+      .then((list) => {
+        setReminders(
+          list.map((r) => ({
+            id: r.id,
+            title: r.title,
+            when: new Date(r.dueAt).toLocaleString(),
+            notes: r.notes || "",
+            state: r.reminderState,
+          }))
+        );
+      })
+      .catch((err) => {
+        console.error("Failed to load reminders for save:", err);
+      });
   };
 
   async function enableAlarms() {
