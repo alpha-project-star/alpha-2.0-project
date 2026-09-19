@@ -56,6 +56,8 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
   function setupWebLocksMock() {
     let concurrentExecutions = 0;
     let maxConcurrent = 0;
+    let lockAcquisitionAttempts = 0;
+    let lockContentionRejections = 0;
 
     const mockLocks = {
       request: vi.fn(
@@ -74,7 +76,14 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
             throw err;
           }
 
+          if (name === EXECUTION_LOCK_NAME) {
+            lockAcquisitionAttempts++;
+          }
+
           if (opts.ifAvailable && activeLocks.has(name)) {
+            if (name === EXECUTION_LOCK_NAME) {
+              lockContentionRejections++;
+            }
             // Lock is currently held; ifAvailable returns null immediately
             return cb(null);
           }
@@ -129,6 +138,8 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
     return {
       mockLocks,
       getMaxConcurrent: () => maxConcurrent,
+      getLockAcquisitionAttempts: () => lockAcquisitionAttempts,
+      getLockContentionRejections: () => lockContentionRejections,
     };
   }
 
@@ -168,7 +179,8 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
 
   describe("Test B — Web Locks contention with real execution path", () => {
     it("guarantees maximum concurrent protected executions === 1 under simultaneous triggers", async () => {
-      const { getMaxConcurrent } = setupWebLocksMock();
+      const { getMaxConcurrent, getLockAcquisitionAttempts, getLockContentionRejections } =
+        setupWebLocksMock();
 
       vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,sampleframe");
 
@@ -182,7 +194,7 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
         });
       });
 
-      // 1. Start ambient vision through production function
+      // 1. Start ambient vision through production function and establish leadership
       const started = startVisionAmbient();
       expect(started).toBe(true);
       expect(isVisionAmbient()).toBe(true);
@@ -192,18 +204,28 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
       expect(isVisionAmbientLeader()).toBe(true);
       expect(brightnessCallback).toBeTypeOf("function");
 
-      // 2. Trigger motion to build momentum and initiate fire via real production path
+      // 2. Trigger motion to build momentum and initiate Execution A via real production path
       brightnessCallback!({ motion: 1.0, mean: 0.5 });
 
-      // 3. Immediately trigger a second concurrent maybeFire() while first is in-flight
-      const secondFirePromise = maybeFire();
-
-      // Ensure that only 1 execution entered the critical section and called sendChat
+      // Allow Execution A to enter the execution lock and begin in-flight sendChat
+      await Promise.resolve();
       expect(chatInvocationCount).toBe(1);
 
-      // Resolve the in-flight chat
-      resolveChat1("Scene update 1");
+      // 3. While Execution A is actively holding the execution lock, Execution B attempts to execute
+      // via brightness motion callback
+      brightnessCallback!({ motion: 1.0, mean: 0.5 });
+      const secondFirePromise = maybeFire();
+
       await secondFirePromise;
+
+      // Ensure that Execution B was rejected by ifAvailable: true while Execution A held the lock
+      expect(chatInvocationCount).toBe(1);
+      expect(getLockAcquisitionAttempts()).toBeGreaterThanOrEqual(2);
+      expect(getLockContentionRejections()).toBeGreaterThanOrEqual(1);
+
+      // 4. Resolve the in-flight Execution A chat
+      resolveChat1("Scene update 1");
+      await new Promise((r) => setTimeout(r, 0));
 
       // Verify that concurrent executions never exceeded 1
       expect(getMaxConcurrent()).toBe(1);
@@ -270,32 +292,31 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
     });
   });
 
-  describe("Test E — Lease expiry / takeover by subsequent context", () => {
+  describe("Test E — Web Locks leadership release and takeover by subsequent context", () => {
     it("allows a subsequent context to acquire leadership and execute when the previous leader releases the lock", async () => {
       setupWebLocksMock();
       vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,frame");
       const sendChatSpy = vi.spyOn(alphaFunctions, "sendChat").mockResolvedValue("Takeover observation");
 
-      // 1. Context 1 starts ambient vision and becomes leader
+      // 1. Context A starts ambient vision and acquires leadership Web Lock
       startVisionAmbient();
       await Promise.resolve();
       expect(isVisionAmbientLeader()).toBe(true);
 
-      // 2. Context 1 stops and releases the leader lock
+      // 2. Context A stops ambient vision and releases the leadership Web Lock
       stopVisionAmbient();
-      // Allow abort signal and lock cleanup to complete
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 0));
       expect(isVisionAmbientLeader()).toBe(false);
 
-      // 3. Context 2 starts ambient vision
-      const startedContext2 = startVisionAmbient();
-      expect(startedContext2).toBe(true);
-      await Promise.resolve();
+      // 3. Context B starts ambient vision and acquires the newly available leadership Web Lock
+      const startedContextB = startVisionAmbient();
+      expect(startedContextB).toBe(true);
+      await new Promise((r) => setTimeout(r, 0));
       expect(isVisionAmbientLeader()).toBe(true);
 
-      // 4. Context 2 receives motion event and fires execution successfully
+      // 4. Context B receives motion event and fires execution successfully
       brightnessCallback!({ motion: 1.0, mean: 0.5 });
-      await new Promise((r) => setTimeout(r, 10));
+      await new Promise((r) => setTimeout(r, 0));
 
       expect(sendChatSpy).toHaveBeenCalledTimes(1);
     });
