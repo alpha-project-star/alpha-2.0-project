@@ -252,6 +252,7 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
 
   let activeReminderText = "";
   try {
+    const currentUid = auth.currentUser?.uid || "local-user";
     if (currentUid) {
       const activeCtx = reminderContextManager.getContext(currentUid);
       if (activeCtx) {

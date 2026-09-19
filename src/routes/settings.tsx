@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { alphaStore, useAlpha, type Settings } from "../lib/alpha-store";
 import { listVoices, speakWith, testKokoroTTS } from "../lib/voice";
+import { ttsManager } from "../lib/audio-subsystem/tts-manager";
 import { listOllamaModels } from "../lib/ollama";
 import { testAlarmNow, requestAlarmPermission } from "../lib/alarm-engine";
 import {
@@ -191,8 +192,8 @@ function SettingsRoute() {
         return;
       }
 
-      if (res.audio) {
-        res.audio.play().catch(() => {});
+      if (res.blob) {
+        void ttsManager.speak(res.blob);
       }
 
       const sizeKb = ((res.blobSize || 0) / 1024).toFixed(1);

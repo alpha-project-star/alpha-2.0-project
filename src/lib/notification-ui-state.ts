@@ -54,7 +54,7 @@ export async function resolveNotificationStatus(
   if (reminderId) {
     try {
       const durableMatch = await reminderRepo.getReminder(cleanUid, reminderId);
-      if (durableMatch && (durableMatch.reminderState === 'completed' || durableMatch.isCompleted)) {
+      if (durableMatch && durableMatch.reminderState === 'completed') {
         return 'completed';
       }
     } catch {
@@ -175,7 +175,7 @@ export function useNotificationUIState() {
       const allReminders = await reminderRepo.listReminders(targetUid);
       const doneIds = new Set(
         allReminders
-          .filter((r) => r.reminderState === 'completed' || r.isCompleted)
+          .filter((r) => r.reminderState === 'completed')
           .map((r) => r.id),
       );
       setCompletedReminderIds(doneIds);
