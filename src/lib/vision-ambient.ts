@@ -3,10 +3,17 @@
  * vision model when the scene actually changes. Debounced + hard-capped.
  *
  * Multi-Tab Coordination Architecture:
- * 1. Primary: Browser-native Web Locks API (navigator.locks) provides origin-wide
- *    exclusive mutual exclusion for both leadership election and critical execution sections.
- * 2. Fallback: Storage lease protocol with read-write-verify, heartbeat renewal,
- *    and storage event cancellation for environments without Web Locks.
+ * 1. Mutual Exclusion Guarantee:
+ *    Cross-context coordination requires the browser-standard Web Locks API (navigator.locks).
+ *    Because localStorage lacks an atomic Compare-And-Swap (CAS) primitive, localStorage-based
+ *    coordination cannot provide a mathematically sound mutual-exclusion guarantee.
+ * 2. Deliberate Architectural Policy:
+ *    - In environments where Web Locks is available, Alpha establishes an origin-wide leader
+ *      via `navigator.locks.request(LEADER_LOCK_NAME, ...)` and enforces non-overlapping
+ *      execution via `navigator.locks.request(EXECUTION_LOCK_NAME, { mode: "exclusive", ifAvailable: true })`.
+ *    - In environments where Web Locks is unavailable (navigator.locks === undefined),
+ *      ambient multi-tab execution is explicitly disabled (graceful unsupported state)
+ *      to prevent dangerous duplicate execution and API quota exhaustion.
  */
 import { alphaStore, uid, getStorage } from "./alpha-store";
 import { captureFrame, isActive as eyeActive, subscribeBrightness } from "./vision-stream";
@@ -21,14 +28,10 @@ let momentum = 0;
 export const HARD_CAP_PER_HOUR = 12;
 export const AMBIENT_COUNTER_KEY = "alpha_ambient_hourly_counter";
 export const AMBIENT_RESET_KEY = "alpha_ambient_hourly_reset_at";
-export const LEASE_OWNER_KEY = "alpha_ambient_lease_owner";
-export const LEASE_EXPIRES_KEY = "alpha_ambient_lease_expires_at";
-export const LEASE_DURATION_MS = 6000;
 
 export const LEADER_LOCK_NAME = "alpha_vision_ambient_leader";
 export const EXECUTION_LOCK_NAME = "alpha_vision_ambient_execution";
 
-let heartbeatInterval: number | null = null;
 let isLeader = false;
 let leaderAbortController: AbortController | null = null;
 export const tabId =
@@ -37,8 +40,30 @@ export const tabId =
     : Math.random().toString(36).slice(2) + Date.now().toString(36);
 let currentAmbientExecutionId = 0;
 
+/**
+ * Checks if the Web Locks API is supported by the current environment.
+ */
+export function isWebLocksSupported(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    typeof navigator.locks !== "undefined" &&
+    typeof navigator.locks.request === "function"
+  );
+}
+
+/**
+ * Ambient vision requires Web Locks for cross-context mutual exclusion.
+ */
+export function isVisionAmbientSupported(): boolean {
+  return isWebLocksSupported();
+}
+
 export function isVisionAmbientLeader(): boolean {
   return isLeader;
+}
+
+export function isVisionAmbient(): boolean {
+  return running;
 }
 
 export function getHourlyState(): { count: number; resetAt: number } {
@@ -62,118 +87,21 @@ export function updateHourlyState(count: number, resetAt: number) {
   } catch {}
 }
 
-export function tryAcquireOrRenewLease(): boolean {
-  const storage = getStorage();
-  if (!storage) return false;
-  const now = Date.now();
-  const currentOwner = storage.getItem(LEASE_OWNER_KEY);
-  const expiresAt = Number(storage.getItem(LEASE_EXPIRES_KEY) || "0");
-
-  const leaseExpired = isNaN(expiresAt) || now > expiresAt;
-  const isOwner = currentOwner === tabId;
-
-  if (isOwner) {
-    try {
-      storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
-      return storage.getItem(LEASE_OWNER_KEY) === tabId;
-    } catch {
-      return false;
-    }
-  }
-
-  if (leaseExpired || !currentOwner) {
-    try {
-      storage.setItem(LEASE_OWNER_KEY, tabId);
-      storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
-      // Re-read to confirm our write succeeded and was not clobbered by a racing tab
-      const confirmedOwner = storage.getItem(LEASE_OWNER_KEY);
-      return confirmedOwner === tabId;
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 export function revalidateLeadership(): boolean {
-  // If Web Locks is active and we are leader, verify lock is not aborted
-  if (leaderAbortController && !leaderAbortController.signal.aborted && isLeader) {
-    return true;
-  }
-
-  const storage = getStorage();
-  if (!storage) return false;
-  const now = Date.now();
-  const currentOwner = storage.getItem(LEASE_OWNER_KEY);
-  const expiresAt = Number(storage.getItem(LEASE_EXPIRES_KEY) || "0");
-
-  if (currentOwner !== tabId || isNaN(expiresAt) || now > expiresAt) {
+  if (!isWebLocksSupported()) {
     isLeader = false;
     return false;
   }
-  try {
-    storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
-    const confirmedOwner = storage.getItem(LEASE_OWNER_KEY);
-    if (confirmedOwner !== tabId) {
-      isLeader = false;
-      return false;
-    }
-    isLeader = true;
-    return true;
-  } catch {
+  if (!leaderAbortController || leaderAbortController.signal.aborted) {
     isLeader = false;
     return false;
   }
-}
-
-export function releaseLease() {
-  try {
-    const storage = getStorage();
-    if (storage && storage.getItem(LEASE_OWNER_KEY) === tabId) {
-      storage.removeItem(LEASE_OWNER_KEY);
-      storage.removeItem(LEASE_EXPIRES_KEY);
-    }
-  } catch {}
-}
-
-if (typeof window !== "undefined") {
-  window.addEventListener("storage", (e) => {
-    if (e.key === LEASE_OWNER_KEY && e.newValue !== tabId) {
-      isLeader = false;
-    }
-  });
-  window.addEventListener("beforeunload", () => {
-    if (isLeader) releaseLease();
-  });
-  window.addEventListener("pagehide", () => {
-    if (isLeader) releaseLease();
-  });
-}
-
-function startLeadershipTickFallback() {
-  if (heartbeatInterval != null) return;
-  
-  const tick = () => {
-    if (!running) return;
-    isLeader = tryAcquireOrRenewLease();
-  };
-  
-  tick();
-  heartbeatInterval = window.setInterval(tick, 2000) as unknown as number;
-}
-
-function stopLeadershipTickFallback() {
-  if (heartbeatInterval != null) {
-    clearInterval(heartbeatInterval);
-    heartbeatInterval = null;
-  }
-  isLeader = false;
-  releaseLease();
+  return isLeader;
 }
 
 async function startLeadershipWebLocks(): Promise<void> {
-  if (typeof navigator === "undefined" || !navigator.locks) {
-    startLeadershipTickFallback();
+  if (!isWebLocksSupported()) {
+    isLeader = false;
     return;
   }
 
@@ -187,95 +115,90 @@ async function startLeadershipWebLocks(): Promise<void> {
       async () => {
         if (!running || signal.aborted) return;
         isLeader = true;
-        tryAcquireOrRenewLease();
 
-        // Maintain leadership state and lease renewal while holding the lock
+        // Hold leadership lock until aborted or stopped
         await new Promise<void>((resolve) => {
-          const interval = setInterval(() => {
-            if (!running || signal.aborted) {
-              clearInterval(interval);
-              resolve();
-              return;
-            }
-            tryAcquireOrRenewLease();
-          }, 2000);
-
-          signal.addEventListener("abort", () => {
-            clearInterval(interval);
+          if (signal.aborted) {
             resolve();
-          });
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
         });
       }
     );
   } catch (err: unknown) {
     const isAbort = err instanceof Error && err.name === "AbortError";
-    if (!isAbort && running) {
-      // If Web Locks throws unexpectedly, fallback to lease protocol
-      startLeadershipTickFallback();
+    if (!isAbort) {
+      // Non-abort error: ensure leader state is false
+      isLeader = false;
     }
   } finally {
     isLeader = false;
-    releaseLease();
   }
 }
 
-export function startVisionAmbient(): void {
-  if (running || !eyeActive()) return;
+export function startVisionAmbient(): boolean {
+  if (running) return true;
+  if (!eyeActive()) return false;
+
+  if (!isWebLocksSupported()) {
+    console.warn(
+      "[AmbientVision] Web Locks API is unavailable in this environment. Ambient vision is disabled to prevent duplicate executions."
+    );
+    running = false;
+    isLeader = false;
+    return false;
+  }
+
   running = true;
   momentum = 0;
-  
-  if (typeof navigator !== "undefined" && navigator.locks) {
-    void startLeadershipWebLocks();
-  } else {
-    startLeadershipTickFallback();
-  }
-  
+
+  void startLeadershipWebLocks();
+
   unsub = subscribeBrightness((s) => {
     // Exponential momentum on motion so momentary spikes don't trigger.
     momentum = momentum * 0.7 + s.motion * 0.3;
     void maybeFire();
   });
+
+  return true;
 }
 
 export function stopVisionAmbient(): void {
   running = false;
+  isLeader = false;
+  lastFireAt = 0;
+  momentum = 0;
   currentAmbientExecutionId = 0; // Invalidate any running queries
-  
+
   if (leaderAbortController) {
     leaderAbortController.abort();
     leaderAbortController = null;
   }
-  stopLeadershipTickFallback();
-  
+
   if (unsub) {
     unsub();
     unsub = null;
   }
 }
 
-export function isVisionAmbient(): boolean {
-  return running;
-}
-
 export async function maybeFire(): Promise<void> {
-  if (!running || !isLeader || !revalidateLeadership()) return;
-
-  // If Web Locks API is available, use exclusive non-blocking execution lock
-  if (typeof navigator !== "undefined" && navigator.locks) {
-    await navigator.locks.request(
-      EXECUTION_LOCK_NAME,
-      { mode: "exclusive", ifAvailable: true },
-      async (lock) => {
-        if (!lock) {
-          // Another ambient execution is actively in-flight
-          return;
-        }
-        await executeAmbientScan();
-      }
-    );
-  } else {
-    await executeAmbientScan();
+  if (!running || !isLeader || !revalidateLeadership() || !isWebLocksSupported()) {
+    return;
   }
+
+  // Exclusive non-blocking execution lock
+  await navigator.locks.request(
+    EXECUTION_LOCK_NAME,
+    { mode: "exclusive", ifAvailable: true },
+    async (lock) => {
+      if (!lock) {
+        // Another ambient execution is actively in-flight
+        return;
+      }
+      await executeAmbientScan();
+    }
+  );
 }
 
 async function executeAmbientScan(): Promise<void> {
@@ -297,7 +220,7 @@ async function executeAmbientScan(): Promise<void> {
     // Gracefully disable ambient vision when cap is reached
     stopVisionAmbient();
     alphaStore.setSettings({ visionAmbientEnabled: false });
-    
+
     const limitMsg = "Ambient vision has been paused because it reached the hourly limit of 12 scans.";
     alphaStore.appendChat({
       id: uid(),
@@ -305,7 +228,7 @@ async function executeAmbientScan(): Promise<void> {
       text: `⚠️ ${limitMsg}`,
       ts: Date.now(),
     });
-    
+
     void speakWith(limitMsg, { auto: true });
     return;
   }
@@ -332,8 +255,8 @@ async function executeAmbientScan(): Promise<void> {
       },
     ], { task: "fast", disableTools: true });
 
-    // Stale completion check: if disabled or superseded while in-flight, discard!
-    if (executionId !== currentAmbientExecutionId || !running || !isLeader) {
+    // Stale completion check: if disabled, superseded, or lost leadership while in-flight, discard!
+    if (executionId !== currentAmbientExecutionId || !running || !isLeader || !revalidateLeadership()) {
       return;
     }
 
@@ -345,7 +268,7 @@ async function executeAmbientScan(): Promise<void> {
     if (!trimmed || /^nothing\b/i.test(trimmed)) return;
 
     alphaStore.appendChat({ id: uid(), role: "model", text: `👁 ${trimmed}`, ts: Date.now() });
-    
+
     // Speak using canonical speech manager and respect autoSpeak!
     void speakWith(trimmed, { auto: true });
   } catch {

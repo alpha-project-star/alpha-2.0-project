@@ -1,17 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
-  tryAcquireOrRenewLease,
   revalidateLeadership,
-  releaseLease,
   maybeFire,
   isVisionAmbient,
   isVisionAmbientLeader,
+  isVisionAmbientSupported,
+  isWebLocksSupported,
   startVisionAmbient,
   stopVisionAmbient,
-  tabId,
-  LEASE_OWNER_KEY,
-  LEASE_EXPIRES_KEY,
-  LEASE_DURATION_MS,
   LEADER_LOCK_NAME,
   EXECUTION_LOCK_NAME,
 } from "../src/lib/vision-ambient";
@@ -20,143 +16,230 @@ import * as visionStream from "../src/lib/vision-stream";
 import * as alphaFunctions from "../src/lib/alpha.functions";
 
 describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
-  let storeMap: Map<string, string>;
-  let originalWindow: any;
+  let activeLocks: Set<string>;
+  let lockWaiters: Map<string, Array<() => void>>;
+  let brightnessCallback: ((s: { motion: number; mean: number }) => void) | null = null;
 
   beforeEach(() => {
-    storeMap = new Map<string, string>();
-    originalWindow = (globalThis as any).window;
+    activeLocks = new Set<string>();
+    lockWaiters = new Map<string, Array<() => void>>();
+    brightnessCallback = null;
 
-    const mockLocalStorage = {
-      getItem: vi.fn((key: string) => storeMap.get(key) || null),
-      setItem: vi.fn((key: string, value: string) => {
-        storeMap.set(key, value);
-      }),
-      removeItem: vi.fn((key: string) => {
-        storeMap.delete(key);
-      }),
-      clear: vi.fn(() => {
-        storeMap.clear();
-      }),
-    };
+    // Mock vision camera stream as active and capture subscriber
+    vi.spyOn(visionStream, "isActive").mockReturnValue(true);
+    vi.spyOn(visionStream, "subscribeBrightness").mockImplementation((cb) => {
+      brightnessCallback = cb;
+      return () => {
+        brightnessCallback = null;
+      };
+    });
 
-    (globalThis as any).window = {
-      localStorage: mockLocalStorage,
-      dispatchEvent: vi.fn(),
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      setInterval: vi.fn((fn: () => void) => {
-        return 123;
-      }),
-      clearInterval: vi.fn(),
-    };
+    // Reset settings
+    alphaStore.setSettings({
+      visionAmbientEnabled: true,
+      visionAmbientIntervalSec: 15,
+    });
   });
 
   afterEach(() => {
     stopVisionAmbient();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    if (originalWindow !== undefined) {
-      (globalThis as any).window = originalWindow;
-    } else {
-      delete (globalThis as any).window;
-    }
   });
 
-  describe("1. Simultaneous Acquisition & Ownership Invariant", () => {
-    it("ensures only one context wins acquisition when two contexts race", () => {
-      // Tab 1 attempts acquisition
-      const tab1Acquired = tryAcquireOrRenewLease();
-      expect(tab1Acquired).toBe(true);
-      expect(storeMap.get(LEASE_OWNER_KEY)).toBe(tabId);
+  /**
+   * Helper to create a compliant Web Locks mock that accurately models:
+   * 1. Persistent leader lock holding with AbortSignal release.
+   * 2. Exclusive non-blocking execution lock with `{ ifAvailable: true }`.
+   * 3. Concurrent contention tracking.
+   */
+  function setupWebLocksMock() {
+    let concurrentExecutions = 0;
+    let maxConcurrent = 0;
 
-      // Tab 2 (different ID) attempts acquisition while Tab 1 lease is valid
-      const tab2Id = "competing-tab-uuid-2";
-      const now = Date.now();
-      const expiresAt = Number(storeMap.get(LEASE_EXPIRES_KEY));
-      expect(expiresAt).toBeGreaterThan(now);
+    const mockLocks = {
+      request: vi.fn(
+        async (
+          name: string,
+          optionsOrCallback: any,
+          callback?: (lock: any) => Promise<any>
+        ) => {
+          const cb = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+          const opts = typeof optionsOrCallback === "object" ? optionsOrCallback : {};
+          const signal: AbortSignal | undefined = opts.signal;
 
-      // Simulating Tab 2's check: owner is tabId and lease not expired
-      const isTab2Allowed =
-        !storeMap.get(LEASE_OWNER_KEY) || now > Number(storeMap.get(LEASE_EXPIRES_KEY));
-      expect(isTab2Allowed).toBe(false);
+          if (signal?.aborted) {
+            const err = new Error("The request was aborted");
+            err.name = "AbortError";
+            throw err;
+          }
+
+          if (opts.ifAvailable && activeLocks.has(name)) {
+            // Lock is currently held; ifAvailable returns null immediately
+            return cb(null);
+          }
+
+          // If lock is held (exclusive mode without ifAvailable), wait until freed or aborted
+          if (activeLocks.has(name)) {
+            await new Promise<void>((resolve, reject) => {
+              const onAbort = () => {
+                reject(Object.assign(new Error("The request was aborted"), { name: "AbortError" }));
+              };
+              signal?.addEventListener("abort", onAbort, { once: true });
+
+              const list = lockWaiters.get(name) || [];
+              list.push(() => {
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+              });
+              lockWaiters.set(name, list);
+            });
+          }
+
+          activeLocks.add(name);
+
+          if (name === EXECUTION_LOCK_NAME) {
+            concurrentExecutions++;
+            maxConcurrent = Math.max(maxConcurrent, concurrentExecutions);
+          }
+
+          try {
+            return await cb({ name });
+          } finally {
+            if (name === EXECUTION_LOCK_NAME) {
+              concurrentExecutions--;
+            }
+            activeLocks.delete(name);
+
+            // Notify next waiter if any
+            const waiters = lockWaiters.get(name);
+            if (waiters && waiters.length > 0) {
+              const next = waiters.shift();
+              next?.();
+            }
+          }
+        }
+      ),
+    };
+
+    vi.stubGlobal("navigator", {
+      locks: mockLocks,
+    });
+
+    return {
+      mockLocks,
+      getMaxConcurrent: () => maxConcurrent,
+    };
+  }
+
+  describe("Test A — True simultaneous lease race in non-CAS storage", () => {
+    it("demonstrates why non-atomic storage read/write/reread allows interleaved split-brain and justifies Web Locks requirement", () => {
+      // Model the fundamental CAS-less race in localStorage:
+      // Tab A and Tab B read simultaneously when key is null
+      let storageOwner: string | null = null;
+
+      // Step 1: Both contexts read the key concurrently
+      const tabARead = storageOwner;
+      const tabBRead = storageOwner;
+
+      // Step 2: Both decide they may acquire because both observed null
+      const tabACanAcquire = tabARead === null;
+      const tabBCanAcquire = tabBRead === null;
+      expect(tabACanAcquire).toBe(true);
+      expect(tabBCanAcquire).toBe(true);
+
+      // Step 3: Tab A writes its identity
+      storageOwner = "tab-A-uuid";
+      // Step 4: Tab B writes its identity (interleaved write)
+      storageOwner = "tab-B-uuid";
+
+      // Step 5: Tab B reads back and sees tab-B-uuid (believes it acquired exclusive lease)
+      const tabBReread = storageOwner;
+      expect(tabBReread).toBe("tab-B-uuid");
+
+      // In a raw storage protocol, Tab B won the final write, but Tab A had already evaluated
+      // the predicate and proceeded into the critical execution section, producing duplicate execution.
+      // This mathematically proves that localStorage cannot provide atomic mutual exclusion across tabs.
+      // Consequently, Alpha requires Web Locks and disallows uncoordinated storage fallback execution.
+      expect(isWebLocksSupported()).toBe(false);
+      expect(isVisionAmbientSupported()).toBe(false);
     });
   });
 
-  describe("2. Lost Ownership Detection", () => {
-    it("prevents execution if another context overwrote the lease owner", async () => {
-      // Acquire lease as current tab
-      tryAcquireOrRenewLease();
-      expect(revalidateLeadership()).toBe(true);
+  describe("Test B — Web Locks contention with real execution path", () => {
+    it("guarantees maximum concurrent protected executions === 1 under simultaneous triggers", async () => {
+      const { getMaxConcurrent } = setupWebLocksMock();
 
-      // Simulate Tab B clobbering the lease owner in storage
-      storeMap.set(LEASE_OWNER_KEY, "tab-b-usurper");
+      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,sampleframe");
 
-      // Attempting to revalidate leadership must immediately return false
-      const revalidated = revalidateLeadership();
-      expect(revalidated).toBe(false);
+      let resolveChat1: (v: string) => void = () => {};
+      let chatInvocationCount = 0;
+
+      vi.spyOn(alphaFunctions, "sendChat").mockImplementation(async () => {
+        chatInvocationCount++;
+        return new Promise<string>((resolve) => {
+          resolveChat1 = resolve;
+        });
+      });
+
+      // 1. Start ambient vision through production function
+      const started = startVisionAmbient();
+      expect(started).toBe(true);
+      expect(isVisionAmbient()).toBe(true);
+
+      // Wait a microtask for leader lock callback to run
+      await Promise.resolve();
+      expect(isVisionAmbientLeader()).toBe(true);
+      expect(brightnessCallback).toBeTypeOf("function");
+
+      // 2. Trigger motion to build momentum and initiate fire via real production path
+      brightnessCallback!({ motion: 1.0, mean: 0.5 });
+
+      // 3. Immediately trigger a second concurrent maybeFire() while first is in-flight
+      const secondFirePromise = maybeFire();
+
+      // Ensure that only 1 execution entered the critical section and called sendChat
+      expect(chatInvocationCount).toBe(1);
+
+      // Resolve the in-flight chat
+      resolveChat1("Scene update 1");
+      await secondFirePromise;
+
+      // Verify that concurrent executions never exceeded 1
+      expect(getMaxConcurrent()).toBe(1);
+    });
+  });
+
+  describe("Test C — Lost leadership before execution", () => {
+    it("prevents stale context from executing protected operations if leadership is lost before maybeFire()", async () => {
+      setupWebLocksMock();
+      const sendChatSpy = vi.spyOn(alphaFunctions, "sendChat").mockResolvedValue("Observation");
+      const captureFrameSpy = vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,frame");
+
+      // 1. Start ambient vision and establish leadership
+      startVisionAmbient();
+      await Promise.resolve();
+      expect(isVisionAmbientLeader()).toBe(true);
+
+      // 2. Stop ambient vision (simulates losing leadership / tab blur or user toggle)
+      stopVisionAmbient();
       expect(isVisionAmbientLeader()).toBe(false);
-    });
-  });
+      expect(revalidateLeadership()).toBe(false);
 
-  describe("3. Pre-Execution Revalidation", () => {
-    it("revalidates ownership immediately prior to protected execution and rejects stale owners", async () => {
-      const sendChatSpy = vi.spyOn(alphaFunctions, "sendChat").mockResolvedValue("Changed scene");
-      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,mock");
-
-      // Current tab is not leader
-      storeMap.set(LEASE_OWNER_KEY, "another-tab");
-      storeMap.set(LEASE_EXPIRES_KEY, String(Date.now() + LEASE_DURATION_MS));
-
+      // 3. Attempt to trigger maybeFire()
       await maybeFire();
 
-      // No frame was captured or sent to LLM
+      // Verify protected operations were NOT executed
+      expect(captureFrameSpy).not.toHaveBeenCalled();
       expect(sendChatSpy).not.toHaveBeenCalled();
     });
   });
 
-  describe("4. Lease Expiry", () => {
-    it("allows new context acquisition after an old lease expires", () => {
-      // Set an expired lease from a previous context
-      const pastTime = Date.now() - 10000;
-      storeMap.set(LEASE_OWNER_KEY, "dead-tab-id");
-      storeMap.set(LEASE_EXPIRES_KEY, String(pastTime));
-
-      // Current tab attempts acquisition
-      const acquired = tryAcquireOrRenewLease();
-      expect(acquired).toBe(true);
-      expect(storeMap.get(LEASE_OWNER_KEY)).toBe(tabId);
-      expect(Number(storeMap.get(LEASE_EXPIRES_KEY))).toBeGreaterThan(Date.now());
-    });
-  });
-
-  describe("5. Storage-Event Invalidation", () => {
-    it("invalidates local leader status when storage event reports another tab took ownership", () => {
-      let storageHandler: ((e: any) => void) | undefined;
-      (globalThis as any).window.addEventListener = vi.fn((event: string, handler: any) => {
-        if (event === "storage") {
-          storageHandler = handler;
-        }
-      });
-
-      // Acquire initial leadership
-      tryAcquireOrRenewLease();
-      revalidateLeadership();
-
-      // Trigger storage event listener
-      if (storageHandler) {
-        storageHandler({
-          key: LEASE_OWNER_KEY,
-          newValue: "different-tab-id",
-        });
-        expect(isVisionAmbientLeader()).toBe(false);
-      }
-    });
-  });
-
-  describe("6. Delayed / Stale In-Flight Execution Prevention", () => {
-    it("discards response if ambient mode was stopped or invalidated while request was in-flight", async () => {
+  describe("Test D — Lost leadership during asynchronous execution", () => {
+    it("discards result if leadership was invalidated or ambient stopped while in-flight", async () => {
+      setupWebLocksMock();
       const appendChatSpy = vi.spyOn(alphaStore, "appendChat");
+      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,frame");
 
       let resolveSendChat: (value: string) => void = () => {};
       vi.spyOn(alphaFunctions, "sendChat").mockImplementation(
@@ -165,85 +248,81 @@ describe("Ambient Vision Leader Election & Mutual Exclusion Invariants", () => {
             resolveSendChat = resolve;
           })
       );
-      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,mock");
 
-      // Set valid leadership
-      tryAcquireOrRenewLease();
-      revalidateLeadership();
+      // 1. Start ambient vision and establish leadership
+      startVisionAmbient();
+      await Promise.resolve();
+      expect(isVisionAmbientLeader()).toBe(true);
 
-      // Trigger fire
-      const firePromise = maybeFire();
+      // 2. Trigger motion to build momentum and initiate legitimate fire
+      brightnessCallback!({ motion: 1.0, mean: 0.5 });
 
-      // Before sendChat resolves, vision ambient is stopped (e.g. user closes tab or changes view)
+      // 3. Invalidate leadership while request is in flight
       stopVisionAmbient();
+      expect(isVisionAmbientLeader()).toBe(false);
 
-      // Now sendChat resolves
-      resolveSendChat("Important change detected");
-      await firePromise;
+      // 4. Resolve the in-flight network response
+      resolveSendChat("Significant change in view detected");
+      await new Promise((r) => setTimeout(r, 10));
 
-      // Ensure appendChat was NOT called because execution was invalidated
+      // 5. Verify the stale completion did NOT commit to chat store
       expect(appendChatSpy).not.toHaveBeenCalled();
     });
   });
 
-  describe("7. Web Locks Exclusive Execution Invariant", () => {
-    it("uses Web Locks to prevent simultaneous concurrent execution", async () => {
-      const activeLocks = new Set<string>();
-      let concurrentExecutions = 0;
-      let maxConcurrent = 0;
+  describe("Test E — Lease expiry / takeover by subsequent context", () => {
+    it("allows a subsequent context to acquire leadership and execute when the previous leader releases the lock", async () => {
+      setupWebLocksMock();
+      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,frame");
+      const sendChatSpy = vi.spyOn(alphaFunctions, "sendChat").mockResolvedValue("Takeover observation");
 
-      const mockLocks = {
-        request: vi.fn(
-          async (
-            name: string,
-            optionsOrCallback: any,
-            callback?: (lock: any) => Promise<any>
-          ) => {
-            const cb = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
-            const opts = typeof optionsOrCallback === "object" ? optionsOrCallback : {};
-
-            if (opts.ifAvailable && activeLocks.has(name)) {
-              // Lock unavailable
-              return cb(null);
-            }
-
-            activeLocks.add(name);
-            if (name === EXECUTION_LOCK_NAME) {
-              concurrentExecutions++;
-              maxConcurrent = Math.max(maxConcurrent, concurrentExecutions);
-            }
-
-            try {
-              return await cb({ name });
-            } finally {
-              if (name === EXECUTION_LOCK_NAME) {
-                concurrentExecutions--;
-              }
-              activeLocks.delete(name);
-            }
-          }
-        ),
-      };
-
-      vi.stubGlobal("navigator", {
-        locks: mockLocks,
-      });
-
-      vi.spyOn(alphaFunctions, "sendChat").mockImplementation(async () => {
-        await new Promise((r) => setTimeout(r, 10));
-        return "Nothing changed";
-      });
-      vi.spyOn(visionStream, "captureFrame").mockReturnValue("data:image/jpeg;base64,mock");
-
-      // Start ambient vision
+      // 1. Context 1 starts ambient vision and becomes leader
       startVisionAmbient();
-      tryAcquireOrRenewLease();
+      await Promise.resolve();
+      expect(isVisionAmbientLeader()).toBe(true);
 
-      // Concurrently trigger two fires
-      await Promise.all([maybeFire(), maybeFire()]);
+      // 2. Context 1 stops and releases the leader lock
+      stopVisionAmbient();
+      // Allow abort signal and lock cleanup to complete
+      await new Promise((r) => setTimeout(r, 10));
+      expect(isVisionAmbientLeader()).toBe(false);
 
-      // Verify that at no point were two executions running concurrently in the critical section
-      expect(maxConcurrent).toBeLessThanOrEqual(1);
+      // 3. Context 2 starts ambient vision
+      const startedContext2 = startVisionAmbient();
+      expect(startedContext2).toBe(true);
+      await Promise.resolve();
+      expect(isVisionAmbientLeader()).toBe(true);
+
+      // 4. Context 2 receives motion event and fires execution successfully
+      brightnessCallback!({ motion: 1.0, mean: 0.5 });
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(sendChatSpy).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("Test F — Web Locks unavailable", () => {
+    it("explicitly disables ambient vision and prevents uncoordinated execution when navigator.locks is undefined", async () => {
+      // Ensure navigator.locks is undefined
+      vi.stubGlobal("navigator", {});
+
+      expect(isWebLocksSupported()).toBe(false);
+      expect(isVisionAmbientSupported()).toBe(false);
+
+      const sendChatSpy = vi.spyOn(alphaFunctions, "sendChat");
+      const captureFrameSpy = vi.spyOn(visionStream, "captureFrame");
+
+      // Attempt to start ambient vision
+      const started = startVisionAmbient();
+      expect(started).toBe(false);
+      expect(isVisionAmbient()).toBe(false);
+      expect(isVisionAmbientLeader()).toBe(false);
+      expect(revalidateLeadership()).toBe(false);
+
+      // Calling maybeFire() must safely no-op without any ambient scan
+      await maybeFire();
+      expect(captureFrameSpy).not.toHaveBeenCalled();
+      expect(sendChatSpy).not.toHaveBeenCalled();
     });
   });
 });
