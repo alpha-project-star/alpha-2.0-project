@@ -68,7 +68,7 @@ export interface KokoroDiagnostics {
   ok: boolean;
   workingUrl?: string;
   blobSize?: number;
-  audio?: HTMLAudioElement;
+  blob?: Blob;
   tried: Array<{ url: string; status?: number; error?: string }>;
   suggestedEndpoint?: string;
   error?: string;
@@ -168,13 +168,12 @@ export async function testKokoroTTS(
       }
 
       lastWorkingKokoroUrl = c.url;
-      const audio = new Audio(URL.createObjectURL(blob));
 
       return {
         ok: true,
         workingUrl: c.url,
         blobSize: blob.size,
-        audio,
+        blob,
         tried,
         wasFallback: c.url !== endpoint,
         suggestedEndpoint: c.url !== endpoint ? c.url : undefined,
@@ -191,14 +190,14 @@ export async function testKokoroTTS(
   };
 }
 
-async function tryKokoro(text: string): Promise<HTMLAudioElement | null> {
+async function tryKokoro(text: string): Promise<Blob | null> {
   const { kokoroEndpoint } = alphaStore.get().settings;
   if (!kokoroEndpoint || !kokoroEndpoint.trim()) return null;
 
   try {
     const diag = await testKokoroTTS(text);
-    if (diag.ok && diag.audio) {
-      return diag.audio;
+    if (diag.ok && diag.blob) {
+      return diag.blob;
     }
     throw new Error(diag.error || "All Kokoro attempts failed");
   } catch (e) {
@@ -297,23 +296,6 @@ async function networkSpeak(text: string): Promise<void> {
  * Falls back to browser male voice if Kokoro endpoint isn't set / fails.
  */
 let speakToken = 0;
-let currentAudio: HTMLAudioElement | null = null;
-
-function playAudio(audio: HTMLAudioElement): Promise<boolean> {
-  return new Promise((resolve) => {
-    let played = false;
-    audio.onended = () => resolve(played);
-    audio.onerror = () => resolve(played);
-    const p = audio.play();
-    if (p && typeof p.then === "function") {
-      p.then(() => {
-        played = true;
-      }).catch(() => resolve(false));
-    } else {
-      played = true;
-    }
-  });
-}
 
 /**
  * Speak text aloud. Pass `{ auto: true }` for automatic reply narration — that
@@ -350,39 +332,39 @@ export async function speakWith(text: string, opts?: { auto?: boolean }): Promis
 
     // Pipeline: split into chunks, fetch next while playing current.
     const chunks = chunkForTTS(clean);
-    let nextFetch: Promise<HTMLAudioElement | null> = tryKokoro(chunks[0]);
+    let nextFetch: Promise<Blob | null> = tryKokoro(chunks[0]);
     let kokoroBroken = false;
 
     for (let i = 0; i < chunks.length; i++) {
       if (myToken !== speakToken) return; // cancelled by a newer speakWith / stopSpeaking
-      const audioP = nextFetch;
+      const blobP = nextFetch;
       // pre-fetch the next chunk in parallel
       nextFetch =
         i + 1 < chunks.length && !kokoroBroken ? tryKokoro(chunks[i + 1]) : Promise.resolve(null);
 
-      const audio = await audioP;
+      const blob = await blobP;
       if (myToken !== speakToken) return;
-      if (!audio) {
+      if (!blob) {
         kokoroBroken = true;
         activity.set("speaking");
         await browserSpeak(chunks[i]);
         continue;
       }
-      currentAudio = audio;
       activity.set("speaking");
-      const played = await playAudio(audio);
-      currentAudio = null;
-      if (myToken !== speakToken) return;
-      if (!played) {
-        // autoplay blocked — fall back for remaining chunks
+      try {
+        await ttsManager.speak(blob, `speak-${myToken}`);
+      } catch {
+        if (myToken !== speakToken) return;
+        // playback failed / blocked — fall back for remaining chunks
         kokoroBroken = true;
         activity.set("speaking");
         await browserSpeak(chunks[i]);
       }
+      if (myToken !== speakToken) return;
       // Prosody: Inject pause after chunk
       const pause = getPauseForChunk(chunks[i]);
       if (pause > 0) {
-        activity.set("speaking"); // Or maybe "paused"
+        activity.set("speaking");
         await delay(pause);
       }
     }
@@ -401,13 +383,6 @@ export async function speakWith(text: string, opts?: { auto?: boolean }): Promis
 
 export function stopSpeaking() {
   speakToken++;
-  if (currentAudio) {
-    try {
-      currentAudio.pause();
-      currentAudio.currentTime = 0;
-    } catch {}
-    currentAudio = null;
-  }
   ttsManager.cancel();
   setSpeaking(false);
   activity.set("stopping_speech");

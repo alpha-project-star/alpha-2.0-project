@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { LocalReminderRepository } from "../src/lib/reminder-repo";
+import { LocalReminderRepository, InMemoryReminderRepository } from "../src/lib/reminder-repo";
 import { executeActionTagsAsync } from "../src/lib/actions";
 import { activity } from "../src/lib/activity";
 import { fireAlarm } from "../src/lib/alarm-engine";
 import { alphaStore, PersistenceError } from "../src/lib/alpha-store";
+import { restoreAlphaData, importAlphaData } from "../src/lib/data-portability";
 import * as voiceModule from "../src/lib/voice";
 
 describe("Foundation Hardening - Workstreams Verification", () => {
@@ -507,6 +508,100 @@ describe("Foundation Hardening - Workstreams Verification", () => {
 
       expect(alphaStore.get().bills.length).toBe(initialBillsCount);
       expect(alphaStore.get().bills.some((b) => b.id === "bill-fail-test")).toBe(false);
+    });
+  });
+
+  describe("Foundation Repair: Reminder Import & Lookup Invariants", () => {
+    it("rejects reminder import when reminder userId does not match currentUid", async () => {
+      const now = Date.now();
+      const backupData = {
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        localStorage: {},
+        reminders: [
+          {
+            id: "rem-user-mismatch-1",
+            userId: "foreign-user-id-999",
+            title: "Foreign task",
+            notes: "",
+            dueAt: now + 60000,
+            createdAt: now,
+            updatedAt: now,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ],
+      };
+
+      await expect(importAlphaData(JSON.stringify(backupData))).rejects.toThrow(
+        /does not match authenticated user/i,
+      );
+    });
+
+    it("rejects reminder import when duplicate reminder IDs are present in the import payload", async () => {
+      const now = Date.now();
+      const currentUid = "local-user";
+      const backupData = {
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        localStorage: {},
+        reminders: [
+          {
+            id: "duplicate-rem-id",
+            userId: currentUid,
+            title: "First task",
+            notes: "",
+            dueAt: now + 60000,
+            createdAt: now,
+            updatedAt: now,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+          {
+            id: "duplicate-rem-id",
+            userId: currentUid,
+            title: "Second task with same ID",
+            notes: "",
+            dueAt: now + 120000,
+            createdAt: now,
+            updatedAt: now,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ],
+      };
+
+      await expect(importAlphaData(JSON.stringify(backupData))).rejects.toThrow(
+        /duplicate reminder ID "duplicate-rem-id"/i,
+      );
+    });
+
+    it("propagates repository lookup failure in executeActionTagsAsync for UPDATE_REMINDER", async () => {
+      const failingRepo = new InMemoryReminderRepository();
+      failingRepo.listReminders = vi.fn().mockRejectedValue(new Error("Storage disk corrupted"));
+
+      const res = await executeActionTagsAsync("[[UPDATE_REMINDER: dentist | when: tomorrow 9am]]", {
+        repo: failingRepo,
+        userId: "local-user",
+      });
+
+      expect(res.results.length).toBe(1);
+      expect(res.results[0].status).toBe("failed");
+      expect(res.results[0].message).toContain("Could not access reminders: Storage disk corrupted");
+    });
+
+    it("propagates repository lookup failure in executeActionTagsAsync for DELETE_REMINDER", async () => {
+      const failingRepo = new InMemoryReminderRepository();
+      failingRepo.listReminders = vi.fn().mockRejectedValue(new Error("Storage disk corrupted"));
+
+      const res = await executeActionTagsAsync("[[DELETE_REMINDER: dentist]]", {
+        repo: failingRepo,
+        userId: "local-user",
+      });
+
+      expect(res.results.length).toBe(1);
+      expect(res.results[0].status).toBe("failed");
+      expect(res.results[0].message).toContain("Could not access reminders: Storage disk corrupted");
     });
   });
 });

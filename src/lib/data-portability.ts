@@ -235,6 +235,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   // Stage reminders (canonical LocalReminderRepository records)
   const currentUid = auth.currentUser?.uid || "local-user";
   const stagedReminders: FirestoreReminder[] = [];
+  const seenReminderIds = new Set<string>();
 
   if (Array.isArray(data.reminders) && data.reminders.length > 0) {
     for (const r of data.reminders) {
@@ -244,8 +245,15 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       if (typeof r.id !== "string" || !r.id.trim()) {
         throw new Error("Invalid reminder in backup: missing or empty id.");
       }
+      if (seenReminderIds.has(r.id)) {
+        throw new Error(`Invalid reminder in backup: duplicate reminder ID "${r.id}".`);
+      }
+      seenReminderIds.add(r.id);
       if (typeof r.userId !== "string" || !r.userId.trim()) {
         throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing or has an empty userId.`);
+      }
+      if (r.userId !== currentUid) {
+        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" has userId "${r.userId}" which does not match authenticated user "${currentUid}".`);
       }
       if (typeof r.title !== "string") {
         throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing a string title.`);

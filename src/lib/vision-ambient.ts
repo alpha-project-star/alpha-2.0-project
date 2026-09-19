@@ -55,16 +55,53 @@ function tryAcquireOrRenewLease(): boolean {
   const leaseExpired = isNaN(expiresAt) || now > expiresAt;
   const isOwner = currentOwner === tabId;
 
-  if (leaseExpired || isOwner || !currentOwner) {
+  if (isOwner) {
+    try {
+      storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
+      return storage.getItem(LEASE_OWNER_KEY) === tabId;
+    } catch {
+      return false;
+    }
+  }
+
+  if (leaseExpired || !currentOwner) {
     try {
       storage.setItem(LEASE_OWNER_KEY, tabId);
       storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
-      return true;
+      // Re-read to confirm our write succeeded and was not clobbered by a racing tab
+      const confirmedOwner = storage.getItem(LEASE_OWNER_KEY);
+      return confirmedOwner === tabId;
     } catch {
       return false;
     }
   }
   return false;
+}
+
+function revalidateLeadership(): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
+  const now = Date.now();
+  const currentOwner = storage.getItem(LEASE_OWNER_KEY);
+  const expiresAt = Number(storage.getItem(LEASE_EXPIRES_KEY) || "0");
+
+  if (currentOwner !== tabId || isNaN(expiresAt) || now > expiresAt) {
+    isLeader = false;
+    return false;
+  }
+  try {
+    storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
+    const confirmedOwner = storage.getItem(LEASE_OWNER_KEY);
+    if (confirmedOwner !== tabId) {
+      isLeader = false;
+      return false;
+    }
+    isLeader = true;
+    return true;
+  } catch {
+    isLeader = false;
+    return false;
+  }
 }
 
 function releaseLease() {
@@ -78,6 +115,11 @@ function releaseLease() {
 }
 
 if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === LEASE_OWNER_KEY && e.newValue !== tabId) {
+      isLeader = false;
+    }
+  });
   window.addEventListener("beforeunload", () => {
     if (isLeader) releaseLease();
   });
@@ -131,7 +173,7 @@ export function stopVisionAmbient(): void {
 export function isVisionAmbient(): boolean { return running; }
 
 async function maybeFire() {
-  if (!running || !isLeader) return;
+  if (!running || !isLeader || !revalidateLeadership()) return;
   const now = Date.now();
   const interval = Math.max(15, alphaStore.get().settings.visionAmbientIntervalSec || 30) * 1000;
   if (now - lastFireAt < interval) return;

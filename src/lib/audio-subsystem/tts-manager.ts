@@ -209,6 +209,7 @@ export class TTSManager {
     if (this.currentAudio) {
       try {
         this.currentAudio.pause();
+        this.currentAudio.currentTime = 0;
       } catch {}
       this.currentAudio = null;
     }
