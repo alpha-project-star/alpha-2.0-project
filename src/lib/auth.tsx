@@ -1,6 +1,7 @@
 // src/lib/auth.ts
 import { createContext, useContext, useEffect, useState } from "react";
-import { getAuth, onAuthStateChanged, signInAnonymously, User } from "firebase/auth";
+import { onAuthStateChanged, signInAnonymously, User } from "firebase/auth";
+import { auth } from "./firebase";
 import { reminderContextManager } from "./reminder-context";
 
 export type AuthState = 
@@ -19,7 +20,6 @@ let bootstrapAttempted = false;
  * anonymous authentication bootstrap if one is currently in progress.
  */
 export async function ensureAuthenticatedUser(): Promise<User | null> {
-  const auth = getAuth();
   if (auth.currentUser) return auth.currentUser;
   if (bootstrapPromise) {
     try {
@@ -41,7 +41,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let isMounted = true;
-    const auth = getAuth();
 
     const unsubscribe = onAuthStateChanged(
       auth,

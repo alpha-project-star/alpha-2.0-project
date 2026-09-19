@@ -1,4 +1,5 @@
-import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
+import { db } from './firebase';
 import { reminderContextManager, ActiveReminderContext } from './reminder-context';
 
 export type AcknowledgementStatus = 'pending' | 'delivered' | 'acknowledged' | 'failed';
@@ -121,11 +122,7 @@ export class InMemoryAcknowledgementRepository implements AcknowledgementReposit
 
 export class FirestoreAcknowledgementRepository implements AcknowledgementRepository {
   private getDb() {
-    try {
-      return getFirestore();
-    } catch {
-      return null;
-    }
+    return db;
   }
 
   async getAcknowledgement(userId: string, ackId: string): Promise<AcknowledgementRecord | null> {

@@ -1,6 +1,6 @@
 import { alphaStore, uid, getStorage, PersistenceError } from "./alpha-store";
 import { speakWith, prepareUtterance } from "./voice";
-import { getAuth } from "firebase/auth";
+import { auth } from "./firebase";
 import {
   LocalReminderRepository,
   type FirestoreReminder,
@@ -73,7 +73,7 @@ export async function buildMorningBrief(options?: MorningBriefOptions): Promise<
   } else {
     const currentUid = (() => {
       try {
-        return getAuth().currentUser?.uid || null;
+        return auth.currentUser?.uid || null;
       } catch {
         return null;
       }

@@ -1,6 +1,7 @@
 // src/lib/notification-observability.ts
 
-import { getFirestore, doc, getDoc, setDoc, collection, getDocs, query, orderBy } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, getDocs, query, orderBy } from 'firebase/firestore';
+import { db } from './firebase';
 
 export type DiagnosticStage =
   | 'scheduler'
@@ -196,7 +197,6 @@ export class FirestoreNotificationDiagnosticRepository implements NotificationDi
   async getDiagnostic(userId: string, diagnosticId: string): Promise<NotificationDiagnosticEvent | null> {
     if (!userId || !diagnosticId) return null;
     try {
-      const db = getFirestore();
       const ref = doc(db, 'users', userId, 'notificationDiagnostics', diagnosticId);
       const snap = await getDoc(ref);
       if (!snap.exists()) return null;
@@ -209,7 +209,6 @@ export class FirestoreNotificationDiagnosticRepository implements NotificationDi
   async saveDiagnostic(userId: string, event: NotificationDiagnosticEvent): Promise<void> {
     if (!userId || !event) return;
     if (event.userId !== userId) throw new Error('User isolation mismatch in Firestore diagnostic save');
-    const db = getFirestore();
     const ref = doc(db, 'users', userId, 'notificationDiagnostics', event.diagnosticId);
     await setDoc(ref, event);
   }
@@ -217,7 +216,6 @@ export class FirestoreNotificationDiagnosticRepository implements NotificationDi
   async listDiagnostics(userId: string, correlationId?: string): Promise<NotificationDiagnosticEvent[]> {
     if (!userId) return [];
     try {
-      const db = getFirestore();
       const colRef = collection(db, 'users', userId, 'notificationDiagnostics');
       const q = query(colRef, orderBy('timestamp', 'asc'));
       const snap = await getDocs(q);

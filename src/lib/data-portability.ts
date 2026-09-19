@@ -1,6 +1,6 @@
 import { toast } from "sonner";
 import { z } from "zod";
-import { getAuth } from "firebase/auth";
+import { auth } from "./firebase";
 import {
   K,
   ChatMessageSchema,
@@ -150,7 +150,7 @@ export async function exportAlphaData(): Promise<AlphaDataExport> {
   }
 
   const reminderRepo = new LocalReminderRepository();
-  const currentUid = getAuth().currentUser?.uid || "local-user";
+  const currentUid = auth.currentUser?.uid || "local-user";
   let exportedReminders: FirestoreReminder[] = [];
   try {
     exportedReminders = await reminderRepo.listReminders(currentUid);
@@ -233,7 +233,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   }
 
   // Stage reminders (canonical LocalReminderRepository records)
-  const currentUid = getAuth().currentUser?.uid || "local-user";
+  const currentUid = auth.currentUser?.uid || "local-user";
   const stagedReminders: FirestoreReminder[] = [];
 
   if (Array.isArray(data.reminders) && data.reminders.length > 0) {
@@ -302,6 +302,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   }
 
   // Stage music tracks
+  const shouldReplaceMusic = Array.isArray(data.music);
   const stagedMusic: Array<{
     id: string;
     name: string;
@@ -311,7 +312,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
     blob: Blob;
   }> = [];
 
-  if (data.music?.length) {
+  if (shouldReplaceMusic && data.music) {
     for (const track of data.music) {
       if (!track.id || !track.dataUrl) {
         throw new Error(`Invalid music track in backup: "${track.name || "unnamed"}" is missing data.`);
@@ -348,15 +349,17 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   }
 
   const reminderRepo = new LocalReminderRepository();
-  let previousReminders: FirestoreReminder[] = [];
+  let previousReminders: FirestoreReminder[];
   try {
     previousReminders = await reminderRepo.listReminders(currentUid);
-  } catch {
-    previousReminders = [];
+  } catch (snapshotErr) {
+    throw new Error(
+      `Import aborted: failed to snapshot existing reminders (${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}). Existing data was not modified.`
+    );
   }
 
   let previousMusic: any[] = [];
-  if (stagedMusic.length > 0) {
+  if (shouldReplaceMusic) {
     try {
       const db = await openDb();
       previousMusic = await new Promise<any[]>((resolve, reject) => {
@@ -364,11 +367,13 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         const store = tx.objectStore(STORE);
         const req = store.getAll();
         req.onsuccess = () => resolve(req.result || []);
-        req.onerror = () => reject(req.error);
+        req.onerror = () => reject(req.error || new Error("Could not read existing music tracks."));
         tx.oncomplete = () => db.close();
       });
-    } catch {
-      previousMusic = [];
+    } catch (musicSnapshotErr) {
+      throw new Error(
+        `Import aborted: failed to snapshot existing music storage (${musicSnapshotErr instanceof Error ? musicSnapshotErr.message : String(musicSnapshotErr)}). Existing data was not modified.`
+      );
     }
   }
 
@@ -397,8 +402,8 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       await reminderRepo.createReminder(currentUid, r);
     }
 
-    // 4. Replace music tracks in IndexedDB
-    if (stagedMusic.length > 0) {
+    // 4. Replace music tracks in IndexedDB (including empty music collection replacement)
+    if (shouldReplaceMusic) {
       const db = await openDb();
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE, "readwrite");
@@ -413,7 +418,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         };
         tx.onerror = () => {
           db.close();
-          reject(tx.error || new Error("Could not restore music."));
+          reject(tx.error || new Error("Could not replace music store."));
         };
       });
     }
@@ -437,7 +442,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       for (const pr of previousReminders) {
         await reminderRepo.createReminder(currentUid, pr);
       }
-      if (previousMusic.length > 0) {
+      if (shouldReplaceMusic) {
         const db = await openDb();
         await new Promise<void>((resolve) => {
           const tx = db.transaction(STORE, "readwrite");
@@ -489,7 +494,7 @@ export async function wipeAlphaData() {
 
   const reminderRepo = new LocalReminderRepository();
   try {
-    const currentUid = getAuth().currentUser?.uid || "local-user";
+    const currentUid = auth.currentUser?.uid || "local-user";
     const existing = await reminderRepo.listReminders(currentUid);
     for (const r of existing) {
       await reminderRepo.deleteReminder(currentUid, r.id);

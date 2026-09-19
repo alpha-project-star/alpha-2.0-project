@@ -33,7 +33,7 @@ import {
   SEARCH_CAPABILITY_HINT,
 } from "./web-search";
 import { getReminderTool } from "./tool-registry";
-import { getAuth } from "firebase/auth";
+import { auth } from "./firebase";
 import { ensureAuthenticatedUser } from "./auth";
 import type { FirestoreReminder } from "./reminder-repo";
 import { REMINDER_TOOLS } from "./reminder-tool-definitions";
@@ -146,7 +146,7 @@ function scoreMemory(q: string[], m: any): number {
 }
 
 export async function getAuthoritativeReminders(userId?: string | null): Promise<FirestoreReminder[]> {
-  const uid = userId !== undefined ? userId : ((await ensureAuthenticatedUser())?.uid || getAuth().currentUser?.uid || null);
+  const uid = userId !== undefined ? userId : ((await ensureAuthenticatedUser())?.uid || auth.currentUser?.uid || null);
   if (!uid) {
     return [];
   }
@@ -946,7 +946,7 @@ export async function sendChat(
 async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSignal, disableTools?: boolean): Promise<string> {
   const s = alphaStore.get().settings;
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
-  const currentUid = getAuth().currentUser?.uid || null;
+  const currentUid = auth.currentUser?.uid || null;
 
   const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
   const hasImages = !!lastUserMsg?.images?.length;
@@ -1149,7 +1149,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         } else {
           const authUser = await ensureAuthenticatedUser();
           const context: ToolContext = {
-            userId: authUser?.uid || getAuth().currentUser?.uid || null,
+            userId: authUser?.uid || auth.currentUser?.uid || null,
           };
 
           try {

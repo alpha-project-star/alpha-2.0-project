@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
-import { getAuth } from 'firebase/auth';
+import { auth } from './firebase';
 import {
   AcknowledgementRecord,
   AcknowledgementStatus,
@@ -134,7 +134,7 @@ export async function acknowledgeNotificationFromUI(
  * Respects strict user isolation and deterministic ordering.
  */
 export function useNotificationUIState() {
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => getAuth().currentUser?.uid || null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => auth.currentUser?.uid || null);
   const [outstandingRecords, setOutstandingRecords] = useState<OutstandingAcknowledgementRecord[]>([]);
   const [completedReminderIds, setCompletedReminderIds] = useState<Set<string>>(new Set());
   const [ackMap, setAckMap] = useState<Record<string, AcknowledgementStatus>>({});
@@ -143,7 +143,6 @@ export function useNotificationUIState() {
 
   // Re-sync when auth state changes
   useEffect(() => {
-    const auth = getAuth();
     const unsub = auth.onAuthStateChanged((user) => {
       const newUid = user?.uid || null;
       setCurrentUserId((prevUid) => {

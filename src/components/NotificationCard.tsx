@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Bell, Clock, Check, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
-import { getAuth } from 'firebase/auth';
+import { auth } from '../lib/firebase';
 import { MessageContent } from './MessageContent';
 import {
   resolveNotificationStatus,
@@ -42,7 +42,7 @@ export function NotificationCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fetchRecordData = useCallback(async () => {
-    const currentUid = getAuth().currentUser?.uid;
+    const currentUid = auth.currentUser?.uid;
     if (!currentUid || !proactiveEventId) return;
 
     try {
@@ -74,7 +74,7 @@ export function NotificationCard({
 
     // Subscribe to acknowledgement changes
     const unsub = notificationAcknowledgementManager.subscribe((rec) => {
-      const currentUid = getAuth().currentUser?.uid;
+      const currentUid = auth.currentUser?.uid;
       if (rec.userId === currentUid && rec.eventId === proactiveEventId) {
         if (rec.status === 'acknowledged') {
           setStatus('acknowledged');
@@ -89,7 +89,7 @@ export function NotificationCard({
   }, [fetchRecordData, proactiveEventId]);
 
   const handleAcknowledge = async () => {
-    const currentUid = getAuth().currentUser?.uid;
+    const currentUid = auth.currentUser?.uid;
     if (!currentUid) {
       setErrorMessage('Please sign in to acknowledge reminders.');
       return;

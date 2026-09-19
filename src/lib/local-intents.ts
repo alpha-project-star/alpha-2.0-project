@@ -1,7 +1,7 @@
 import { alphaStore, uid } from "./alpha-store";
 import { trySettingsIntent } from "./settings-intents";
 import { playMusicByName, stopMusic } from "./music";
-import { getAuth } from "firebase/auth";
+import { auth } from "./firebase";
 import { getReminderTool } from "./tool-registry";
 import { ensureAuthenticatedUser } from "./auth";
 import { formatReminderDate } from "./reminder-date-utils";
@@ -9,7 +9,7 @@ import type { FirestoreReminder } from "./reminder-repo";
 
 async function getActiveUserId(): Promise<string | null> {
   const user = await ensureAuthenticatedUser();
-  return user?.uid || getAuth().currentUser?.uid || null;
+  return user?.uid || auth.currentUser?.uid || null;
 }
 
 /**
@@ -62,7 +62,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     return await bulkClear(kind);
   }
   if (/^(?:clear|delete|remove)\s+(?:all\s+)?done\s+reminders/.test(lower)) {
-    const userId = getAuth().currentUser?.uid || null;
+    const userId = auth.currentUser?.uid || null;
     if (!userId) return "You need to be signed in to manage reminders.";
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
@@ -178,7 +178,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   if (m) {
     const kind = m[1];
     if (kind === "reminder") {
-      const userId = getAuth().currentUser?.uid || null;
+      const userId = auth.currentUser?.uid || null;
       if (!userId) return "You need to be signed in to manage reminders.";
       const tool = getReminderTool(userId);
       const res = await tool.listReminders();
@@ -290,7 +290,7 @@ async function listItems(kind: string): Promise<string> {
 async function bulkClear(kind: string): Promise<string> {
   const s = alphaStore.get();
   if (kind === "reminder") {
-    const userId = getAuth().currentUser?.uid || null;
+    const userId = auth.currentUser?.uid || null;
     if (!userId) return "You need to be signed in to manage reminders.";
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();

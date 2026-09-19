@@ -297,6 +297,7 @@ async function networkSpeak(text: string): Promise<void> {
  * Falls back to browser male voice if Kokoro endpoint isn't set / fails.
  */
 let speakToken = 0;
+let currentAudio: HTMLAudioElement | null = null;
 
 function playAudio(audio: HTMLAudioElement): Promise<boolean> {
   return new Promise((resolve) => {
@@ -400,6 +401,13 @@ export async function speakWith(text: string, opts?: { auto?: boolean }): Promis
 
 export function stopSpeaking() {
   speakToken++;
+  if (currentAudio) {
+    try {
+      currentAudio.pause();
+      currentAudio.currentTime = 0;
+    } catch {}
+    currentAudio = null;
+  }
   ttsManager.cancel();
   setSpeaking(false);
   activity.set("stopping_speech");

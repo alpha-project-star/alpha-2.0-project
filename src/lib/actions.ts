@@ -33,7 +33,7 @@ import {
 } from "./alpha-store";
 import { normalizeWhen, formatWhen } from "./when";
 import { activity, actionActivity } from "./activity";
-import { getAuth } from "firebase/auth";
+import { auth } from "./firebase";
 import {
   LocalReminderRepository,
   type FirestoreReminder,
@@ -539,7 +539,7 @@ export async function executeActionTagsAsync(
     (r) => !["ADD_REMINDER", "UPDATE_REMINDER", "DELETE_REMINDER", "MARK_REMINDER_DONE", "CLEAR_ALL_REMINDERS"].includes(r.tag)
   );
 
-  const effectiveUserId = options?.userId ?? (getAuth().currentUser?.uid || "local-user");
+  const effectiveUserId = options?.userId ?? (auth.currentUser?.uid || "local-user");
   const repo = options?.repo ?? new LocalReminderRepository();
 
   async function findReminderHits(query: string): Promise<FirestoreReminder[]> {
