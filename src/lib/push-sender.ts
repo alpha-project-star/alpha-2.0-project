@@ -1,5 +1,9 @@
 // src/lib/push-sender.ts
 
+if (typeof window !== 'undefined') {
+  throw new Error('push-sender cannot be imported or executed in the client browser bundle.');
+}
+
 import webPush from 'web-push';
 import { getServerConfig } from './config.server';
 
@@ -31,8 +35,8 @@ export async function sendWebPushToSubscription(
   },
   payload: PushPayload
 ): Promise<PushSendResult> {
-  const publicKey = process.env.VAPID_PUBLIC_KEY || 'BEl62iUYgUivxIkv69yViEuiBIa-Ib9-SkvMeAtA3LFgDzkrxZJjSgSnfckjBJuBkr3qBUYIHBQFLXYp5Nksh8U';
-  const privateKey = process.env.VAPID_PRIVATE_KEY || 'test-vapid-private-key-secret-string-1234567890';
+  const publicKey = process.env.VAPID_PUBLIC_KEY;
+  const privateKey = process.env.VAPID_PRIVATE_KEY;
   const subject = process.env.VAPID_SUBJECT || 'mailto:admin@alpha.app';
 
   if (!publicKey || !privateKey) {
