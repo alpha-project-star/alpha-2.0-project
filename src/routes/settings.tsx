@@ -26,7 +26,6 @@ import { registerPushSubscription, unregisterPushSubscription, isPushSupported }
 import { useAuth } from "../lib/auth";
 import { ToolHeader } from "../components/ToolHeader";
 import { KittScanner } from "../components/KittScanner";
-import { MigrationDryRun } from "../components/MigrationDryRun";
 import {
   addMusicFiles,
   deleteMusicTrack,
@@ -505,16 +504,6 @@ function SettingsRoute() {
             </button>
             {whisperStatus && <div className="mt-2 text-xs break-words">{whisperStatus}</div>}
           </Section>
-        </Group>
-
-        <Group
-          id="migration"
-          title="Migration Dry-Run"
-          hint="Audit reminders for Firestore compatibility."
-          open={openGroup === "migration"}
-          onToggle={() => setOpenGroup(openGroup === "migration" ? null : "migration")}
-        >
-          <MigrationDryRun />
         </Group>
 
         {/* ALPHA DATA ================================================== */}

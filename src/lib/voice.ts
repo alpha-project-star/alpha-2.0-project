@@ -17,10 +17,9 @@ export const speakingState = {
   get: () => speechManager.getState() === 'SPEAKING',
   sub: (fn: (v: boolean) => void): (() => void) => {
     const listener = { onStateChange: (state: string) => fn(state === 'SPEAKING') };
-    speechManager.addListener(listener);
+    const unsub = speechManager.addListener(listener);
     fn(speechManager.getState() === 'SPEAKING');
-    // Note: listeners don't easily remove themselves here.
-    return () => {}; 
+    return unsub;
   },
 };
 
@@ -48,65 +47,14 @@ function getPauseForChunk(chunk: string): number {
   if (/[,]$/.test(chunk)) return PAUSES.comma;
   return 0; // Default
 }
-let cachedVoice: SpeechSynthesisVoice | null = null;
-let currentAudio: HTMLAudioElement | null = null;
-let currentUtter: SpeechSynthesisUtterance | null = null;
-let unlockUtter: SpeechSynthesisUtterance | null = null;
-let audioUnlocked = false;
-// Tiny silent WAV (~0.05s) to unlock <audio> playback inside a user gesture.
-const SILENT_WAV =
-  "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
 
 function pickVoice(): SpeechSynthesisVoice | null {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
-  const voices = window.speechSynthesis.getVoices();
-  if (!voices.length) return null;
-  const pref = alphaStore.get().settings.preferredVoice;
-  if (pref) {
-    const v = voices.find((v) => v.name === pref);
-    if (v) return v;
-  }
-  // Prefer a SMOOTH MALE voice
-  const enMale = voices.find(
-    (v) =>
-      /^en/i.test(v.lang) &&
-      /(male|daniel|alex|fred|tom|guy|james|michael|david|ryan|aaron|arthur|google uk english male)/i.test(
-        v.name,
-      ),
-  );
-  if (enMale) return enMale;
-  const gb = voices.find((v) => /en[-_]GB/i.test(v.lang));
-  if (gb) return gb;
-  return voices.find((v) => /^en/i.test(v.lang)) ?? voices[0];
+  return ttsManager.pickVoice();
 }
 
 /** Call inside a user gesture (tap) to unlock both speech & audio on Android. */
 export function prepareUtterance() {
-  if (typeof window === "undefined") return;
-  if ("speechSynthesis" in window) {
-    if (!cachedVoice) cachedVoice = pickVoice();
-    unlockUtter = new SpeechSynthesisUtterance("");
-    if (cachedVoice) {
-      unlockUtter.voice = cachedVoice;
-      unlockUtter.lang = cachedVoice.lang;
-    }
-    try {
-      window.speechSynthesis.cancel();
-    } catch {}
-  }
-  // Unlock <audio> playback for later Kokoro fetches (Android/iOS gesture rule)
-  if (!audioUnlocked) {
-    try {
-      const a = new Audio(SILENT_WAV);
-      a.volume = 0;
-      const p = a.play();
-      if (p && typeof p.then === "function")
-        p.then(() => {
-          audioUnlocked = true;
-        }).catch(() => {});
-      else audioUnlocked = true;
-    } catch {}
-  }
+  ttsManager.prepareUtterance();
 }
 
 let lastWorkingKokoroUrl: string | null = null;
@@ -316,44 +264,17 @@ function chunkForTTS(text: string, firstMax = 80, restMax = 220): string[] {
   return out.filter(Boolean);
 }
 
-function browserSpeak(text: string): Promise<void> {
-  return new Promise((resolve) => {
-    if (
-      typeof window === "undefined" ||
-      !("speechSynthesis" in window) ||
-      !window.speechSynthesis
-    ) {
-      // WebView (e.g. LovableApp on Android) has no speechSynthesis — use network fallback.
-      networkSpeak(text).then(() => resolve());
-      return;
-    }
-    if (!cachedVoice) cachedVoice = pickVoice();
-    const u = new SpeechSynthesisUtterance(text);
-    if (cachedVoice) {
-      u.voice = cachedVoice;
-      u.lang = cachedVoice.lang;
-    }
-    u.rate = alphaStore.get().settings.ttsRate || 1;
-    u.pitch = 0.95;
-    u.volume = 1;
-    currentUtter = u;
-    u.onend = () => {
-      currentUtter = null;
-      resolve();
-    };
-    u.onerror = () => {
-      currentUtter = null;
-      resolve();
-    };
-    // NOTE: don't cancel here — stopSpeaking() upstream already did it.
-    // Cancelling again forces Chrome/Android to re-warm the synth (adds ~500ms).
-    try {
-      window.speechSynthesis.resume(); // Chrome bug workaround
-      window.speechSynthesis.speak(u);
-    } catch {
-      resolve();
-    }
-  });
+async function browserSpeak(text: string): Promise<void> {
+  if (
+    typeof window === "undefined" ||
+    !("speechSynthesis" in window) ||
+    !window.speechSynthesis
+  ) {
+    // WebView (e.g. LovableApp on Android) has no speechSynthesis — use network fallback.
+    await networkSpeak(text);
+    return;
+  }
+  await ttsManager.speakBrowser(text);
 }
 
 /**
@@ -365,12 +286,7 @@ async function networkSpeak(text: string): Promise<void> {
   try {
     const voice = "Brian"; // British male; matches Alpha's persona
     const url = `https://api.streamelements.com/kappa/v2/speech?voice=${encodeURIComponent(voice)}&text=${encodeURIComponent(text.slice(0, 500))}`;
-    const audio = new Audio(url);
-    audio.crossOrigin = "anonymous";
-    audio.playbackRate = alphaStore.get().settings.ttsRate || 1;
-    currentAudio = audio;
-    await playAudio(audio);
-    currentAudio = null;
+    await ttsManager.speak(url);
   } catch (e) {
     console.warn("[voice] network TTS failed:", e);
   }
@@ -484,16 +400,7 @@ export async function speakWith(text: string, opts?: { auto?: boolean }): Promis
 
 export function stopSpeaking() {
   speakToken++;
-  try {
-    window.speechSynthesis?.cancel();
-  } catch {}
-  if (currentAudio) {
-    try {
-      currentAudio.pause();
-    } catch {}
-    currentAudio = null;
-  }
-  currentUtter = null;
+  ttsManager.cancel();
   setSpeaking(false);
   activity.set("stopping_speech");
   setTimeout(() => {
@@ -502,14 +409,7 @@ export function stopSpeaking() {
 }
 
 export function listVoices(): SpeechSynthesisVoice[] {
-  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
-  return window.speechSynthesis.getVoices();
-}
-
-if (typeof window !== "undefined" && "speechSynthesis" in window) {
-  window.speechSynthesis.onvoiceschanged = () => {
-    cachedVoice = pickVoice();
-  };
+  return ttsManager.listVoices();
 }
 
 // ============================================================
@@ -554,11 +454,13 @@ export class ContinuousRecognizer {
     rec.lang = this.lang();
     rec.onstart = () => {
       this.active = true;
+      speechManager.setState('LISTENING');
       activity.set("listening");
       this.handlers.onStart?.();
     };
     rec.onend = () => {
       this.active = false;
+      if (speechManager.getState() === 'LISTENING') speechManager.setState('IDLE');
       if (activity.get().kind === "listening") activity.clear();
       if (!this.wantOn || this.paused) {
         if (!this.wantOn) this.handlers.onStop?.();
@@ -709,6 +611,7 @@ export class ContinuousRecognizer {
       this.rec?.stop?.();
     } catch {}
     this.active = false;
+    if (speechManager.getState() === 'LISTENING') speechManager.setState('IDLE');
     if (activity.get().kind === "listening") activity.clear();
   }
 

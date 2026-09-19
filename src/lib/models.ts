@@ -39,6 +39,9 @@ export const MODEL_TRIO = {
   coding: "openrouter:cohere/north-mini-code:free" as RouteSpec,
 };
 
+/** Canonical default model reference across the entire application */
+export const DEFAULT_MODEL: RouteSpec = MODEL_TRIO.primary;
+
 /** Text fallback chain, walked on 404 / 429 / provider failure. Fastest first. */
 export const TEXT_FALLBACKS = [
   "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",

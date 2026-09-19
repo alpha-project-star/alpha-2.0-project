@@ -10,8 +10,9 @@ import {
   OutstandingAcknowledgementRecord,
 } from './notification-recovery';
 import { formatReminderDate } from './reminder-date-utils';
-import { alphaStore, useAlpha } from './alpha-store';
 import { LocalReminderRepository } from './reminder-repo';
+
+const reminderRepo = new LocalReminderRepository();
 
 export type NotificationDisplayStatus =
   | 'awaiting_acknowledgement'
@@ -49,20 +50,11 @@ export async function resolveNotificationStatus(
   const cleanUid = userId.trim();
   const cleanEventId = eventId.trim();
 
-  // 1. Check if underlying reminder is completed in local or durable store
+  // 1. Check if underlying reminder is completed in authoritative repository
   if (reminderId) {
-    // A. Local fallback
-    const localReminders = alphaStore.get().reminders;
-    const matchedLocal = localReminders.find((r) => r.id === reminderId);
-    if (matchedLocal && matchedLocal.done === 'yes') {
-      return 'completed';
-    }
-
-    // B. Durable authority
     try {
-      const reminderRepo = new LocalReminderRepository();
       const durableMatch = await reminderRepo.getReminder(cleanUid, reminderId);
-      if (durableMatch && (durableMatch.reminderState === 'completed')) {
+      if (durableMatch && (durableMatch.reminderState === 'completed' || durableMatch.isCompleted)) {
         return 'completed';
       }
     } catch {
@@ -144,6 +136,7 @@ export async function acknowledgeNotificationFromUI(
 export function useNotificationUIState() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getAuth().currentUser?.uid || null);
   const [outstandingRecords, setOutstandingRecords] = useState<OutstandingAcknowledgementRecord[]>([]);
+  const [completedReminderIds, setCompletedReminderIds] = useState<Set<string>>(new Set());
   const [ackMap, setAckMap] = useState<Record<string, AcknowledgementStatus>>({});
   const [loading, setLoading] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -156,6 +149,7 @@ export function useNotificationUIState() {
       setCurrentUserId((prevUid) => {
         if (prevUid !== newUid) {
           setOutstandingRecords([]);
+          setCompletedReminderIds(new Set());
           setAckMap({});
           if (prevUid) {
             notificationAcknowledgementManager.clearUserContext(prevUid);
@@ -165,11 +159,31 @@ export function useNotificationUIState() {
       });
       if (!newUid) {
         setOutstandingRecords([]);
+        setCompletedReminderIds(new Set());
         setAckMap({});
       }
     });
     return unsub;
   }, []);
+
+  const refreshCompletedReminders = useCallback(async (uid?: string | null) => {
+    const targetUid = uid !== undefined ? uid : currentUserId;
+    if (!targetUid) {
+      setCompletedReminderIds(new Set());
+      return;
+    }
+    try {
+      const allReminders = await reminderRepo.listReminders(targetUid);
+      const doneIds = new Set(
+        allReminders
+          .filter((r) => r.reminderState === 'completed' || r.isCompleted)
+          .map((r) => r.id),
+      );
+      setCompletedReminderIds(doneIds);
+    } catch {
+      // Safe boundary
+    }
+  }, [currentUserId]);
 
   const refreshOutstanding = useCallback(async (uid?: string | null) => {
     const targetUid = uid !== undefined ? uid : currentUserId;
@@ -197,10 +211,12 @@ export function useNotificationUIState() {
   useEffect(() => {
     if (!currentUserId) {
       setOutstandingRecords([]);
+      setCompletedReminderIds(new Set());
       return;
     }
 
     refreshOutstanding(currentUserId);
+    refreshCompletedReminders(currentUserId);
 
     const unsubAck = notificationAcknowledgementManager.subscribe((record) => {
       if (record.userId === currentUserId) {
@@ -209,20 +225,28 @@ export function useNotificationUIState() {
       }
     });
 
-    return unsubAck;
-  }, [currentUserId, refreshOutstanding]);
+    const handleRemindersChange = () => {
+      refreshCompletedReminders(currentUserId);
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener('alpha:reminders-changed', handleRemindersChange);
+    }
+
+    return () => {
+      unsubAck();
+      if (typeof window !== "undefined") {
+        window.removeEventListener('alpha:reminders-changed', handleRemindersChange);
+      }
+    };
+  }, [currentUserId, refreshOutstanding, refreshCompletedReminders]);
 
   const getStatusForEvent = useCallback(
     (eventId: string, reminderId?: string): NotificationDisplayStatus => {
       if (!currentUserId || !eventId) return 'unknown';
 
-      // 1. Check if reminder is completed in alphaStore
-      if (reminderId) {
-        const localReminders = alphaStore.get().reminders;
-        const matched = localReminders.find((r) => r.id === reminderId);
-        if (matched && matched.done === 'yes') {
-          return 'completed';
-        }
+      // 1. Check if reminder is completed in local reminder repository
+      if (reminderId && completedReminderIds.has(reminderId)) {
+        return 'completed';
       }
 
       // 2. Check local ackMap
@@ -236,7 +260,7 @@ export function useNotificationUIState() {
 
       return 'unknown';
     },
-    [currentUserId, ackMap, outstandingRecords],
+    [currentUserId, ackMap, outstandingRecords, completedReminderIds],
   );
 
   const acknowledge = useCallback(

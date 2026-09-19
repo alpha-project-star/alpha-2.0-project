@@ -17,7 +17,6 @@ import { AlphaLock } from "../components/AlphaLock";
 import { registerAlphaPWA } from "../lib/pwa";
 import { backgroundRuntime } from "../lib/background-runtime";
 import { AuthProvider, useAuth } from "../lib/auth";
-import { useAutoMigration } from "../hooks/useAutoMigration";
 import { LocalReminderRepository } from "../lib/reminder-repo";
 
 function NotFoundComponent() {
@@ -142,14 +141,13 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <MigrationAppContent />
+        <AppContent />
       </AuthProvider>
     </QueryClientProvider>
   );
 }
 
-function MigrationAppContent() {
-  useAutoMigration();
+function AppContent() {
   const auth = useAuth();
   const user = auth.status === 'authenticated' ? auth.user : null;
 

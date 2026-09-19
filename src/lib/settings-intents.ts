@@ -1,4 +1,5 @@
 import { alphaStore } from "./alpha-store";
+import { GROQ_EMERGENCY_MODEL, MODEL_TRIO } from "./models";
 
 /**
  * Voice/text intents that flip settings or return a canned answer.
@@ -75,13 +76,13 @@ export function trySettingsIntent(raw: string): string | null {
   );
   if (m) {
     const prov = m[1];
-    const model =
-      m[2] ||
-      (prov === "groq"
-        ? "llama-3.3-70b-versatile"
+    const defaultForProv =
+      prov === "groq"
+        ? GROQ_EMERGENCY_MODEL
         : prov === "openrouter"
-          ? "nvidia/nemotron-3-super-120b-a12b:free"
-          : "gpt-4o-mini");
+          ? MODEL_TRIO.capable.replace(/^openrouter:/, "")
+          : "gpt-4o-mini";
+    const model = m[2] || defaultForProv;
     const key: "fast" | "thinking" | "coding" = /coding|code/.test(m[3])
       ? "coding"
       : /thinking|deep/.test(m[3])

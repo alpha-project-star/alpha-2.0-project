@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { z } from "zod";
 import { reminderContextManager } from "./reminder-context";
+import { MODEL_TRIO } from "./models";
 
 import {
   Goal, GoalSchema,
@@ -44,14 +45,6 @@ export interface Bill {
   dueDate: string;
   balance: number;
   status: "due" | "paid" | "overdue";
-}
-export interface Reminder {
-  id: string;
-  title: string;
-  when: string;
-  notes: string;
-  done: "no" | "yes";
-  firedAt?: number;
 }
 export type MemoryProvenance =
   | "explicit_user"
@@ -131,13 +124,6 @@ export interface AlphaState {
   chat: ChatMessage[];
   notes: Note[];
   bills: Bill[];
-  /** 
-   * Reminders in local AlphaState are LEGACY only. 
-   * Canonical mutation authority is LocalReminderRepository.
-   * This array remains for migration-eligible detection and dry-runs only.
-   * It is wiped via alphaStore.clearReminders() upon successful migration.
-   */
-  reminders: Reminder[];
   tasks: Task[];
   goals: Goal[];
   runs: Run[];
@@ -153,7 +139,6 @@ export const K = {
   chat: "alpha.chat.v1",
   notes: "alpha.notes.v1",
   bills: "alpha.bills.v1",
-  reminders: "alpha.reminders.v1",
   goals: "alpha.goals.v1",
   tasks: "alpha.tasks.v1",
   runs: "alpha.runs.v1",
@@ -203,13 +188,9 @@ voice announcement. Alpha recognises the user as Alex.`,
   visionAmbientEnabled: false,
   visionAmbientIntervalSec: 30,
   taskModels: {
-    // Free-tier stack, each verified with a real live completion:
-    //  • fast     → Groq Llama 3.3 70B versatile (~0.1s)
-    //  • thinking → OpenRouter Nemotron 3 Super 120B free (~0.7s)
-    //  • coding   → Cohere North Mini Code free (~0.7s)
-    fast: "groq:llama-3.3-70b-versatile",
-    thinking: "openrouter:nvidia/nemotron-3-super-120b-a12b:free",
-    coding: "openrouter:cohere/north-mini-code:free",
+    fast: MODEL_TRIO.fast,
+    thinking: MODEL_TRIO.capable,
+    coding: MODEL_TRIO.coding,
   },
 };
 
@@ -277,15 +258,6 @@ export const BillSchema = z.object({
   dueDate: z.string(),
   balance: z.number(),
   status: z.enum(["due", "paid", "overdue"]),
-});
-
-export const ReminderSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  when: z.string(),
-  notes: z.string(),
-  done: z.enum(["no", "yes"]),
-  firedAt: z.number().optional(),
 });
 
 export const MemorySchema = z.object({
@@ -373,18 +345,11 @@ export function writeLS<T>(key: string, v: T): { status: "success" | "unavailabl
     throw new PersistenceError(key, err);
   }
 }
-function notifyReminderChange() {
-  if (typeof window === "undefined") return;
-  try {
-    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
-  } catch {}
-}
 
 let state: AlphaState = {
   chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
   notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
   bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
-  reminders: parseLS<Reminder[]>(K.reminders, z.array(ReminderSchema), []),
   tasks: parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []),
   goals: parseLS<Goal[]>(K.goals, z.array(GoalSchema) as any, []),
   runs: parseLS<Run[]>(K.runs, z.array(RunSchema) as any, []),
@@ -465,7 +430,6 @@ if (typeof window !== "undefined") {
       chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
       notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
       bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
-      reminders: parseLS<Reminder[]>(K.reminders, z.array(ReminderSchema), []),
       tasks: parseLS<Task[]>(K.tasks, z.array(z.any()), []),
       goals: parseLS<Goal[]>(K.goals, z.array(z.any()), []),
       runs: parseLS<Run[]>(K.runs, z.array(z.any()), []),
@@ -555,12 +519,6 @@ export const alphaStore = {
     writeLS(K.bills, next);
     state = { ...state, bills: next };
     emit();
-  },
-  clearReminders() {
-    writeLS(K.reminders, []);
-    state = { ...state, reminders: [] };
-    emit();
-    notifyReminderChange();
   },
   upsertTask(t: Task) {
     const next = upsert(state.tasks, t);
@@ -710,7 +668,6 @@ export const alphaStore = {
   replaceAll(patch: Partial<AlphaState>) {
     if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
     if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
-    if (patch.reminders !== undefined) writeLS(K.reminders, patch.reminders);
     if (patch.tasks !== undefined) writeLS(K.tasks, patch.tasks);
     if (patch.goals !== undefined) writeLS(K.goals, patch.goals);
     if (patch.runs !== undefined) writeLS(K.runs, patch.runs);

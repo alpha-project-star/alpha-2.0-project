@@ -1,11 +1,11 @@
 import { toast } from "sonner";
 import { z } from "zod";
+import { getAuth } from "firebase/auth";
 import {
   K,
   ChatMessageSchema,
   NoteSchema,
   BillSchema,
-  ReminderSchema,
   MemorySchema,
   ProfileSchema,
   SettingsSchema,
@@ -19,12 +19,12 @@ import {
   ResultSchema
 } from "./execution";
 import { sanitizeUserPersonalization } from "./alpha-identity";
+import { LocalReminderRepository, FirestoreReminder } from "./reminder-repo";
 
 const STORE_SCHEMAS: Record<string, z.ZodType<any>> = {
   [K.chat]: z.array(ChatMessageSchema),
   [K.notes]: z.array(NoteSchema),
   [K.bills]: z.array(BillSchema),
-  [K.reminders]: z.array(ReminderSchema),
   [K.goals]: z.array(GoalSchema),
   [K.tasks]: z.array(TaskSchema),
   [K.runs]: z.array(RunSchema),
@@ -41,9 +41,10 @@ const DB_NAME = "alpha.music.v1";
 const STORE = "tracks";
 
 export interface AlphaDataExport {
-  version: 1;
+  version: 1 | 2;
   exportedAt: string;
   localStorage: Record<string, string | null>;
+  reminders?: FirestoreReminder[];
   music: Array<{
     id: string;
     name: string;
@@ -146,7 +147,16 @@ export async function exportAlphaData(): Promise<AlphaDataExport> {
     console.warn("Music export skipped:", e);
   }
 
-  return { version: 1, exportedAt: new Date().toISOString(), localStorage, music };
+  const reminderRepo = new LocalReminderRepository();
+  const currentUid = getAuth().currentUser?.uid || "local-user";
+  let exportedReminders: FirestoreReminder[] = [];
+  try {
+    exportedReminders = await reminderRepo.listReminders(currentUid);
+  } catch (e) {
+    console.warn("Reminders export skipped:", e);
+  }
+
+  return { version: 2, exportedAt: new Date().toISOString(), localStorage, reminders: exportedReminders, music };
 }
 
 export function downloadAlphaData(data: AlphaDataExport) {
@@ -164,7 +174,7 @@ export function downloadAlphaData(data: AlphaDataExport) {
 export async function importAlphaData(fileOrJson: File | string): Promise<{ restored: string[] }> {
   const text = typeof fileOrJson === "string" ? fileOrJson : await fileOrJson.text();
   const data: AlphaDataExport = JSON.parse(text);
-  if (!data || data.version !== 1) throw new Error("Unrecognized Alpha backup format.");
+  if (!data || (data.version !== 1 && data.version !== 2)) throw new Error("Unrecognized Alpha backup format.");
 
   const restored: string[] = [];
 
@@ -223,6 +233,39 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
     }
   }
 
+  // Restore reminders into canonical LocalReminderRepository
+  const reminderRepo = new LocalReminderRepository();
+  const currentUid = getAuth().currentUser?.uid || "local-user";
+  if (Array.isArray(data.reminders) && data.reminders.length > 0) {
+    for (const r of data.reminders) {
+      try {
+        await reminderRepo.saveReminder(currentUid, r);
+      } catch (e) {
+        console.warn("Could not restore reminder:", r.id, e);
+      }
+    }
+    restored.push(`reminders:${data.reminders.length}`);
+  } else if (data.localStorage?.["alpha.reminders.v1"]) {
+    // Backward-compatible v1 migration
+    try {
+      const legacyReminders = JSON.parse(data.localStorage["alpha.reminders.v1"]);
+      if (Array.isArray(legacyReminders)) {
+        for (const lr of legacyReminders) {
+          if (lr.title) {
+            await reminderRepo.createReminder(currentUid, {
+              title: lr.title,
+              dueAt: lr.when ? Date.parse(lr.when) || Date.now() + 3600000 : Date.now() + 3600000,
+              notes: lr.notes || undefined,
+            });
+          }
+        }
+        restored.push(`reminders:${legacyReminders.length}`);
+      }
+    } catch (e) {
+      console.warn("Could not restore legacy reminders:", e);
+    }
+  }
+
   // Restore music
   if (data.music?.length) {
     const db = await openDb();
@@ -257,6 +300,10 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
     restored.push(`music:${data.music.length}`);
   }
 
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+  }
+
   // Reload from localStorage so the live store reflects the import
   if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
     window.location.reload();
@@ -279,6 +326,15 @@ export async function wipeAlphaData() {
       window.localStorage.removeItem(key);
     } catch {}
   }
+
+  const reminderRepo = new LocalReminderRepository();
+  try {
+    const currentUid = getAuth().currentUser?.uid || "local-user";
+    const existing = await reminderRepo.listReminders(currentUid);
+    for (const r of existing) {
+      await reminderRepo.deleteReminder(currentUid, r.id);
+    }
+  } catch {}
   
   try {
     const db = await openDb();
@@ -292,5 +348,9 @@ export async function wipeAlphaData() {
     });
   } catch {}
   
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+  }
+
   window.location.reload();
 }
