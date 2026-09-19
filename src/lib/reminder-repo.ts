@@ -20,6 +20,7 @@
  */
 
 import { getStorage, PersistenceError } from './alpha-store';
+import { withCrossContextLock } from './cross-context-lock';
 
 export type ReminderState = 'active' | 'completed' | 'cancelled';
 export type NotificationState = 'pending' | 'claimed' | 'accepted' | 'failed';
@@ -293,49 +294,55 @@ export class LocalReminderRepository implements ReminderRepository {
   async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     const effectiveUserId = userId || 'local-user';
-    const map = this.load(effectiveUserId);
-    const nextReminder: FirestoreReminder = {
-      ...reminder,
-      userId: effectiveUserId,
-      updatedAt: Date.now(),
-    };
-    const nextMap = new Map(map);
-    nextMap.set(reminder.id, nextReminder);
-    this.save(effectiveUserId, nextMap);
-    this.store.set(reminder.id, nextReminder);
+    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
+      const map = this.load(effectiveUserId);
+      const nextReminder: FirestoreReminder = {
+        ...reminder,
+        userId: effectiveUserId,
+        updatedAt: Date.now(),
+      };
+      const nextMap = new Map(map);
+      nextMap.set(reminder.id, nextReminder);
+      this.save(effectiveUserId, nextMap);
+      this.store.set(reminder.id, nextReminder);
+    });
   }
 
   async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     const effectiveUserId = userId || 'local-user';
-    const map = this.load(effectiveUserId);
-    const existing = map.get(reminderId);
-    if (!existing) {
-      throw new Error(`Reminder not found: ${reminderId}`);
-    }
-    if (patch.notificationState === 'claimed' && existing.notificationState && existing.notificationState !== 'pending') {
-      throw new Error('Transaction conflict: already claimed');
-    }
-    const updated: FirestoreReminder = {
-      ...existing,
-      ...patch,
-      updatedAt: Date.now(),
-    };
-    const nextMap = new Map(map);
-    nextMap.set(reminderId, updated);
-    this.save(effectiveUserId, nextMap);
-    this.store.set(reminderId, updated);
+    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
+      const map = this.load(effectiveUserId);
+      const existing = map.get(reminderId);
+      if (!existing) {
+        throw new Error(`Reminder not found: ${reminderId}`);
+      }
+      if (patch.notificationState === 'claimed' && existing.notificationState && existing.notificationState !== 'pending') {
+        throw new Error('Transaction conflict: already claimed');
+      }
+      const updated: FirestoreReminder = {
+        ...existing,
+        ...patch,
+        updatedAt: Date.now(),
+      };
+      const nextMap = new Map(map);
+      nextMap.set(reminderId, updated);
+      this.save(effectiveUserId, nextMap);
+      this.store.set(reminderId, updated);
+    });
   }
 
   async deleteReminder(userId: string, reminderId: string): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     const effectiveUserId = userId || 'local-user';
-    const map = this.load(effectiveUserId);
-    if (!map.has(reminderId)) return;
-    const nextMap = new Map(map);
-    nextMap.delete(reminderId);
-    this.save(effectiveUserId, nextMap);
-    this.store.delete(reminderId);
+    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
+      const map = this.load(effectiveUserId);
+      if (!map.has(reminderId)) return;
+      const nextMap = new Map(map);
+      nextMap.delete(reminderId);
+      this.save(effectiveUserId, nextMap);
+      this.store.delete(reminderId);
+    });
   }
 
   clear(): void {
@@ -385,23 +392,29 @@ export class InMemoryReminderRepository extends LocalReminderRepository {
   override async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
     if (reminder.userId !== userId) throw new Error("User ID mismatch");
-    this.store.set(this.key(userId, reminder.id), { ...reminder });
+    await withCrossContextLock(`alpha_inmem_reminder_${userId}`, async () => {
+      this.store.set(this.key(userId, reminder.id), { ...reminder });
+    });
   }
 
   override async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const k = this.key(userId, reminderId);
-    const r = this.store.get(k);
-    if (!r || r.userId !== userId) throw new Error('Reminder not found');
-    if (patch.notificationState === 'claimed' && r.notificationState && r.notificationState !== 'pending') {
-      throw new Error('Transaction conflict: already claimed');
-    }
-    this.store.set(k, { ...r, ...patch, updatedAt: Date.now() });
+    await withCrossContextLock(`alpha_inmem_reminder_${userId}`, async () => {
+      const k = this.key(userId, reminderId);
+      const r = this.store.get(k);
+      if (!r || r.userId !== userId) throw new Error('Reminder not found');
+      if (patch.notificationState === 'claimed' && r.notificationState && r.notificationState !== 'pending') {
+        throw new Error('Transaction conflict: already claimed');
+      }
+      this.store.set(k, { ...r, ...patch, updatedAt: Date.now() });
+    });
   }
 
   override async deleteReminder(userId: string, reminderId: string): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    this.store.delete(this.key(userId, reminderId));
+    await withCrossContextLock(`alpha_inmem_reminder_${userId}`, async () => {
+      this.store.delete(this.key(userId, reminderId));
+    });
   }
 
   override clear(): void {
