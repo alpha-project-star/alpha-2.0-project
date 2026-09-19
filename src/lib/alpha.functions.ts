@@ -145,32 +145,17 @@ function scoreMemory(q: string[], m: any): number {
   return rawScore * provMult * confMult;
 }
 
-// Authoritative reminders in-memory cache for fast conversational context
-const authoritativeReminderCache = new Map<string, FirestoreReminder[]>();
-
-export function updateAuthoritativeReminderCache(userId: string, reminders: FirestoreReminder[]): void {
-  if (userId) {
-    authoritativeReminderCache.set(userId, reminders);
-  }
-}
-
 export async function getAuthoritativeReminders(userId?: string | null): Promise<FirestoreReminder[]> {
-  try {
-    const uid = userId !== undefined ? userId : ((await ensureAuthenticatedUser())?.uid || getAuth().currentUser?.uid || null);
-    if (!uid) {
-      return [];
-    }
-    const tool = getReminderTool(uid);
-    const res = await tool.listReminders();
-    if (res.success && Array.isArray(res.data)) {
-      authoritativeReminderCache.set(uid, res.data);
-      return res.data;
-    }
-    return authoritativeReminderCache.get(uid) || [];
-  } catch {
-    const uid = userId !== undefined ? userId : (getAuth().currentUser?.uid || null);
-    return (uid && authoritativeReminderCache.get(uid)) || [];
+  const uid = userId !== undefined ? userId : ((await ensureAuthenticatedUser())?.uid || getAuth().currentUser?.uid || null);
+  if (!uid) {
+    return [];
   }
+  const tool = getReminderTool(uid);
+  const res = await tool.listReminders();
+  if (res.success && Array.isArray(res.data)) {
+    return res.data;
+  }
+  throw new Error(`Failed to read authoritative reminders: ${res.error?.message || "Repository read error"}`);
 }
 
 export function rerankContext(query: string, authoritativeReminders?: FirestoreReminder[]): string {
@@ -198,14 +183,8 @@ export function rerankContext(query: string, authoritativeReminders?: FirestoreR
 
   const notes = rank(s.notes, (n) => `${n.title} ${n.body}`);
 
-  // Retrieve authoritative reminders: passed directly or from active user cache
-  const currentUid = getAuth().currentUser?.uid || null;
-  const remList =
-    authoritativeReminders !== undefined
-      ? authoritativeReminders
-      : currentUid
-        ? authoritativeReminderCache.get(currentUid) || []
-        : [];
+  // Retrieve authoritative reminders: passed directly or empty
+  const remList = authoritativeReminders || [];
 
   const remrs = rank(
     remList,
@@ -261,13 +240,7 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
   const briefList = (items: any[], pick: (x: any) => string) =>
     items.slice(0, 8).map(pick).filter(Boolean).join("; ") || "—";
 
-  const currentUid = getAuth().currentUser?.uid || null;
-  const remList =
-    authoritativeReminders !== undefined
-      ? authoritativeReminders
-      : currentUid
-        ? authoritativeReminderCache.get(currentUid) || []
-        : [];
+  const remList = authoritativeReminders || [];
 
   const activeReminders = remList.filter((r) => r.reminderState === "active");
   const nextAlarm = activeReminders
@@ -710,9 +683,7 @@ export async function executeTool(call: any, context: ToolContext) {
       };
     }
     if (res && res.success && ['createReminder', 'updateReminder', 'deleteReminder', 'completeReminder'].includes(name)) {
-      if (userId) {
-        void getAuthoritativeReminders(userId);
-      }
+      // Canonical repository persists and dispatches alpha:reminders-changed
     }
     return res;
   } catch (e: any) {
@@ -1030,7 +1001,12 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
   activity.set(hasImages ? "reading_image" : "thinking");
 
-  const authReminders = await getAuthoritativeReminders();
+  let authReminders: FirestoreReminder[] = [];
+  try {
+    authReminders = await getAuthoritativeReminders();
+  } catch (err) {
+    console.error("Repository failure reading reminders for context:", err);
+  }
   const recall = userText ? rerankContext(userText, authReminders) : "";
   const rolling = conversationSummary.get();
 

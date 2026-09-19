@@ -121,7 +121,7 @@ export async function buildMorningBrief(options?: MorningBriefOptions): Promise<
     );
   } else if (reminderRepoFailed) {
     // Explicit failure semantics: do NOT claim zero reminders when repository read failed
-    parts.push(`I couldn't check your reminders due to a connection issue.`);
+    parts.push(`I couldn't check your reminders due to a local storage error.`);
   }
   if (overdueBills.length) {
     const total = overdueBills.reduce((a, b) => a + Number(b.balance || 0), 0);

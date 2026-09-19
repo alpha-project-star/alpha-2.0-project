@@ -119,10 +119,13 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     if (!userId) {
       return "You need to be signed in to manage reminders.";
     }
+    if (!when) {
+      return `When would you like to be reminded to ${title}? Please specify a date or time.`;
+    }
     const tool = getReminderTool(userId);
     const res = await tool.createReminder({
       title,
-      dueAt: when || "today at 9pm",
+      dueAt: when,
     });
     if (res.success && res.data) {
       const dueText = formatReminderDate(res.data.dueAt);
