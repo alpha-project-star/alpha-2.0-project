@@ -55,6 +55,144 @@ export interface ReminderRepository {
 
 const STORAGE_PREFIX = 'alpha.reminders.v1';
 
+function isObjectRecord(val: unknown): val is Record<string, unknown> {
+  return typeof val === 'object' && val !== null && !Array.isArray(val);
+}
+
+function isFiniteNumber(val: unknown): val is number {
+  return typeof val === 'number' && Number.isFinite(val);
+}
+
+function isReminderState(val: unknown): val is ReminderState {
+  return val === 'active' || val === 'completed' || val === 'cancelled';
+}
+
+function isNotificationState(val: unknown): val is NotificationState {
+  return val === 'pending' || val === 'claimed' || val === 'accepted' || val === 'failed';
+}
+
+function isProactiveResponseState(val: unknown): val is ProactiveResponseState {
+  return val === 'pending' || val === 'generating' || val === 'generated' || val === 'failed';
+}
+
+function validateAndParseReminder(item: unknown, effectiveUserId: string, key: string): FirestoreReminder {
+  if (!isObjectRecord(item)) {
+    throw new PersistenceError(key, new Error('Invalid reminder record in storage: expected a non-null object'));
+  }
+
+  // 1. id: non-empty string
+  if (typeof item.id !== 'string' || item.id.trim() === '') {
+    throw new PersistenceError(key, new Error('Invalid reminder record in storage: missing or empty "id"'));
+  }
+
+  // 2. userId: non-empty string, must match effective user
+  if (typeof item.userId !== 'string' || item.userId.trim() === '') {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: missing or empty "userId" for reminder ${item.id}`));
+  }
+  if (item.userId !== effectiveUserId) {
+    throw new PersistenceError(
+      key,
+      new Error(`User ownership mismatch in storage: expected "${effectiveUserId}", found "${item.userId}" on reminder ${item.id}`)
+    );
+  }
+
+  // 3. title: must be a string
+  if (typeof item.title !== 'string') {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: "title" must be a string on reminder ${item.id}`));
+  }
+
+  // 4. notes: must be a string (do not silently synthesize if missing)
+  if (typeof item.notes !== 'string') {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: "notes" must be a string on reminder ${item.id}`));
+  }
+
+  // 5. dueAt: finite number
+  if (!isFiniteNumber(item.dueAt)) {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: "dueAt" must be a finite number on reminder ${item.id}`));
+  }
+
+  // 6. createdAt: finite number
+  if (!isFiniteNumber(item.createdAt)) {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: "createdAt" must be a finite number on reminder ${item.id}`));
+  }
+
+  // 7. updatedAt: finite number
+  if (!isFiniteNumber(item.updatedAt)) {
+    throw new PersistenceError(key, new Error(`Invalid reminder record in storage: "updatedAt" must be a finite number on reminder ${item.id}`));
+  }
+
+  // 8. reminderState: 'active' | 'completed' | 'cancelled'
+  if (!isReminderState(item.reminderState)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: invalid "reminderState" "${String(item.reminderState)}" on reminder ${item.id}`)
+    );
+  }
+
+  // 9. notificationState: 'pending' | 'claimed' | 'accepted' | 'failed'
+  if (!isNotificationState(item.notificationState)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: invalid "notificationState" "${String(item.notificationState)}" on reminder ${item.id}`)
+    );
+  }
+
+  // Optional canonical fields validation:
+  if (item.legacyFiredAt !== undefined && !isFiniteNumber(item.legacyFiredAt)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "legacyFiredAt" must be a finite number on reminder ${item.id}`)
+    );
+  }
+
+  if (item.proactiveState !== undefined && !isProactiveResponseState(item.proactiveState)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: invalid "proactiveState" "${String(item.proactiveState)}" on reminder ${item.id}`)
+    );
+  }
+
+  if (item.proactiveEventId !== undefined && typeof item.proactiveEventId !== 'string') {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "proactiveEventId" must be a string on reminder ${item.id}`)
+    );
+  }
+
+  if (item.proactiveHandledAt !== undefined && !isFiniteNumber(item.proactiveHandledAt)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "proactiveHandledAt" must be a finite number on reminder ${item.id}`)
+    );
+  }
+
+  if (item.proactiveMessageId !== undefined && typeof item.proactiveMessageId !== 'string') {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "proactiveMessageId" must be a string on reminder ${item.id}`)
+    );
+  }
+
+  const result: FirestoreReminder = {
+    id: item.id,
+    userId: item.userId,
+    title: item.title,
+    notes: item.notes,
+    dueAt: item.dueAt,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    reminderState: item.reminderState,
+    notificationState: item.notificationState,
+    ...(item.legacyFiredAt !== undefined ? { legacyFiredAt: item.legacyFiredAt } : {}),
+    ...(item.proactiveState !== undefined ? { proactiveState: item.proactiveState } : {}),
+    ...(item.proactiveEventId !== undefined ? { proactiveEventId: item.proactiveEventId } : {}),
+    ...(item.proactiveHandledAt !== undefined ? { proactiveHandledAt: item.proactiveHandledAt } : {}),
+    ...(item.proactiveMessageId !== undefined ? { proactiveMessageId: item.proactiveMessageId } : {}),
+  };
+
+  return result;
+}
+
 export class LocalReminderRepository implements ReminderRepository {
   public store = new Map<string, FirestoreReminder>();
   public shouldFail = false;
@@ -73,6 +211,7 @@ export class LocalReminderRepository implements ReminderRepository {
     if (!storage) {
       return this.store;
     }
+    const safeUid = userId ? userId.trim() : 'local-user';
     const key = this.storageKey(userId);
     let raw: string | null;
     try {
@@ -102,23 +241,12 @@ export class LocalReminderRepository implements ReminderRepository {
     }
 
     const map = new Map<string, FirestoreReminder>();
-    for (const item of list) {
-      if (
-        !item ||
-        typeof item !== "object" ||
-        typeof (item as Record<string, unknown>).id !== "string" ||
-        !(item as { id: string }).id.trim() ||
-        typeof (item as Record<string, unknown>).title !== "string" ||
-        typeof (item as Record<string, unknown>).dueAt !== "number" ||
-        isNaN((item as { dueAt: number }).dueAt) ||
-        !isFinite((item as { dueAt: number }).dueAt)
-      ) {
-        throw new PersistenceError(
-          key,
-          new Error("Invalid reminder record in storage: missing id, title, or valid numeric dueAt")
-        );
+    for (const rawItem of list) {
+      const reminder = validateAndParseReminder(rawItem, safeUid, key);
+      if (map.has(reminder.id)) {
+        throw new PersistenceError(key, new Error(`Duplicate reminder ID in storage: "${reminder.id}"`));
       }
-      map.set((item as FirestoreReminder).id, item as FirestoreReminder);
+      map.set(reminder.id, reminder);
     }
     return map;
   }

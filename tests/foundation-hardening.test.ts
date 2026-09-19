@@ -96,6 +96,237 @@ describe("Foundation Hardening - Workstreams Verification", () => {
       const remaining = await repo.listReminders(userId);
       expect(remaining.length).toBe(0);
     });
+
+    it("valid canonical reminder loads successfully", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "Checkup",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      const reminders = await repo.listReminders("local-user");
+      expect(reminders.length).toBe(1);
+      expect(reminders[0].id).toBe("rem-1");
+    });
+
+    it("missing userId fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            title: "Doctor",
+            notes: "Checkup",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("missing createdAt fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "Checkup",
+            dueAt: 1700000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("missing updatedAt fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "Checkup",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("missing notes fails if required by canonical type", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("invalid dueAt fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "",
+            dueAt: "tomorrow",
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("invalid reminderState fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "not_a_valid_state",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("invalid notificationState fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-1",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "unknown_state",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("duplicate reminder IDs fail with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.local-user",
+        JSON.stringify([
+          {
+            id: "rem-dup",
+            userId: "local-user",
+            title: "Doctor",
+            notes: "",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+          {
+            id: "rem-dup",
+            userId: "local-user",
+            title: "Dentist",
+            notes: "",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("wrong-user reminder fails with PersistenceError", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set(
+        "alpha.reminders.v1.user-alice",
+        JSON.stringify([
+          {
+            id: "rem-wrong-user",
+            userId: "user-bob",
+            title: "Doctor",
+            notes: "",
+            dueAt: 1700000000000,
+            createdAt: 1690000000000,
+            updatedAt: 1690000000000,
+            reminderState: "active",
+            notificationState: "pending",
+          },
+        ])
+      );
+      await expect(repo.listReminders("user-alice")).rejects.toThrow(PersistenceError);
+    });
+
+    it("malformed persisted data does not become an empty reminder collection", async () => {
+      const repo = new LocalReminderRepository();
+      storeMap.set("alpha.reminders.v1.local-user", "{ corrupted json syntax");
+      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
+    });
+
+    it("missing storage still correctly represents an empty collection", async () => {
+      const repo = new LocalReminderRepository();
+      const empty = await repo.listReminders("local-user");
+      expect(empty).toEqual([]);
+    });
   });
 
   describe("Workstream 3: Strict Reminder Input Parsing (No Invented Times)", () => {
