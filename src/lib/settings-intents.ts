@@ -1,5 +1,5 @@
 import { alphaStore } from "./alpha-store";
-import { GROQ_EMERGENCY_MODEL, MODEL_TRIO } from "./models";
+import { GROQ_EMERGENCY_MODEL, MODEL_TRIO, isSupportedModel, ProviderId } from "./models";
 
 /**
  * Voice/text intents that flip settings or return a canned answer.
@@ -75,14 +75,20 @@ export function trySettingsIntent(raw: string): string | null {
     /use\s+(groq|openai|openrouter)(?:\s+(\S+))?\s+for\s+(fast|thinking|deep|coding|code)/,
   );
   if (m) {
-    const prov = m[1];
+    const prov = m[1] as ProviderId;
     const defaultForProv =
       prov === "groq"
         ? GROQ_EMERGENCY_MODEL
         : prov === "openrouter"
           ? MODEL_TRIO.capable.replace(/^openrouter:/, "")
           : "gpt-4o-mini";
-    const model = m[2] || defaultForProv;
+    const requestedModel = m[2];
+    const model = requestedModel || defaultForProv;
+
+    if (!isSupportedModel(prov, model)) {
+      return `Model "${model}" is not a supported model for provider "${prov}".`;
+    }
+
     const key: "fast" | "thinking" | "coding" = /coding|code/.test(m[3])
       ? "coding"
       : /thinking|deep/.test(m[3])

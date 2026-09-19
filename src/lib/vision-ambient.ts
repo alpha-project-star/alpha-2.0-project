@@ -15,10 +15,13 @@ let momentum = 0;
 const HARD_CAP_PER_HOUR = 12;
 const AMBIENT_COUNTER_KEY = "alpha_ambient_hourly_counter";
 const AMBIENT_RESET_KEY = "alpha_ambient_hourly_reset_at";
+const LEASE_OWNER_KEY = "alpha_ambient_lease_owner";
+const LEASE_EXPIRES_KEY = "alpha_ambient_lease_expires_at";
+const LEASE_DURATION_MS = 6000;
 
 let heartbeatInterval: number | null = null;
 let isLeader = false;
-const tabId = Math.random().toString(36).slice(2);
+const tabId = typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36);
 let currentAmbientExecutionId = 0;
 
 function getHourlyState(): { count: number; resetAt: number } {
@@ -42,26 +45,53 @@ function updateHourlyState(count: number, resetAt: number) {
   } catch {}
 }
 
+function tryAcquireOrRenewLease(): boolean {
+  const storage = getStorage();
+  if (!storage) return false;
+  const now = Date.now();
+  const currentOwner = storage.getItem(LEASE_OWNER_KEY);
+  const expiresAt = Number(storage.getItem(LEASE_EXPIRES_KEY) || "0");
+
+  const leaseExpired = isNaN(expiresAt) || now > expiresAt;
+  const isOwner = currentOwner === tabId;
+
+  if (leaseExpired || isOwner || !currentOwner) {
+    try {
+      storage.setItem(LEASE_OWNER_KEY, tabId);
+      storage.setItem(LEASE_EXPIRES_KEY, String(now + LEASE_DURATION_MS));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function releaseLease() {
+  try {
+    const storage = getStorage();
+    if (storage && storage.getItem(LEASE_OWNER_KEY) === tabId) {
+      storage.removeItem(LEASE_OWNER_KEY);
+      storage.removeItem(LEASE_EXPIRES_KEY);
+    }
+  } catch {}
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", () => {
+    if (isLeader) releaseLease();
+  });
+  window.addEventListener("pagehide", () => {
+    if (isLeader) releaseLease();
+  });
+}
+
 function startLeadershipTick() {
   if (heartbeatInterval != null) return;
   
   const tick = () => {
     if (!running) return;
-    const now = Date.now();
-    const storage = getStorage();
-    if (!storage) return;
-    const leaderId = storage.getItem("alpha_ambient_leader_id");
-    const leaderHb = Number(storage.getItem("alpha_ambient_leader_heartbeat") || "0");
-    
-    if (!leaderId || now - leaderHb > 5000 || leaderId === tabId) {
-      try {
-        storage.setItem("alpha_ambient_leader_id", tabId);
-        storage.setItem("alpha_ambient_leader_heartbeat", String(now));
-        isLeader = true;
-      } catch {}
-    } else {
-      isLeader = false;
-    }
+    isLeader = tryAcquireOrRenewLease();
   };
   
   tick();
@@ -74,13 +104,7 @@ function stopLeadershipTick() {
     heartbeatInterval = null;
   }
   isLeader = false;
-  try {
-    const storage = getStorage();
-    if (storage && storage.getItem("alpha_ambient_leader_id") === tabId) {
-      storage.removeItem("alpha_ambient_leader_id");
-      storage.removeItem("alpha_ambient_leader_heartbeat");
-    }
-  } catch {}
+  releaseLease();
 }
 
 export function startVisionAmbient(): void {

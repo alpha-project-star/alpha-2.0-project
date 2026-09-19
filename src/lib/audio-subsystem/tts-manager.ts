@@ -153,6 +153,10 @@ export class TTSManager {
   async speak(blobOrUrl: Blob | string, id?: ExecutionId): Promise<void> {
     this.cancel(); // Interrupt any existing speech
     
+    if (typeof window === "undefined" || typeof Audio === "undefined") {
+      return;
+    }
+
     if (id) this.currentExecutionId = id;
     this.abortController = new AbortController();
     const { signal } = this.abortController;

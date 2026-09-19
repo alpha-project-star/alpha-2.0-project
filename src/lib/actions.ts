@@ -543,18 +543,14 @@ export async function executeActionTagsAsync(
   const repo = options?.repo ?? new LocalReminderRepository();
 
   async function findReminderHits(query: string): Promise<FirestoreReminder[]> {
-    try {
-      const list = await repo.listReminders(effectiveUserId);
-      const q = (query || "").toLowerCase().trim().replace(/^all\s+/, "");
-      if (!q) return [];
-      const exact = list.filter((r) => (r.title || "").toLowerCase().trim() === q);
-      if (exact.length) return exact;
-      const titleHits = list.filter((r) => (r.title || "").toLowerCase().includes(q));
-      if (titleHits.length) return titleHits;
-      return list.filter((r) => `${r.title} ${r.notes || ""}`.toLowerCase().includes(q));
-    } catch {
-      return [];
-    }
+    const list = await repo.listReminders(effectiveUserId);
+    const q = (query || "").toLowerCase().trim().replace(/^all\s+/, "");
+    if (!q) return [];
+    const exact = list.filter((r) => (r.title || "").toLowerCase().trim() === q);
+    if (exact.length) return exact;
+    const titleHits = list.filter((r) => (r.title || "").toLowerCase().includes(q));
+    if (titleHits.length) return titleHits;
+    return list.filter((r) => `${r.title} ${r.notes || ""}`.toLowerCase().includes(q));
   }
 
   // Handle ADD_REMINDER asynchronously
@@ -610,12 +606,12 @@ export async function executeActionTagsAsync(
         status: "success",
         message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
         tag: "ADD_REMINDER",
         status: "failed",
-        message: `Reminder "${title}" could not be saved: ${err?.message || "error"}`,
+        message: `Reminder "${title}" could not be saved: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
     text = text.replace(fullMatch, "");
@@ -628,7 +624,20 @@ export async function executeActionTagsAsync(
     const query = match[1].trim();
     activity.set(actionActivity("UPDATE_REMINDER"));
 
-    const hits = await findReminderHits(query);
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
+
     if (!hits.length) {
       activity.set("action_failed");
       results.push({
@@ -708,12 +717,12 @@ export async function executeActionTagsAsync(
         status: "success",
         message: `Updated reminder "${target.title}": ${what}`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
         tag: "UPDATE_REMINDER",
         status: "failed",
-        message: `Could not update reminder "${target.title}": ${err?.message || "error"}`,
+        message: `Could not update reminder "${target.title}": ${err instanceof Error ? err.message : String(err)}`,
       });
     }
     text = text.replace(fullMatch, "");
@@ -727,7 +736,20 @@ export async function executeActionTagsAsync(
     activity.set(actionActivity("DELETE_REMINDER"));
 
     const all = /^all\s+/i.test(query);
-    const hits = await findReminderHits(query);
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
+
     if (!hits.length) {
       activity.set("action_failed");
       results.push({
@@ -758,12 +780,12 @@ export async function executeActionTagsAsync(
         status: "success",
         message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
         tag: "DELETE_REMINDER",
         status: "failed",
-        message: `Could not delete reminders: ${err?.message || "error"}`,
+        message: `Could not delete reminders: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
     text = text.replace(fullMatch, "");
@@ -776,7 +798,20 @@ export async function executeActionTagsAsync(
     const query = match[1].trim();
     activity.set(actionActivity("MARK_REMINDER_DONE"));
 
-    const hits = await findReminderHits(query);
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
+
     if (!hits.length) {
       activity.set("action_failed");
       results.push({
@@ -810,12 +845,12 @@ export async function executeActionTagsAsync(
         status: "success",
         message: `Marked reminder "${target.title}" as done ✅`,
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
         tag: "MARK_REMINDER_DONE",
         status: "failed",
-        message: `Could not mark reminder "${target.title}" as done: ${err?.message || "error"}`,
+        message: `Could not mark reminder "${target.title}" as done: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
     text = text.replace(fullMatch, "");
@@ -826,7 +861,19 @@ export async function executeActionTagsAsync(
   while ((match = delLastRemRe.exec(input)) !== null) {
     const fullMatch = match[0];
     activity.set(actionActivity("DELETE_LAST"));
-    const list = await repo.listReminders(effectiveUserId);
+    let list: FirestoreReminder[];
+    try {
+      list = await repo.listReminders(effectiveUserId);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_LAST",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
     if (!list.length) {
       activity.set("action_failed");
       results.push({ tag: "DELETE_LAST", status: "not_found", message: "There are no reminders to delete." });
@@ -837,9 +884,13 @@ export async function executeActionTagsAsync(
     try {
       await repo.deleteReminder(effectiveUserId, victim.id);
       results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".` });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
-      results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete reminder: ${err?.message}` });
+      results.push({
+        tag: "DELETE_LAST",
+        status: "failed",
+        message: `Could not delete reminder: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     text = text.replace(fullMatch, "");
   }
@@ -849,7 +900,19 @@ export async function executeActionTagsAsync(
   while ((match = clearRemRe.exec(input)) !== null) {
     const fullMatch = match[0];
     activity.set(actionActivity("CLEAR_ALL"));
-    const list = await repo.listReminders(effectiveUserId);
+    let list: FirestoreReminder[];
+    try {
+      list = await repo.listReminders(effectiveUserId);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      continue;
+    }
     if (!list.length) {
       activity.set("action_failed");
       results.push({ tag: "CLEAR_ALL", status: "not_found", message: "There are no reminders to clear." });
@@ -861,9 +924,13 @@ export async function executeActionTagsAsync(
         await repo.deleteReminder(effectiveUserId, r.id);
       }
       results.push({ tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} reminders.` });
-    } catch (err: any) {
+    } catch (err: unknown) {
       activity.set("action_failed");
-      results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear reminders: ${err?.message}` });
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "failed",
+        message: `Could not clear reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
     }
     text = text.replace(fullMatch, "");
   }

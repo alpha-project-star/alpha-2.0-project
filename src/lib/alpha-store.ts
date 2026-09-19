@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { z } from "zod";
 import { reminderContextManager } from "./reminder-context";
-import { MODEL_TRIO } from "./models";
+import { MODEL_TRIO, isSupportedModel, parseRouteSpec } from "./models";
 
 import {
   Goal, GoalSchema,
@@ -220,9 +220,18 @@ export const SettingsSchema = z.object({
   visionAmbientEnabled: z.boolean().default(DEFAULT_SETTINGS.visionAmbientEnabled),
   visionAmbientIntervalSec: z.number().min(5).default(DEFAULT_SETTINGS.visionAmbientIntervalSec),
   taskModels: z.object({
-    fast: z.string().regex(/^(groq|openai|openrouter):.+$/).default(DEFAULT_SETTINGS.taskModels.fast),
-    thinking: z.string().regex(/^(groq|openai|openrouter):.+$/).default(DEFAULT_SETTINGS.taskModels.thinking),
-    coding: z.string().regex(/^(groq|openai|openrouter):.+$/).default(DEFAULT_SETTINGS.taskModels.coding),
+    fast: z.string().refine((s) => {
+      const parsed = parseRouteSpec(s);
+      return parsed !== null && isSupportedModel(parsed.prov, parsed.model);
+    }, { message: "Unsupported model route for fast lane" }).default(DEFAULT_SETTINGS.taskModels.fast),
+    thinking: z.string().refine((s) => {
+      const parsed = parseRouteSpec(s);
+      return parsed !== null && isSupportedModel(parsed.prov, parsed.model);
+    }, { message: "Unsupported model route for thinking lane" }).default(DEFAULT_SETTINGS.taskModels.thinking),
+    coding: z.string().refine((s) => {
+      const parsed = parseRouteSpec(s);
+      return parsed !== null && isSupportedModel(parsed.prov, parsed.model);
+    }, { message: "Unsupported model route for coding lane" }).default(DEFAULT_SETTINGS.taskModels.coding),
   }).default(DEFAULT_SETTINGS.taskModels),
 }) as z.ZodType<Settings>;
 
@@ -289,7 +298,7 @@ export const MemorySchema = z.object({
 
 export class PersistenceError extends Error {
   constructor(key: string, originalError: any) {
-    super(`Storage write failed for key "${key}": ${originalError?.message || originalError}`);
+    super(`Storage operation failed for key "${key}": ${originalError?.message || originalError}`);
     this.name = "PersistenceError";
   }
 }
@@ -306,15 +315,19 @@ export function getStorage(): Storage | undefined {
 function parseLS<T>(key: string, schema: z.ZodType<T>, fallback: T): T {
   const storage = getStorage();
   if (!storage) return fallback;
+  const v = storage.getItem(key);
+  if (v === null || v.trim() === "") return fallback;
+  let parsed: unknown;
   try {
-    const v = storage.getItem(key);
-    if (!v) return fallback;
-    const parsed = JSON.parse(v);
-    const result = schema.safeParse(parsed);
-    return result.success ? result.data : fallback;
-  } catch {
-    return fallback;
+    parsed = JSON.parse(v);
+  } catch (err: unknown) {
+    throw new PersistenceError(key, new Error(`Corrupted JSON in storage: ${err instanceof Error ? err.message : String(err)}`));
   }
+  const result = schema.safeParse(parsed);
+  if (!result.success) {
+    throw new PersistenceError(key, new Error(`Schema validation failed for "${key}": ${result.error.message}`));
+  }
+  return result.data;
 }
 
 export function writeLS<T>(key: string, v: T): { status: "success" | "unavailable" } {
@@ -487,9 +500,9 @@ export const alphaStore = {
     emit();
   },
   clearChat() {
+    conversationSummary.clear();
     writeLS(K.chat, []);
     state = { ...state, chat: [] };
-    conversationSummary.clear();
     reminderContextManager.clear();
     try {
       import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});

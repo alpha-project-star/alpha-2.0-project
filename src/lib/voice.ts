@@ -432,6 +432,7 @@ export class ContinuousRecognizer {
   private silenceTimer: number | null = null;
   private interimBuf = "";
   private handlers: RecHandlers = {};
+  private sessionId = 0;
 
   get isActive() {
     return this.active;
@@ -460,13 +461,17 @@ export class ContinuousRecognizer {
     rec.continuous = !isAndroid;
     rec.interimResults = true;
     rec.lang = this.lang();
+    const mySessionId = ++this.sessionId;
+
     rec.onstart = () => {
+      if (mySessionId !== this.sessionId) return;
       this.active = true;
       speechManager.setState('LISTENING');
       activity.set("listening");
       this.handlers.onStart?.();
     };
     rec.onend = () => {
+      if (mySessionId !== this.sessionId) return;
       this.active = false;
       if (speechManager.getState() === 'LISTENING') speechManager.setState('IDLE');
       if (activity.get().kind === "listening") activity.clear();
@@ -477,6 +482,7 @@ export class ContinuousRecognizer {
       this.restartTimer = window.setTimeout(
         () => {
           this.restartTimer = null;
+          if (mySessionId !== this.sessionId) return;
           if (!this.wantOn || this.paused) return;
           try {
             rec.start();
@@ -498,6 +504,7 @@ export class ContinuousRecognizer {
       );
     };
     rec.onerror = (e: any) => {
+      if (mySessionId !== this.sessionId) return;
       const err = String(e?.error || "speech error");
       if (err === "no-speech" || err === "aborted") return;
       if (err === "not-allowed" || err === "service-not-allowed") {
@@ -513,6 +520,7 @@ export class ContinuousRecognizer {
       this.handlers.onError?.(err);
     };
     rec.onresult = (e: any) => {
+      if (mySessionId !== this.sessionId) return;
       let interim = "";
       let finalText = "";
       for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -523,7 +531,7 @@ export class ContinuousRecognizer {
       if (interim) {
         this.interimBuf = interim;
         this.handlers.onInterim?.(interim);
-        this.armSilence();
+        this.armSilence(mySessionId);
       }
       if (finalText.trim()) {
         const t = finalText.trim();
@@ -543,7 +551,8 @@ export class ContinuousRecognizer {
     this.wantOn = true;
     this.paused = false;
     if (this.active) return;
-    if (!this.rec) this.rec = this.build();
+    this.sessionId++;
+    this.rec = this.build();
     if (!this.rec) {
       this.handlers.onError?.("Speech recognition not supported");
       return;
@@ -558,6 +567,7 @@ export class ContinuousRecognizer {
   /** Pause without forgetting we want to be on — used while Alpha speaks. */
   suspend() {
     this.paused = true;
+    this.sessionId++;
     if (this.restartTimer) {
       window.clearTimeout(this.restartTimer);
       this.restartTimer = null;
@@ -578,22 +588,20 @@ export class ContinuousRecognizer {
     if (!this.wantOn) return;
     this.paused = false;
     if (this.active) return;
-    if (!this.rec) this.rec = this.build();
+    this.sessionId++;
+    this.rec = this.build();
+    if (!this.rec) return;
     try {
-      this.rec?.start();
-    } catch {
-      this.rec = this.build();
-      try {
-        this.rec?.start();
-      } catch (e: any) {
-        this.handlers.onError?.(e?.message || "Could not resume");
-      }
+      this.rec.start();
+    } catch (e: any) {
+      this.handlers.onError?.(e?.message || "Could not resume");
     }
   }
 
-  private armSilence() {
+  private armSilence(session: number) {
     if (this.silenceTimer) window.clearTimeout(this.silenceTimer);
     this.silenceTimer = window.setTimeout(() => {
+      if (session !== this.sessionId) return;
       const t = this.interimBuf.trim();
       this.interimBuf = "";
       if (t) this.handlers.onFinal?.(t);
@@ -603,6 +611,7 @@ export class ContinuousRecognizer {
   stop() {
     this.wantOn = false;
     this.paused = false;
+    this.sessionId++;
     if (this.restartTimer) {
       window.clearTimeout(this.restartTimer);
       this.restartTimer = null;

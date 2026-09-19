@@ -238,22 +238,62 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
 
   if (Array.isArray(data.reminders) && data.reminders.length > 0) {
     for (const r of data.reminders) {
-      if (!r.title || typeof r.title !== "string" || !r.title.trim()) {
-        throw new Error(`Invalid reminder in backup: reminder ID "${r.id || "unknown"}" is missing a title.`);
+      if (!r || typeof r !== "object" || Array.isArray(r)) {
+        throw new Error("Invalid reminder in backup: expected an object.");
+      }
+      if (typeof r.id !== "string" || !r.id.trim()) {
+        throw new Error("Invalid reminder in backup: missing or empty id.");
+      }
+      if (typeof r.userId !== "string" || !r.userId.trim()) {
+        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing or has an empty userId.`);
+      }
+      if (typeof r.title !== "string") {
+        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing a string title.`);
+      }
+      if (typeof r.notes !== "string") {
+        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing a string notes field.`);
       }
       if (typeof r.dueAt !== "number" || isNaN(r.dueAt) || !isFinite(r.dueAt)) {
         throw new Error(`Invalid reminder in backup: "${r.title}" is missing a valid numeric due date.`);
       }
+      if (typeof r.createdAt !== "number" || isNaN(r.createdAt) || !isFinite(r.createdAt)) {
+        throw new Error(`Invalid reminder in backup: "${r.title}" is missing a valid numeric createdAt.`);
+      }
+      if (typeof r.updatedAt !== "number" || isNaN(r.updatedAt) || !isFinite(r.updatedAt)) {
+        throw new Error(`Invalid reminder in backup: "${r.title}" is missing a valid numeric updatedAt.`);
+      }
+      if (r.reminderState !== "active" && r.reminderState !== "completed" && r.reminderState !== "cancelled") {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid reminderState "${String(r.reminderState)}".`);
+      }
+      if (r.notificationState !== "pending" && r.notificationState !== "claimed" && r.notificationState !== "accepted" && r.notificationState !== "failed") {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid notificationState "${String(r.notificationState)}".`);
+      }
+      if (r.legacyFiredAt !== undefined && (typeof r.legacyFiredAt !== "number" || !isFinite(r.legacyFiredAt))) {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid legacyFiredAt.`);
+      }
+      if (r.proactiveState !== undefined && !["pending", "generating", "generated", "failed"].includes(r.proactiveState)) {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveState.`);
+      }
+      if (r.proactiveEventId !== undefined && typeof r.proactiveEventId !== "string") {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveEventId.`);
+      }
+      if (r.proactiveHandledAt !== undefined && (typeof r.proactiveHandledAt !== "number" || !isFinite(r.proactiveHandledAt))) {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveHandledAt.`);
+      }
+      if (r.proactiveMessageId !== undefined && typeof r.proactiveMessageId !== "string") {
+        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveMessageId.`);
+      }
+
       stagedReminders.push({
-        id: r.id || uid(),
-        userId: currentUid,
-        title: r.title.trim(),
-        notes: r.notes || "",
+        id: r.id,
+        userId: r.userId,
+        title: r.title,
+        notes: r.notes,
         dueAt: r.dueAt,
-        createdAt: r.createdAt || Date.now(),
-        updatedAt: r.updatedAt || Date.now(),
-        reminderState: r.reminderState || "active",
-        notificationState: r.notificationState || "pending",
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        reminderState: r.reminderState,
+        notificationState: r.notificationState,
         legacyFiredAt: r.legacyFiredAt,
         proactiveState: r.proactiveState,
         proactiveEventId: r.proactiveEventId,
@@ -478,29 +518,37 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
 }
 
 export async function wipeAlphaData() {
-  const keysToRemove: string[] = [];
-  for (let i = 0; i < window.localStorage.length; i++) {
-    const key = window.localStorage.key(i);
-    if (key && key.startsWith("alpha.")) {
-      keysToRemove.push(key);
+  const errors: string[] = [];
+
+  // 1. Clear localStorage keys
+  try {
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const key = window.localStorage.key(i);
+      if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+        keysToRemove.push(key);
+      }
     }
-  }
-  
-  for (const key of keysToRemove) {
-    try {
+    for (const key of keysToRemove) {
       window.localStorage.removeItem(key);
-    } catch {}
+    }
+  } catch (err: unknown) {
+    errors.push(`Failed to clear local storage: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  const reminderRepo = new LocalReminderRepository();
+  // 2. Clear canonical reminders
   try {
+    const reminderRepo = new LocalReminderRepository();
     const currentUid = auth.currentUser?.uid || "local-user";
     const existing = await reminderRepo.listReminders(currentUid);
     for (const r of existing) {
       await reminderRepo.deleteReminder(currentUid, r.id);
     }
-  } catch {}
-  
+  } catch (err: unknown) {
+    errors.push(`Failed to clear canonical reminders: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  // 3. Clear IndexedDB music
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
@@ -511,11 +559,18 @@ export async function wipeAlphaData() {
       req.onerror = () => reject(req.error || new Error("Could not clear music."));
       tx.oncomplete = () => db.close();
     });
-  } catch {}
-  
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+  } catch (err: unknown) {
+    errors.push(`Failed to clear music store: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  window.location.reload();
+  if (errors.length > 0) {
+    throw new Error(`Wipe operation failed:\n${errors.join("\n")}`);
+  }
+
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+    if (typeof window.location?.reload === "function") {
+      window.location.reload();
+    }
+  }
 }

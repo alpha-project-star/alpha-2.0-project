@@ -90,6 +90,41 @@ export function parseRouteSpec(spec: string): { prov: ProviderId; model: string 
   return { prov, model };
 }
 
+/** Canonical list of supported models by provider */
+export const SUPPORTED_MODELS: Record<ProviderId, readonly string[]> = {
+  openrouter: [
+    "minimax/minimax-m3:free",
+    "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+    "nvidia/nemotron-3-super-120b-a12b:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "cohere/north-mini-code:free",
+    "dots-studio/dots-3-note-preview:free",
+    "openrouter/free",
+  ],
+  groq: [
+    "llama-3.1-8b-instant",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "mixtral-8x7b-32768",
+  ],
+  openai: [
+    "gpt-4o",
+    "gpt-4o-mini",
+    "gpt-4-turbo",
+    "gpt-3.5-turbo",
+    "o1-mini",
+    "o3-mini",
+  ],
+} as const;
+
+export function isSupportedModel(provider: string, model: string): boolean {
+  if (!["groq", "openai", "openrouter"].includes(provider)) return false;
+  const prov = provider as ProviderId;
+  const supported = SUPPORTED_MODELS[prov];
+  if (!supported) return false;
+  return supported.includes(model);
+}
+
 /** Human-readable label for a route, for the "answered by" record. */
 export function routeLabel(prov: ProviderId, model: string): string {
   const short =
