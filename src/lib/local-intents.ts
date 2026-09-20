@@ -49,9 +49,15 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   );
   if (mm) {
     const kind = mm[1].replace(/s$/, "");
+    if (kind === "reminder") activity.set("reading_reminder");
+    else if (kind === "note") activity.set("reading_note");
+    else if (kind === "memory") activity.set("reading_memory");
     return await listItems(kind);
   }
-  if (/^(?:what|which)\s+do\s+you\s+remember/.test(lower)) return await listItems("memory");
+  if (/^(?:what|which)\s+do\s+you\s+remember/.test(lower)) {
+    activity.set("reading_memory");
+    return await listItems("memory");
+  }
 
   // ---- BULK CLEAR -------------------------------------------------------
   mm = lower.match(
@@ -59,11 +65,15 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   );
   if (mm) {
     const kind = mm[1].replace(/s$/, "");
+    if (kind === "reminder") activity.set("writing_reminder");
+    else if (kind === "note") activity.set("writing_note");
+    else if (kind === "memory") activity.set("writing_memory");
     return await bulkClear(kind);
   }
   if (/^(?:clear|delete|remove)\s+(?:all\s+)?done\s+reminders/.test(lower)) {
     const userId = auth.currentUser?.uid || null;
     if (!userId) return "You need to be signed in to manage reminders.";
+    activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
     if (!res.success) return `Could not fetch reminders: ${res.error?.message || "error"}.`;
@@ -96,6 +106,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
           (x.title || "").toLowerCase().includes(q) || (x.body || "").toLowerCase().includes(q),
       );
     if (!n) return `I couldn't find a note matching "${q}".`;
+    activity.set("writing_note");
     alphaStore.upsertNote({ ...n, title: to, updatedAt: Date.now() });
     return `Renamed note to "${to}".`;
   }
@@ -104,6 +115,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     const q = trim(mm[1]);
     const b = alphaStore.get().bills.find((x) => x.name.toLowerCase().includes(q));
     if (!b) return `I couldn't find a bill matching "${q}".`;
+    activity.set("writing_bill");
     alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
     return `Marked bill "${b.name}" as paid.`;
   }
@@ -122,6 +134,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     if (!when) {
       return `When would you like to be reminded to ${title}? Please specify a date or time.`;
     }
+    activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.createReminder({
       title,
@@ -142,6 +155,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   );
   if (m) {
     const body = trim(m[m.length - 1]);
+    activity.set("writing_note");
     alphaStore.upsertNote({ id: uid(), title: body.slice(0, 40), body, updatedAt: Date.now() });
     return `Got it — note saved: "${body.slice(0, 60)}".`;
   }
@@ -152,6 +166,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   );
   if (m) {
     const detail = trim(m[m.length - 1]);
+    activity.set("writing_memory");
     alphaStore.upsertMemory({
       id: uid(),
       topic: detail.slice(0, 40),
@@ -325,6 +340,7 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
   const s = alphaStore.get();
   const lc = q.toLowerCase();
   if (kind === "reminder") {
+    activity.set("writing_reminder");
     const userId = await getActiveUserId();
     if (!userId) return "You need to be signed in to manage reminders.";
     const tool = getReminderTool(userId);
@@ -338,6 +354,7 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
     return `Deleted reminder "${res.data.title}".`;
   }
   if (kind === "note") {
+    activity.set("writing_note");
     const matches = s.notes.filter(
       (n) =>
         (n.title || "").toLowerCase().includes(lc) || (n.body || "").toLowerCase().includes(lc),
@@ -349,6 +366,7 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
     return `Deleted note "${matches[0].title || matches[0].body.slice(0, 30)}".`;
   }
   if (kind === "memory") {
+    activity.set("writing_memory");
     const matches = s.memories.filter(
       (m) => m.topic.toLowerCase().includes(lc) || m.detail.toLowerCase().includes(lc),
     );

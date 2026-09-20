@@ -248,7 +248,7 @@ export const activity = {
 export function actionActivity(tag: string): ActivityKind {
   const t = tag.toUpperCase();
   if (t.includes("NOTE"))
-    return t.startsWith("ADD") || t.startsWith("UPDATE") ? "writing_note" : "executing_action";
+    return t.startsWith("ADD") || t.startsWith("UPDATE") || t.startsWith("DELETE") || t.startsWith("CLEAR") ? "writing_note" : "executing_action";
   if (t.includes("REMINDER")) return "writing_reminder";
   if (t.includes("BILL")) return "writing_bill";
   if (t.includes("MEMORY")) return "writing_memory";

@@ -136,7 +136,9 @@ export async function sendChatOpenAICompat(
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     let res: Response;
     try {
-      opts.onStatus?.(attempt === 1 ? "waiting" : "retrying");
+      if (attempt > 1) {
+        opts.onStatus?.("retrying");
+      }
       res = await fetch(url, {
         method: "POST",
         signal: opts.signal || ctrl.signal,

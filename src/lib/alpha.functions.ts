@@ -671,17 +671,37 @@ export async function executeTool(call: any, context: ToolContext) {
   try {
     let res: any;
     switch (name) {
-      case 'createReminder': res = await tool.createReminder(args); break;
-      case 'getReminder': res = await tool.getReminder(args.idOrQuery || args.id || args.query); break;
-      case 'listReminders': res = await tool.listReminders(); break;
-      case 'updateReminder': res = await tool.updateReminder(args); break;
-      case 'deleteReminder': res = await tool.deleteReminder(args.idOrQuery || args.id || args.query); break;
-      case 'completeReminder': res = await tool.completeReminder(args.idOrQuery || args.id || args.query); break;
-      default: return { 
-        success: false, 
-        operation: name, 
-        error: { code: 'UNKNOWN_TOOL', message: `Tool ${name} not found` } 
-      };
+      case 'createReminder':
+        activity.set("writing_reminder");
+        res = await tool.createReminder(args);
+        break;
+      case 'getReminder':
+        activity.set("reading_reminder");
+        res = await tool.getReminder(args.idOrQuery || args.id || args.query);
+        break;
+      case 'listReminders':
+        activity.set("reading_reminder");
+        res = await tool.listReminders();
+        break;
+      case 'updateReminder':
+        activity.set("writing_reminder");
+        res = await tool.updateReminder(args);
+        break;
+      case 'deleteReminder':
+        activity.set("writing_reminder");
+        res = await tool.deleteReminder(args.idOrQuery || args.id || args.query);
+        break;
+      case 'completeReminder':
+        activity.set("writing_reminder");
+        res = await tool.completeReminder(args.idOrQuery || args.id || args.query);
+        break;
+      default:
+        activity.set("calling_tool");
+        return { 
+          success: false, 
+          operation: name, 
+          error: { code: 'UNKNOWN_TOOL', message: `Tool ${name} not found` } 
+        };
     }
     if (res && res.success && ['createReminder', 'updateReminder', 'deleteReminder', 'completeReminder'].includes(name)) {
       // Canonical repository persists and dispatches alpha:reminders-changed
@@ -886,6 +906,7 @@ CONSTRAINTS:
     },
   ];
 
+  activity.set("thinking");
   if (routes.length) {
     let lastErr: any = null;
     for (let i = 0; i < routes.length; i++) {
@@ -1019,7 +1040,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (decision.search) {
       activity.set("searching");
       webContext = await fetchLiveWebContext(decision.query || "");
-      activity.set("preparing");
+      activity.set("thinking");
     } else if ("capabilityInquiry" in decision && decision.capabilityInquiry) {
       searchHint = SEARCH_CAPABILITY_HINT;
     } else if ("offer" in decision && decision.offer) {
@@ -1076,8 +1097,12 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       prov = routes[currentRouteIndex].prov;
       model = routes[currentRouteIndex].model;
 
-      if (currentRouteIndex > 0 && loopCount === 0) activity.set("switching_model");
-      else if (loopCount === 0) activity.set(hasImages ? "reading_image" : "thinking");
+      // If we are on a fallback route and haven't started tool-looping yet, show switching.
+      // But we immediately follow with 'thinking' to represent the reasoning phase.
+      if (currentRouteIndex > 0 && loopCount === 0) {
+        activity.set("switching_model");
+      }
+      activity.set(hasImages ? "reading_image" : "thinking");
 
       let response: ChatResponse;
       try {
@@ -1262,8 +1287,12 @@ async function callProvider(
     tools: o.tools,
     signal: o.signal,
     retries: 1,
-    onStatus: (st: "waiting" | "retrying") =>
-      activity.set(st === "retrying" ? "retrying" : "waiting_provider"),
+    onStatus: (st: "waiting" | "retrying") => {
+      if (st === "retrying") {
+        activity.set("retrying");
+      }
+      // "waiting_provider" is intentionally NOT set here for normal requests.
+    },
   };
   if (prov === "groq") {
     return sendChatOpenAICompat(history, sys, {
