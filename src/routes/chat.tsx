@@ -136,7 +136,7 @@ function ChatRoute() {
   /** Regenerate an assistant reply: drop it, then re-send the user turn. */
   async function retry(assistantId: string) {
     if (busy) return;
-    const r = alphaStore.prepareRetry(assistantId);
+    const r = await alphaStore.prepareRetry(assistantId);
     if (!r) return;
     await send(r.userText, { skipAppend: true });
   }

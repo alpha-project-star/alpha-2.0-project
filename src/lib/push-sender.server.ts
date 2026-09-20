@@ -1,8 +1,5 @@
-// src/lib/push-sender.ts
-
-if (typeof window !== 'undefined') {
-  throw new Error('push-sender cannot be imported or executed in the client browser bundle.');
-}
+// src/lib/push-sender.server.ts
+// Server-only push notification sender (.server.ts boundary prevents client bundling).
 
 import webPush from 'web-push';
 import { getServerConfig } from './config.server';

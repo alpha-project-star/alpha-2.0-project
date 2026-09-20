@@ -2,6 +2,7 @@ import { useSyncExternalStore } from "react";
 import { z } from "zod";
 import { reminderContextManager } from "./reminder-context";
 import { MODEL_TRIO, isSupportedModel, parseRouteSpec } from "./models";
+import { withCrossContextLock } from "./cross-context-lock";
 
 import {
   Goal, GoalSchema,
@@ -467,6 +468,23 @@ export function useAlpha<T>(selector: (s: AlphaState) => T): T {
   );
 }
 
+function reloadState() {
+  state = {
+    chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
+    notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
+    bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
+    tasks: parseLS<Task[]>(K.tasks, z.array(z.any()), []),
+    goals: parseLS<Goal[]>(K.goals, z.array(z.any()), []),
+    runs: parseLS<Run[]>(K.runs, z.array(z.any()), []),
+    steps: parseLS<Step[]>(K.steps, z.array(z.any()), []),
+    observations: parseLS<Observation[]>(K.observations, z.array(z.any()), []),
+    results: parseLS<Result[]>(K.results, z.array(z.any()), []),
+    memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
+    profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
+    settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
+  };
+}
+
 function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   const i = list.findIndex((x) => x.id === item.id);
   return i >= 0 ? list.map((x) => (x.id === item.id ? item : x)) : [item, ...list];
@@ -476,259 +494,312 @@ export const alphaStore = {
   get: () => state,
   /** Subscribe to any persisted state change. Returns an unsubscribe fn. */
   sub: (l: () => void) => subscribe(l),
-  setSettings(patch: Partial<Settings>) {
-    const next = { ...state.settings, ...patch };
-    const result = SettingsSchema.safeParse(next);
-    if (!result.success) {
-      console.error("Invalid settings patch:", result.error);
-      return;
-    }
-    writeLS(K.settings, result.data);
-    state = { ...state, settings: result.data };
-    emit();
+  async setSettings(patch: Partial<Settings>) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = { ...state.settings, ...patch };
+      const result = SettingsSchema.safeParse(next);
+      if (!result.success) {
+        console.error("Invalid settings patch:", result.error);
+        return;
+      }
+      writeLS(K.settings, result.data);
+      state = { ...state, settings: result.data };
+      emit();
+    });
   },
-  appendChat(msg: ChatMessage) {
-    const next = [...state.chat, msg].slice(-200);
-    writeLS(K.chat, next);
-    state = { ...state, chat: next };
-    emit();
+  async appendChat(msg: ChatMessage) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = [...state.chat, msg].slice(-200);
+      writeLS(K.chat, next);
+      state = { ...state, chat: next };
+      emit();
+    });
   },
-  setChat(msgs: ChatMessage[]) {
-    const next = msgs.slice(-200);
-    writeLS(K.chat, next);
-    state = { ...state, chat: next };
-    emit();
+  async setChat(msgs: ChatMessage[]) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = msgs.slice(-200);
+      writeLS(K.chat, next);
+      state = { ...state, chat: next };
+      emit();
+    });
   },
-  clearChat() {
-    conversationSummary.clear();
-    writeLS(K.chat, []);
-    state = { ...state, chat: [] };
-    reminderContextManager.clear();
-    try {
-      import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
-    } catch {}
-    emit();
+  async clearChat() {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      conversationSummary.clear();
+      writeLS(K.chat, []);
+      state = { ...state, chat: [] };
+      reminderContextManager.clear();
+      try {
+        import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
+      } catch {}
+      emit();
+    });
   },
-  upsertNote(n: Note) {
-    const next = upsert(state.notes, n);
-    writeLS(K.notes, next);
-    state = { ...state, notes: next };
-    emit();
+  async upsertNote(n: Note) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = upsert(state.notes, n);
+      writeLS(K.notes, next);
+      state = { ...state, notes: next };
+      emit();
+    });
   },
-  deleteNote(id: string) {
-    const next = state.notes.filter((x) => x.id !== id);
-    writeLS(K.notes, next);
-    state = { ...state, notes: next };
-    emit();
+  async deleteNote(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.notes.filter((x) => x.id !== id);
+      writeLS(K.notes, next);
+      state = { ...state, notes: next };
+      emit();
+    });
   },
-  upsertBill(b: Bill) {
-    const next = upsert(state.bills, b);
-    writeLS(K.bills, next);
-    state = { ...state, bills: next };
-    emit();
+  async upsertBill(b: Bill) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = upsert(state.bills, b);
+      writeLS(K.bills, next);
+      state = { ...state, bills: next };
+      emit();
+    });
   },
-  deleteBill(id: string) {
-    const next = state.bills.filter((x) => x.id !== id);
-    writeLS(K.bills, next);
-    state = { ...state, bills: next };
-    emit();
+  async deleteBill(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.bills.filter((x) => x.id !== id);
+      writeLS(K.bills, next);
+      state = { ...state, bills: next };
+      emit();
+    });
   },
-  upsertTask(t: Task) {
-    const next = upsert(state.tasks, t);
-    writeLS(K.tasks, next);
-    state = { ...state, tasks: next };
-    emit();
+  async upsertTask(t: Task) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = upsert(state.tasks, t);
+      writeLS(K.tasks, next);
+      state = { ...state, tasks: next };
+      emit();
+    });
   },
-  deleteTask(id: string) {
-    const next = state.tasks.filter((x) => x.id !== id);
-    writeLS(K.tasks, next);
-    state = { ...state, tasks: next };
-    emit();
+  async deleteTask(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.tasks.filter((x) => x.id !== id);
+      writeLS(K.tasks, next);
+      state = { ...state, tasks: next };
+      emit();
+    });
   },
-  upsertGoal(g: Goal) {
-    const next = upsert(state.goals, g);
-    writeLS(K.goals, next);
-    state = { ...state, goals: next };
-    emit();
+  async upsertGoal(g: Goal) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = upsert(state.goals, g);
+      writeLS(K.goals, next);
+      state = { ...state, goals: next };
+      emit();
+    });
   },
-  deleteGoal(id: string) {
-    const next = state.goals.filter((x) => x.id !== id);
-    writeLS(K.goals, next);
-    state = { ...state, goals: next };
-    emit();
+  async deleteGoal(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.goals.filter((x) => x.id !== id);
+      writeLS(K.goals, next);
+      state = { ...state, goals: next };
+      emit();
+    });
   },
-  upsertRun(r: Run) {
-    const nextRuns = upsert(state.runs, r);
-    // Sort so active/blocked runs are prioritized for retention, or simply filter out oldest completed ones until limit
-    const active = nextRuns.filter(x => ["queued", "running", "waiting", "blocked"].includes(x.status));
-    let inactive = nextRuns.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-    
-    if (nextRuns.length > 50) {
-      inactive = inactive.slice(-(Math.max(0, 50 - active.length)));
-    }
-    
-    const next = [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
-    writeLS(K.runs, next);
-    state = { ...state, runs: next };
-    emit();
+  async upsertRun(r: Run) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const nextRuns = upsert(state.runs, r);
+      const active = nextRuns.filter(x => ["queued", "running", "waiting", "blocked"].includes(x.status));
+      let inactive = nextRuns.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
+      if (nextRuns.length > 50) {
+        inactive = inactive.slice(-(Math.max(0, 50 - active.length)));
+      }
+      const next = [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
+      writeLS(K.runs, next);
+      state = { ...state, runs: next };
+      emit();
+    });
   },
-  deleteRun(id: string) {
-    const next = state.runs.filter((x) => x.id !== id);
-    writeLS(K.runs, next);
-    state = { ...state, runs: next };
-    emit();
+  async deleteRun(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.runs.filter((x) => x.id !== id);
+      writeLS(K.runs, next);
+      state = { ...state, runs: next };
+      emit();
+    });
   },
-  upsertStep(s: Step) {
-    const nextSteps = upsert(state.steps, s);
-    const active = nextSteps.filter(x => ["pending", "running"].includes(x.status));
-    let inactive = nextSteps.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-    
-    if (nextSteps.length > 200) {
-       inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
-    }
-    
-    const next = [...inactive, ...active].sort((a,b) => a.sequence - b.sequence);
-    writeLS(K.steps, next);
-    state = { ...state, steps: next };
-    emit();
+  async upsertStep(s: Step) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const nextSteps = upsert(state.steps, s);
+      const active = nextSteps.filter(x => ["pending", "running"].includes(x.status));
+      let inactive = nextSteps.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
+      if (nextSteps.length > 200) {
+         inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
+      }
+      const next = [...inactive, ...active].sort((a,b) => a.sequence - b.sequence);
+      writeLS(K.steps, next);
+      state = { ...state, steps: next };
+      emit();
+    });
   },
-  upsertObservation(o: Observation) {
-    const nextObs = upsert(state.observations, o);
-    const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-    
-    const active = nextObs.filter(x => activeRunIds.has(x.runId));
-    let inactive = nextObs.filter(x => !activeRunIds.has(x.runId));
-    
-    if (nextObs.length > 200) {
-      inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
-    }
-    
-    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
-    writeLS(K.observations, next);
-    state = { ...state, observations: next };
-    emit();
+  async upsertObservation(o: Observation) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const nextObs = upsert(state.observations, o);
+      const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
+      const active = nextObs.filter(x => activeRunIds.has(x.runId));
+      let inactive = nextObs.filter(x => !activeRunIds.has(x.runId));
+      if (nextObs.length > 200) {
+        inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
+      }
+      const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+      writeLS(K.observations, next);
+      state = { ...state, observations: next };
+      emit();
+    });
   },
-  upsertResult(r: Result) {
-    const nextRes = upsert(state.results, r);
-    const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-    
-    const active = nextRes.filter(x => activeRunIds.has(x.runId));
-    let inactive = nextRes.filter(x => !activeRunIds.has(x.runId));
-    
-    if (nextRes.length > 100) {
-      inactive = inactive.slice(-(Math.max(0, 100 - active.length)));
-    }
-    
-    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
-    writeLS(K.results, next);
-    state = { ...state, results: next };
-    emit();
+  async upsertResult(r: Result) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const nextRes = upsert(state.results, r);
+      const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
+      const active = nextRes.filter(x => activeRunIds.has(x.runId));
+      let inactive = nextRes.filter(x => !activeRunIds.has(x.runId));
+      if (nextRes.length > 100) {
+        inactive = inactive.slice(-(Math.max(0, 100 - active.length)));
+      }
+      const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+      writeLS(K.results, next);
+      state = { ...state, results: next };
+      emit();
+    });
   },
-  upsertMemory(m: Memory) {
-    const now = Date.now();
-    const cleanTopic = (m.topic || "").trim();
-    const cleanDetail = (m.detail || "").trim();
-    const cleanMem: Memory = {
-      ...m,
-      topic: cleanTopic,
-      detail: cleanDetail,
-      category: m.category || "general",
-      provenance: m.provenance || "explicit_user",
-      confidence: m.confidence || "high",
-      status: m.status || "active",
-      createdAt: m.createdAt || now,
-      updatedAt: m.updatedAt || now,
-      lastUsedAt: m.lastUsedAt || now,
-    };
-
-    // Idempotency / Deduplication check: see if a memory with matching ID or matching topic exists
-    const existingIdx = state.memories.findIndex(
-      (x) => x.id === cleanMem.id || (cleanTopic && x.topic.toLowerCase().trim() === cleanTopic.toLowerCase() && x.status !== "archived"),
-    );
-
-    let nextMemories: Memory[];
-    if (existingIdx >= 0) {
-      const existing = state.memories[existingIdx];
-      const updated: Memory = {
-        ...existing,
-        ...cleanMem,
-        id: existing.id,
-        createdAt: existing.createdAt || cleanMem.createdAt,
-        updatedAt: now,
-        lastUsedAt: now,
+  async upsertMemory(m: Memory) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const now = Date.now();
+      const cleanTopic = (m.topic || "").trim();
+      const cleanDetail = (m.detail || "").trim();
+      const cleanMem: Memory = {
+        ...m,
+        topic: cleanTopic,
+        detail: cleanDetail,
+        category: m.category || "general",
+        provenance: m.provenance || "explicit_user",
+        confidence: m.confidence || "high",
+        status: m.status || "active",
+        createdAt: m.createdAt || now,
+        updatedAt: m.updatedAt || now,
+        lastUsedAt: m.lastUsedAt || now,
       };
-      nextMemories = [...state.memories];
-      nextMemories[existingIdx] = updated;
-    } else {
-      nextMemories = upsert(state.memories, cleanMem);
-    }
-    writeLS(K.memories, nextMemories);
-    state = { ...state, memories: nextMemories };
-    emit();
+      const existingIdx = state.memories.findIndex(
+        (x) => x.id === cleanMem.id || (cleanTopic && x.topic.toLowerCase().trim() === cleanTopic.toLowerCase() && x.status !== "archived"),
+      );
+      let nextMemories: Memory[];
+      if (existingIdx >= 0) {
+        const existing = state.memories[existingIdx];
+        const updated: Memory = {
+          ...existing,
+          ...cleanMem,
+          id: existing.id,
+          createdAt: existing.createdAt || cleanMem.createdAt,
+          updatedAt: now,
+          lastUsedAt: now,
+        };
+        nextMemories = [...state.memories];
+        nextMemories[existingIdx] = updated;
+      } else {
+        nextMemories = upsert(state.memories, cleanMem);
+      }
+      writeLS(K.memories, nextMemories);
+      state = { ...state, memories: nextMemories };
+      emit();
+    });
   },
-  deleteMemory(id: string) {
-    const next = state.memories.filter((x) => x.id !== id);
-    writeLS(K.memories, next);
-    state = { ...state, memories: next };
-    emit();
+  async deleteMemory(id: string) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const next = state.memories.filter((x) => x.id !== id);
+      writeLS(K.memories, next);
+      state = { ...state, memories: next };
+      emit();
+    });
   },
-  setProfile(p: Profile) {
-    writeLS(K.profile, p);
-    state = { ...state, profile: p };
-    emit();
+  async setProfile(p: Profile) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      writeLS(K.profile, p);
+      state = { ...state, profile: p };
+      emit();
+    });
   },
   /** Replace or reset parts or all of state (useful for test isolation and data imports). */
-  replaceAll(patch: Partial<AlphaState>) {
-    if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
-    if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
-    if (patch.tasks !== undefined) writeLS(K.tasks, patch.tasks);
-    if (patch.goals !== undefined) writeLS(K.goals, patch.goals);
-    if (patch.runs !== undefined) writeLS(K.runs, patch.runs);
-    if (patch.steps !== undefined) writeLS(K.steps, patch.steps);
-    if (patch.observations !== undefined) writeLS(K.observations, patch.observations);
-    if (patch.results !== undefined) writeLS(K.results, patch.results);
-    if (patch.memories !== undefined) writeLS(K.memories, patch.memories);
-    if (patch.chat !== undefined) writeLS(K.chat, patch.chat);
-    if (patch.settings !== undefined) writeLS(K.settings, patch.settings);
-    if (patch.profile !== undefined) writeLS(K.profile, patch.profile);
-    state = { ...state, ...patch };
-    emit();
+  async replaceAll(patch: Partial<AlphaState>) {
+    await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
+      if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
+      if (patch.tasks !== undefined) writeLS(K.tasks, patch.tasks);
+      if (patch.goals !== undefined) writeLS(K.goals, patch.goals);
+      if (patch.runs !== undefined) writeLS(K.runs, patch.runs);
+      if (patch.steps !== undefined) writeLS(K.steps, patch.steps);
+      if (patch.observations !== undefined) writeLS(K.observations, patch.observations);
+      if (patch.results !== undefined) writeLS(K.results, patch.results);
+      if (patch.memories !== undefined) writeLS(K.memories, patch.memories);
+      if (patch.chat !== undefined) writeLS(K.chat, patch.chat);
+      if (patch.settings !== undefined) writeLS(K.settings, patch.settings);
+      if (patch.profile !== undefined) writeLS(K.profile, patch.profile);
+      state = { ...state, ...patch };
+      emit();
+    });
   },
   /** Remove one message from persistent chat state. Returns true when it existed. */
-  deleteChatMessage(id: string): boolean {
-    const exists = state.chat.some((m) => m.id === id);
-    if (!exists) return false;
-    const next = state.chat.filter((m) => m.id !== id);
-    writeLS(K.chat, next);
-    state = { ...state, chat: next };
-    emit();
-    return true;
+  async deleteChatMessage(id: string): Promise<boolean> {
+    return await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const exists = state.chat.some((m) => m.id === id);
+      if (!exists) return false;
+      const next = state.chat.filter((m) => m.id !== id);
+      writeLS(K.chat, next);
+      state = { ...state, chat: next };
+      emit();
+      return true;
+    });
   },
   /**
    * Drop the assistant/system reply that follows a user turn so it can be
    * regenerated. Returns the user message text, or null when not retryable.
    */
-  prepareRetry(assistantId: string): { userText: string } | null {
-    const idx = state.chat.findIndex((m) => m.id === assistantId);
-    if (idx < 0) return null;
-    const msg = state.chat[idx];
-    if (msg.origin === "proactive" || msg.proactiveEventId) {
-      return null;
-    }
-    // Walk back to the nearest user turn.
-    let userIdx = -1;
-    for (let i = idx - 1; i >= 0; i--)
-      if (state.chat[i].role === "user") {
-        userIdx = i;
-        break;
+  async prepareRetry(assistantId: string): Promise<{ userText: string } | null> {
+    return await withCrossContextLock("alpha_store_lock", async () => {
+      reloadState();
+      const idx = state.chat.findIndex((m) => m.id === assistantId);
+      if (idx < 0) return null;
+      const msg = state.chat[idx];
+      if (msg.origin === "proactive" || msg.proactiveEventId) {
+        return null;
       }
-    if (userIdx < 0) return null;
-    // Remove everything after that user turn (the stale reply, and any trailing error).
-    const next = state.chat.slice(0, userIdx + 1);
-    state = { ...state, chat: next };
-    writeLS(K.chat, state.chat);
-    emit();
-    return { userText: state.chat[userIdx].text || "" };
+      let userIdx = -1;
+      for (let i = idx - 1; i >= 0; i--)
+        if (state.chat[i].role === "user") {
+          userIdx = i;
+          break;
+        }
+      if (userIdx < 0) return null;
+      const next = state.chat.slice(0, userIdx + 1);
+      state = { ...state, chat: next };
+      writeLS(K.chat, state.chat);
+      emit();
+      return { userText: state.chat[userIdx].text || "" };
+    });
   },
 };
 

@@ -59,7 +59,7 @@ export function DesktopChatPanel() {
 
   async function retry(assistantId: string) {
     if (busy) return;
-    const r = alphaStore.prepareRetry(assistantId);
+    const r = await alphaStore.prepareRetry(assistantId);
     if (!r) return;
     await send(r.userText);
   }

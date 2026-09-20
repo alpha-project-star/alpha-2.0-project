@@ -3,7 +3,7 @@ import { LocalReminderRepository } from "../src/lib/reminder-repo";
 import { ProactiveTrigger } from "../src/lib/proactive-trigger";
 import { NotificationDeliveryManager } from "../src/lib/notification-delivery";
 import { alphaStore } from "../src/lib/alpha-store";
-import { sendWebPushToSubscription } from "../src/lib/push-sender";
+import { sendWebPushToSubscription } from "../src/lib/push-sender.server";
 
 describe("Phase 17 - Concurrency & Remediation Verification", () => {
   let storeMap: Map<string, string>;
@@ -75,10 +75,10 @@ describe("Phase 17 - Concurrency & Remediation Verification", () => {
   });
 
   it("3. Alpha-store concurrent updates preserve independent notes without lost updates", async () => {
-    alphaStore.upsertNote({ id: "note-1", title: "First Note", body: "Content 1", updatedAt: Date.now() });
-
-    // Simulate Tab A upserting note-2
-    alphaStore.upsertNote({ id: "note-2", title: "Second Note", body: "Content 2", updatedAt: Date.now() });
+    await Promise.all([
+      alphaStore.upsertNote({ id: "note-1", title: "First Note", body: "Content 1", updatedAt: Date.now() }),
+      alphaStore.upsertNote({ id: "note-2", title: "Second Note", body: "Content 2", updatedAt: Date.now() }),
+    ]);
 
     const notes = alphaStore.get().notes;
     expect(notes.length).toBe(2);
