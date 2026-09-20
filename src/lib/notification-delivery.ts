@@ -1,10 +1,11 @@
 // src/lib/notification-delivery.ts
 
-import { alphaStore, type ChatMessage } from './alpha-store';
+import { alphaStore, getStorage, type ChatMessage } from './alpha-store';
 import { waitForChatIdle } from './alpha.functions';
 import { reminderContextManager } from './reminder-context';
 import { notificationAcknowledgementManager } from './notification-acknowledgement';
 import { notificationChannelRegistry } from './notification-channel-registry';
+import { withCrossContextLock } from './cross-context-lock';
 
 export type NotificationChannel = 'in_app' | string;
 
@@ -146,6 +147,121 @@ export class InMemoryDeliveryRepository implements DeliveryRepository {
 export type NotificationDeliveryRepository = DeliveryRepository;
 export class InMemoryNotificationDeliveryRepository extends InMemoryDeliveryRepository {}
 
+const STORAGE_PREFIX = 'alpha.deliveries.v1';
+
+export class LocalDeliveryRepository implements DeliveryRepository {
+  private inMemoryFallback = new Map<string, DeliveryRecord>();
+
+  private getStorageKey(userId: string): string {
+    return `${STORAGE_PREFIX}.${userId}`;
+  }
+
+  async getDelivery(userId: string, deliveryId: string): Promise<DeliveryRecord | null> {
+    const storage = getStorage();
+    if (!storage) {
+      const item = this.inMemoryFallback.get(`${userId}:${deliveryId}`);
+      return item ? { ...item } : null;
+    }
+    try {
+      const raw = storage.getItem(this.getStorageKey(userId));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        const found = parsed.find((d: DeliveryRecord) => d.deliveryId === deliveryId && d.userId === userId);
+        return found ? { ...found } : null;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveDelivery(userId: string, delivery: DeliveryRecord): Promise<void> {
+    if (delivery.userId !== userId) throw new Error('User isolation mismatch on delivery save');
+    const storage = getStorage();
+    if (!storage) {
+      this.inMemoryFallback.set(`${userId}:${delivery.deliveryId}`, { ...delivery });
+      return;
+    }
+    await withCrossContextLock(`alpha_delivery_repo_${userId}`, async () => {
+      const key = this.getStorageKey(userId);
+      let list: DeliveryRecord[] = [];
+      try {
+        const raw = storage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) list = parsed;
+        }
+      } catch {}
+      const idx = list.findIndex((d) => d.deliveryId === delivery.deliveryId);
+      if (idx >= 0) {
+        list[idx] = { ...delivery };
+      } else {
+        list.push({ ...delivery });
+      }
+      storage.setItem(key, JSON.stringify(list));
+    });
+  }
+
+  async updateDelivery(userId: string, deliveryId: string, patch: Partial<DeliveryRecord>): Promise<void> {
+    const storage = getStorage();
+    if (!storage) {
+      const item = this.inMemoryFallback.get(`${userId}:${deliveryId}`);
+      if (!item) throw new Error(`Delivery record not found: ${deliveryId}`);
+      const updated = { ...item, ...patch, updatedAt: Date.now() };
+      this.inMemoryFallback.set(`${userId}:${deliveryId}`, updated);
+      return;
+    }
+    await withCrossContextLock(`alpha_delivery_repo_${userId}`, async () => {
+      const key = this.getStorageKey(userId);
+      let list: DeliveryRecord[] = [];
+      try {
+        const raw = storage.getItem(key);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) list = parsed;
+        }
+      } catch {}
+      const idx = list.findIndex((d) => d.deliveryId === deliveryId && d.userId === userId);
+      if (idx < 0) throw new Error(`Delivery record not found: ${deliveryId}`);
+      list[idx] = { ...list[idx], ...patch, updatedAt: Date.now() };
+      storage.setItem(key, JSON.stringify(list));
+    });
+  }
+
+  async listDeliveries(userId: string): Promise<DeliveryRecord[]> {
+    const storage = getStorage();
+    if (!storage) {
+      const results: DeliveryRecord[] = [];
+      for (const [k, v] of this.inMemoryFallback.entries()) {
+        if (k.startsWith(`${userId}:`)) results.push({ ...v });
+      }
+      return results;
+    }
+    try {
+      const raw = storage.getItem(this.getStorageKey(userId));
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  clear(): void {
+    this.inMemoryFallback.clear();
+    const storage = getStorage();
+    if (storage) {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < storage.length; i++) {
+        const k = storage.key(i);
+        if (k && k.startsWith(STORAGE_PREFIX)) keysToRemove.push(k);
+      }
+      keysToRemove.forEach((k) => storage.removeItem(k));
+    }
+  }
+}
+
 export function generateDeliveryId(eventId: string, channel: string): string {
   return `${eventId}:${channel}`;
 }
@@ -161,7 +277,7 @@ export class NotificationDeliveryManager {
   private inFlightClaims = new Set<string>();
 
   constructor(options: NotificationDeliveryOptions = {}) {
-    this.repo = options.repo;
+    this.repo = options.repo ?? new LocalDeliveryRepository();
     this.leaseTimeoutMs = options.leaseTimeoutMs ?? 30000;
   }
 
@@ -371,75 +487,123 @@ export class NotificationDeliveryManager {
       };
     }
 
-    // 6. Check Durable Delivery State (Cross-Tab / Persisted)
-    if (this.repo) {
-      try {
-        const existing = await this.repo.getDelivery(authUser, deliveryId);
-        if (existing) {
-          if (existing.status === 'delivered') {
-            // Already delivered idempotently in repository
-            // Verify message exists in chat store; if not, re-append without duplicate
-            const inChat = alphaStore.get().chat.some((m) => m.proactiveEventId === rawRecord.eventId);
-            if (!inChat) {
-              const chatMsg: ChatMessage = {
-                id: existing.messageId || rawRecord.messageId,
-                role: 'model',
-                origin: 'proactive',
-                proactiveEventId: rawRecord.eventId,
-                text: rawRecord.text,
-                ts: existing.deliveredAt || Date.now(),
-              };
-              alphaStore.appendChat(chatMsg);
-            }
-            return {
-              success: true,
-              deliveryId,
-              eventId: rawRecord.eventId,
-              messageId: existing.messageId || rawRecord.messageId,
-              channel,
-              status: 'already_delivered',
-              deliveredAt: existing.deliveredAt || Date.now(),
-            };
-          }
-
-          if (existing.status === 'delivering') {
-            const elapsed = Date.now() - (existing.updatedAt || 0);
-            if (elapsed < this.leaseTimeoutMs) {
+    // 6, 7, 8. Check Durable State, Idempotency, and Acquire Claim Atomically via Cross-Context Lock
+    const lockName = `alpha_delivery_lock_${authUser}_${deliveryId}`;
+    const claimResult = await withCrossContextLock(lockName, async () => {
+      if (this.repo) {
+        try {
+          const existing = await this.repo.getDelivery(authUser, deliveryId);
+          if (existing) {
+            if (existing.status === 'delivered') {
+              const inChat = alphaStore.get().chat.some((m) => m.proactiveEventId === rawRecord.eventId);
+              if (!inChat) {
+                const chatMsg: ChatMessage = {
+                  id: existing.messageId || rawRecord.messageId,
+                  role: 'model',
+                  origin: 'proactive',
+                  proactiveEventId: rawRecord.eventId,
+                  text: rawRecord.text,
+                  ts: existing.deliveredAt || Date.now(),
+                };
+                alphaStore.appendChat(chatMsg);
+              }
               return {
-                success: false,
-                deliveryId,
-                eventId: rawRecord.eventId,
-                messageId: rawRecord.messageId,
-                channel,
-                status: 'rejected',
-                error: {
-                  code: 'DELIVERY_IN_PROGRESS',
-                  message: 'Delivery claim is actively held by another process (lease active)',
+                status: 'resolved' as const,
+                result: {
+                  success: true,
+                  deliveryId,
+                  eventId: rawRecord.eventId,
+                  messageId: existing.messageId || rawRecord.messageId,
+                  channel,
+                  status: 'already_delivered',
+                  deliveredAt: existing.deliveredAt || Date.now(),
                 },
               };
             }
-            // Lease expired: allow bounded recovery and reclaim
+
+            if (existing.status === 'delivering') {
+              const elapsed = Date.now() - (existing.updatedAt || 0);
+              if (elapsed < this.leaseTimeoutMs) {
+                return {
+                  status: 'resolved' as const,
+                  result: {
+                    success: false,
+                    deliveryId,
+                    eventId: rawRecord.eventId,
+                    messageId: rawRecord.messageId,
+                    channel,
+                    status: 'rejected',
+                    error: {
+                      code: 'DELIVERY_IN_PROGRESS',
+                      message: 'Delivery claim is actively held by another process (lease active)',
+                    },
+                  },
+                };
+              }
+            }
           }
+        } catch (err: any) {
+          return {
+            status: 'resolved' as const,
+            result: {
+              success: false,
+              deliveryId,
+              eventId: rawRecord.eventId,
+              messageId: rawRecord.messageId,
+              channel,
+              status: 'failed',
+              error: {
+                code: 'PERSISTENCE_FAILURE',
+                message: `Failed reading delivery repository: ${err?.message}`,
+              },
+            },
+          };
         }
-      } catch (err: any) {
+      }
+
+      const chatMsg = alphaStore.get().chat.find((m) => m.proactiveEventId === rawRecord.eventId);
+      if (chatMsg) {
+        if (this.repo) {
+          try {
+            const existing = await this.repo.getDelivery(authUser, deliveryId);
+            if (!existing) {
+              await this.repo.saveDelivery(authUser, {
+                deliveryId,
+                eventId: rawRecord.eventId,
+                reminderId: rawRecord.reminderId,
+                userId: authUser,
+                messageId: chatMsg.id,
+                channel,
+                status: 'delivered',
+                createdAt: chatMsg.ts,
+                updatedAt: Date.now(),
+                deliveredAt: chatMsg.ts,
+                retryCount: 0,
+              });
+            } else if (existing.status !== 'delivered') {
+              await this.repo.updateDelivery(authUser, deliveryId, {
+                status: 'delivered',
+                deliveredAt: chatMsg.ts,
+                updatedAt: Date.now(),
+              });
+            }
+          } catch {}
+        }
         return {
-          success: false,
-          deliveryId,
-          eventId: rawRecord.eventId,
-          messageId: rawRecord.messageId,
-          channel,
-          status: 'failed',
-          error: {
-            code: 'PERSISTENCE_FAILURE',
-            message: `Failed reading delivery repository: ${err?.message}`,
+          status: 'resolved' as const,
+          result: {
+            success: true,
+            deliveryId,
+            eventId: rawRecord.eventId,
+            messageId: chatMsg.id,
+            channel,
+            status: 'already_delivered',
+            deliveredAt: chatMsg.ts,
           },
         };
       }
-    }
 
-    // 7. Chat Store Idempotency Check
-    const chatMsg = alphaStore.get().chat.find((m) => m.proactiveEventId === rawRecord.eventId);
-    if (chatMsg) {
+      const now = Date.now();
       if (this.repo) {
         try {
           const existing = await this.repo.getDelivery(authUser, deliveryId);
@@ -449,79 +613,47 @@ export class NotificationDeliveryManager {
               eventId: rawRecord.eventId,
               reminderId: rawRecord.reminderId,
               userId: authUser,
-              messageId: chatMsg.id,
+              messageId: rawRecord.messageId,
               channel,
-              status: 'delivered',
-              createdAt: chatMsg.ts,
-              updatedAt: Date.now(),
-              deliveredAt: chatMsg.ts,
+              status: 'delivering',
+              createdAt: now,
+              updatedAt: now,
               retryCount: 0,
             });
-          } else if (existing.status !== 'delivered') {
+          } else {
             await this.repo.updateDelivery(authUser, deliveryId, {
-              status: 'delivered',
-              deliveredAt: chatMsg.ts,
-              updatedAt: Date.now(),
+              status: 'delivering',
+              updatedAt: now,
+              retryCount: (existing.retryCount || 0) + 1,
             });
           }
-        } catch {
-          // Non-blocking sync for chat store idempotency
+        } catch (repoErr: any) {
+          return {
+            status: 'resolved' as const,
+            result: {
+              success: false,
+              deliveryId,
+              eventId: rawRecord.eventId,
+              messageId: rawRecord.messageId,
+              channel,
+              status: 'failed',
+              error: {
+                code: 'PERSISTENCE_FAILURE',
+                message: `Failed to acquire durable delivery claim: ${repoErr?.message}`,
+              },
+            },
+          };
         }
       }
-      return {
-        success: true,
-        deliveryId,
-        eventId: rawRecord.eventId,
-        messageId: chatMsg.id,
-        channel,
-        status: 'already_delivered',
-        deliveredAt: chatMsg.ts,
-      };
+
+      return { status: 'acquired' as const };
+    });
+
+    if (claimResult.status === 'resolved') {
+      return claimResult.result;
     }
 
-    // 8. Acquire Claim (in-flight set + repository lease)
     this.inFlightClaims.add(deliveryId);
-    const now = Date.now();
-
-    if (this.repo) {
-      try {
-        const existing = await this.repo.getDelivery(authUser, deliveryId);
-        if (!existing) {
-          await this.repo.saveDelivery(authUser, {
-            deliveryId,
-            eventId: rawRecord.eventId,
-            reminderId: rawRecord.reminderId,
-            userId: authUser,
-            messageId: rawRecord.messageId,
-            channel,
-            status: 'delivering',
-            createdAt: now,
-            updatedAt: now,
-            retryCount: 0,
-          });
-        } else {
-          await this.repo.updateDelivery(authUser, deliveryId, {
-            status: 'delivering',
-            updatedAt: now,
-            retryCount: (existing.retryCount || 0) + 1,
-          });
-        }
-      } catch (repoErr: any) {
-        this.inFlightClaims.delete(deliveryId);
-        return {
-          success: false,
-          deliveryId,
-          eventId: rawRecord.eventId,
-          messageId: rawRecord.messageId,
-          channel,
-          status: 'failed',
-          error: {
-            code: 'PERSISTENCE_FAILURE',
-            message: `Failed to acquire durable delivery claim: ${repoErr?.message}`,
-          },
-        };
-      }
-    }
 
     // 9. Execute Delivery into In-App Store
     try {

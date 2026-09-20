@@ -29,6 +29,7 @@ import type {
   NotificationDeliveryManager,
   NotificationDeliveryRepository,
 } from './notification-delivery';
+import { withCrossContextLock } from './cross-context-lock';
 
 /**
  * Safely detects if standard browser Notifications are supported in the current runtime.
@@ -295,100 +296,118 @@ export class BrowserNotificationChannelProvider implements NotificationChannelPr
       };
     }
 
-    // 6. Durable Delivery Repository Check (Cross-Tab Deduplication & Locking)
-    const repo = this.deliveryRepo;
-    if (repo) {
-      try {
-        const existing = await repo.getDelivery(authUser, deliveryId);
-        if (existing) {
-          if (existing.status === 'delivered') {
-            return {
-              success: true,
-              channel: this.id,
-              status: 'already_delivered',
-              deliveryId,
-              eventId: validated.eventId,
-              deliveredAt: existing.deliveredAt || Date.now(),
-            };
-          }
-
-          if (existing.status === 'delivering') {
-            const elapsed = Date.now() - (existing.updatedAt || 0);
-            if (elapsed < this.leaseTimeoutMs) {
+    // 6 & 7. Durable Delivery Repository Check and Claim Atomically via Cross-Context Lock
+    const lockName = `alpha_browser_delivery_lock_${authUser}_${deliveryId}`;
+    const claimResult = await withCrossContextLock(lockName, async () => {
+      const repo = this.deliveryRepo;
+      if (repo) {
+        try {
+          const existing = await repo.getDelivery(authUser, deliveryId);
+          if (existing) {
+            if (existing.status === 'delivered') {
               return {
-                success: false,
-                channel: this.id,
-                status: 'rejected' as any,
-                deliveryId,
-                eventId: validated.eventId,
-                error: {
-                  code: 'DELIVERY_IN_PROGRESS',
-                  message: 'Browser delivery claim actively held by another process (lease active)',
+                status: 'resolved' as const,
+                result: {
+                  success: true,
+                  channel: this.id,
+                  status: 'already_delivered' as const,
+                  deliveryId,
+                  eventId: validated.eventId,
+                  deliveredAt: existing.deliveredAt || Date.now(),
                 },
               };
             }
-            // Lease expired, allow recovery
+
+            if (existing.status === 'delivering') {
+              const elapsed = Date.now() - (existing.updatedAt || 0);
+              if (elapsed < this.leaseTimeoutMs) {
+                return {
+                  status: 'resolved' as const,
+                  result: {
+                    success: false,
+                    channel: this.id,
+                    status: 'rejected' as any,
+                    deliveryId,
+                    eventId: validated.eventId,
+                    error: {
+                      code: 'DELIVERY_IN_PROGRESS',
+                      message: 'Browser delivery claim actively held by another process (lease active)',
+                    },
+                  },
+                };
+              }
+            }
           }
+        } catch (err: any) {
+          return {
+            status: 'resolved' as const,
+            result: {
+              success: false,
+              channel: this.id,
+              status: 'temporary_failure' as const,
+              deliveryId,
+              eventId: validated.eventId,
+              error: {
+                code: 'PERSISTENCE_FAILURE',
+                message: `Failed reading delivery repository: ${err?.message}`,
+                retryable: true,
+              },
+            },
+          };
         }
-      } catch (err: any) {
-        return {
-          success: false,
-          channel: this.id,
-          status: 'temporary_failure',
-          deliveryId,
-          eventId: validated.eventId,
-          error: {
-            code: 'PERSISTENCE_FAILURE',
-            message: `Failed reading delivery repository: ${err?.message}`,
-            retryable: true,
-          },
-        };
       }
+
+      const now = Date.now();
+      if (repo) {
+        try {
+          const existing = await repo.getDelivery(authUser, deliveryId);
+          if (!existing) {
+            await repo.saveDelivery(authUser, {
+              deliveryId,
+              eventId: validated.eventId,
+              reminderId: validated.reminderId,
+              userId: authUser,
+              messageId: validated.messageId || `msg-${validated.eventId}`,
+              channel: this.id,
+              status: 'delivering',
+              createdAt: now,
+              updatedAt: now,
+              retryCount: 0,
+            });
+          } else {
+            await repo.updateDelivery(authUser, deliveryId, {
+              status: 'delivering',
+              updatedAt: now,
+              retryCount: (existing.retryCount || 0) + 1,
+            });
+          }
+        } catch (repoErr: any) {
+          return {
+            status: 'resolved' as const,
+            result: {
+              success: false,
+              channel: this.id,
+              status: 'temporary_failure' as const,
+              deliveryId,
+              eventId: validated.eventId,
+              error: {
+                code: 'PERSISTENCE_FAILURE',
+                message: `Failed acquiring durable browser delivery claim: ${repoErr?.message}`,
+                retryable: true,
+              },
+            },
+          };
+        }
+      }
+
+      return { status: 'acquired' as const };
+    });
+
+    if (claimResult.status === 'resolved') {
+      return claimResult.result;
     }
 
-    // 7. Acquire Claim
     this.inFlightClaims.add(deliveryId);
-    const now = Date.now();
-
-    if (repo) {
-      try {
-        const existing = await repo.getDelivery(authUser, deliveryId);
-        if (!existing) {
-          await repo.saveDelivery(authUser, {
-            deliveryId,
-            eventId: validated.eventId,
-            reminderId: validated.reminderId,
-            userId: authUser,
-            messageId: validated.messageId || `msg-${validated.eventId}`,
-            channel: this.id,
-            status: 'delivering',
-            createdAt: now,
-            updatedAt: now,
-            retryCount: 0,
-          });
-        } else {
-          await repo.updateDelivery(authUser, deliveryId, {
-            status: 'delivering',
-            updatedAt: now,
-            retryCount: (existing.retryCount || 0) + 1,
-          });
-        }
-      } catch (repoErr: any) {
-        this.inFlightClaims.delete(deliveryId);
-        return {
-          success: false,
-          channel: this.id,
-          status: 'temporary_failure',
-          deliveryId,
-          eventId: validated.eventId,
-          error: {
-            code: 'PERSISTENCE_FAILURE',
-            message: `Failed acquiring durable browser delivery claim: ${repoErr?.message}`,
-            retryable: true,
-          },
-        };
-      }
-    }
 
     // 8. Execute Browser Notification Display
     try {

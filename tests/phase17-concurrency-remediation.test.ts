@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LocalReminderRepository } from "../src/lib/reminder-repo";
-import { ProactiveTriggerManager } from "../src/lib/proactive-trigger";
+import { ProactiveTrigger } from "../src/lib/proactive-trigger";
 import { NotificationDeliveryManager } from "../src/lib/notification-delivery";
 import { alphaStore } from "../src/lib/alpha-store";
 import { sendWebPushToSubscription } from "../src/lib/push-sender";
@@ -84,5 +84,77 @@ describe("Phase 17 - Concurrency & Remediation Verification", () => {
     expect(notes.length).toBe(2);
     expect(notes.some((n) => n.id === "note-1")).toBe(true);
     expect(notes.some((n) => n.id === "note-2")).toBe(true);
+  });
+
+  it("4. Proactive trigger concurrent generation attempts result in mutually exclusive execution", async () => {
+    const repo = new LocalReminderRepository();
+    const userId = "user-1";
+    const reminderId = "rem-proactive-1";
+    const eventId = "evt-1";
+
+    await repo.createReminder(userId, {
+      id: reminderId,
+      userId,
+      title: "Proactive Test",
+      notes: "Proactive test notes",
+      dueAt: Date.now(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      reminderState: "active",
+      notificationState: "pending",
+      proactiveState: "pending",
+    });
+
+    const trigger1 = new ProactiveTrigger({ repo, generateResponse: async () => "Hello from proactive 1" });
+    const trigger2 = new ProactiveTrigger({ repo, generateResponse: async () => "Hello from proactive 2" });
+
+    const event = {
+      type: "reminder_due" as const,
+      eventId,
+      reminderId,
+      userId,
+      title: "Proactive Test",
+      dueAt: Date.now(),
+      detectedAt: Date.now(),
+    };
+
+    const [res1, res2] = await Promise.all([
+      trigger1.handleReminderDue(event, userId),
+      trigger2.handleReminderDue(event, userId),
+    ]);
+
+    const successes = [res1, res2].filter((r) => r.success);
+    const failures = [res1, res2].filter((r) => !r.success);
+
+    expect(successes.length).toBe(1);
+    expect(failures.length).toBe(1);
+    expect(["ALREADY_HANDLED", "CONCURRENT_PROCESSING"]).toContain(failures[0].error.code);
+  });
+
+  it("5. Notification delivery manager prevents concurrent double delivery of same event", async () => {
+    const manager = new NotificationDeliveryManager();
+    const userId = "user-1";
+    const eventId = "evt-delivery-1";
+
+    const record = {
+      eventId,
+      reminderId: "rem-1",
+      userId,
+      title: "Delivery Test",
+      text: "Delivery message",
+      messageId: "msg-1",
+      dueAt: Date.now(),
+    };
+
+    const p1 = manager.deliverProactiveResponse({ record, authenticatedUserId: userId, channel: "in_app" });
+    const p2 = manager.deliverProactiveResponse({ record, authenticatedUserId: userId, channel: "in_app" });
+
+    const [res1, res2] = await Promise.all([p1, p2]);
+
+    const successes = [res1, res2].filter((r) => r.success);
+    const rejections = [res1, res2].filter((r) => !r.success);
+
+    expect(successes.length).toBe(1);
+    expect(rejections.length).toBe(1);
   });
 });
