@@ -6,6 +6,7 @@ import { alphaStore } from './alpha-store';
 import { ReminderDueEvent, generateReminderEventId } from './reminder-events';
 import { ReminderEventDelivery } from './reminder-event-delivery';
 import { fireAlarm } from './alarm-engine';
+import { withCrossContextLock } from './cross-context-lock';
 
 export { InMemoryReminderRepository };
 export type { ReminderDueEvent };
@@ -94,12 +95,21 @@ export class ReminderScheduler {
         ) {
           const lastUpdate = r.updatedAt || r.createdAt || 0;
           if (nowTime - lastUpdate >= leaseTimeoutMs) {
-            await this.repo.updateReminder(userId, r.id, {
-              notificationState: 'pending',
-              legacyFiredAt: undefined,
-              updatedAt: nowTime,
+            const lockName = `alpha_scheduler_lock_${userId}_${r.id}`;
+            await withCrossContextLock(lockName, async () => {
+              const fresh = await this.repo!.getReminder(userId, r.id);
+              if (fresh && fresh.notificationState === 'claimed') {
+                const freshUpdate = fresh.updatedAt || fresh.createdAt || 0;
+                if (nowTime - freshUpdate >= leaseTimeoutMs) {
+                  await this.repo!.updateReminder(userId, r.id, {
+                    notificationState: 'pending',
+                    legacyFiredAt: undefined,
+                    updatedAt: nowTime,
+                  });
+                  recoveredCount++;
+                }
+              }
             });
-            recoveredCount++;
           }
         }
       }
@@ -175,45 +185,47 @@ export class ReminderScheduler {
         this.processingIds.add(reminder.id);
 
         try {
-          // Concurrency & Idempotency check:
-          const fresh = await this.repo.getReminder(activeUser, reminder.id);
-          if (
-            !fresh ||
-            fresh.reminderState !== 'active' ||
-            (fresh.notificationState && fresh.notificationState !== 'pending')
-          ) {
-            this.processingIds.delete(reminder.id);
-            continue;
-          }
+          const lockName = `alpha_scheduler_lock_${activeUser}_${reminder.id}`;
+          await withCrossContextLock(lockName, async () => {
+            // Concurrency & Idempotency check:
+            const fresh = await this.repo!.getReminder(activeUser, reminder.id);
+            if (
+              !fresh ||
+              fresh.reminderState !== 'active' ||
+              (fresh.notificationState && fresh.notificationState !== 'pending')
+            ) {
+              return;
+            }
 
-          // Claim the reminder under cross-context lock
-          await this.repo.updateReminder(activeUser, reminder.id, {
-            notificationState: 'claimed',
-            legacyFiredAt: now,
-            updatedAt: Date.now(),
+            // Claim the reminder under cross-context lock
+            await this.repo!.updateReminder(activeUser, reminder.id, {
+              notificationState: 'claimed',
+              legacyFiredAt: now,
+              updatedAt: Date.now(),
+            });
+
+            const event: ReminderDueEvent = {
+              type: 'reminder_due',
+              eventId: generateReminderEventId(reminder.id, reminder.dueAt),
+              reminderId: reminder.id,
+              userId: activeUser,
+              dueAt: reminder.dueAt,
+              detectedAt: now,
+              title: reminder.title,
+            };
+
+            events.push(event);
+
+            if (this.eventDelivery) {
+              await this.eventDelivery.consumeEvent(event).catch(() => {});
+            }
+
+            if (this.options.onReminderDue) {
+              this.options.onReminderDue(event);
+            } else {
+              fireAlarm(event.title, reminder.notes || "");
+            }
           });
-
-          const event: ReminderDueEvent = {
-            type: 'reminder_due',
-            eventId: generateReminderEventId(reminder.id, reminder.dueAt),
-            reminderId: reminder.id,
-            userId: activeUser,
-            dueAt: reminder.dueAt,
-            detectedAt: now,
-            title: reminder.title,
-          };
-
-          events.push(event);
-
-          if (this.eventDelivery) {
-            await this.eventDelivery.consumeEvent(event).catch(() => {});
-          }
-
-          if (this.options.onReminderDue) {
-            this.options.onReminderDue(event);
-          } else {
-            fireAlarm(event.title, reminder.notes || "");
-          }
         } catch (claimErr: any) {
           if (this.options.onError) {
             this.options.onError(claimErr);

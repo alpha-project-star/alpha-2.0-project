@@ -22,6 +22,7 @@ import {
 } from "./execution";
 import { sanitizeUserPersonalization } from "./alpha-identity";
 import { LocalReminderRepository, FirestoreReminder } from "./reminder-repo";
+import { withCrossContextLock } from "./cross-context-lock";
 
 const STORE_SCHEMAS: Record<string, z.ZodType<any>> = {
   [K.chat]: z.array(ChatMessageSchema),
@@ -428,52 +429,9 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   // =========================================================================
   // PHASE 3: EXECUTE TRANSACTIONAL REPLACEMENT WITH ROLLBACK GUARD
   // =========================================================================
-  try {
-    // 1. Clear existing local state for exact replacement
-    if (typeof window !== "undefined" && window.localStorage) {
-      for (let i = 0; i < window.localStorage.length; i++) {
-        const key = window.localStorage.key(i);
-        if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
-          window.localStorage.removeItem(key);
-          i--;
-        }
-      }
-      // 2. Write staged localStorage entries
-      for (const [key, val] of Object.entries(stagedLocalStorage)) {
-        window.localStorage.setItem(key, val);
-      }
-    }
-
-    // 3. Replace reminders in canonical LocalReminderRepository
-    reminderRepo.clear();
-    for (const r of stagedReminders) {
-      await reminderRepo.createReminder(currentUid, r);
-    }
-
-    // 4. Replace music tracks in IndexedDB (including empty music collection replacement)
-    if (shouldReplaceMusic) {
-      const db = await openDb();
-      await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE, "readwrite");
-        const store = tx.objectStore(STORE);
-        store.clear();
-        for (const track of stagedMusic) {
-          store.put(track);
-        }
-        tx.oncomplete = () => {
-          db.close();
-          resolve();
-        };
-        tx.onerror = () => {
-          db.close();
-          reject(tx.error || new Error("Could not replace music store."));
-        };
-      });
-    }
-  } catch (writeError) {
-    // ROLLBACK ON FAILURE
-    console.error("Import replacement failed, rolling back to previous state:", writeError);
+  return await withCrossContextLock("alpha_global_import_lock", async () => {
     try {
+      // 1. Clear existing local state for exact replacement
       if (typeof window !== "undefined" && window.localStorage) {
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
@@ -482,103 +440,141 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
             i--;
           }
         }
-        for (const [key, val] of Object.entries(previousLocalStorage)) {
+        // 2. Write staged localStorage entries
+        for (const [key, val] of Object.entries(stagedLocalStorage)) {
           window.localStorage.setItem(key, val);
         }
       }
-      reminderRepo.clear();
-      for (const pr of previousReminders) {
-        await reminderRepo.createReminder(currentUid, pr);
-      }
+
+      // 3. Replace reminders in canonical LocalReminderRepository
+      await reminderRepo.replaceReminders(currentUid, stagedReminders);
+
+      // 4. Replace music tracks in IndexedDB (including empty music collection replacement)
       if (shouldReplaceMusic) {
         const db = await openDb();
-        await new Promise<void>((resolve) => {
+        await new Promise<void>((resolve, reject) => {
           const tx = db.transaction(STORE, "readwrite");
           const store = tx.objectStore(STORE);
           store.clear();
-          for (const item of previousMusic) store.put(item);
-          tx.oncomplete = () => { db.close(); resolve(); };
-          tx.onerror = () => { db.close(); resolve(); };
+          for (const track of stagedMusic) {
+            store.put(track);
+          }
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => {
+            db.close();
+            reject(tx.error || new Error("Could not replace music store."));
+          };
         });
       }
-      if (typeof window !== "undefined") {
-        window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+    } catch (writeError) {
+      // ROLLBACK ON FAILURE
+      console.error("Import replacement failed, rolling back to previous state:", writeError);
+      try {
+        if (typeof window !== "undefined" && window.localStorage) {
+          for (let i = 0; i < window.localStorage.length; i++) {
+            const key = window.localStorage.key(i);
+            if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+              window.localStorage.removeItem(key);
+              i--;
+            }
+          }
+          for (const [key, val] of Object.entries(previousLocalStorage)) {
+            window.localStorage.setItem(key, val);
+          }
+        }
+        await reminderRepo.replaceReminders(currentUid, previousReminders);
+        if (shouldReplaceMusic) {
+          const db = await openDb();
+          await new Promise<void>((resolve) => {
+            const tx = db.transaction(STORE, "readwrite");
+            const store = tx.objectStore(STORE);
+            store.clear();
+            for (const item of previousMusic) store.put(item);
+            tx.oncomplete = () => { db.close(); resolve(); };
+            tx.onerror = () => { db.close(); resolve(); };
+          });
+        }
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+        }
+      } catch (rollbackError) {
+        console.error("Rollback execution error:", rollbackError);
       }
-    } catch (rollbackError) {
-      console.error("Rollback execution error:", rollbackError);
+      throw new Error(`Import failed and previous state was restored: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
     }
-    throw new Error(`Import failed and previous state was restored: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
-  }
 
-  // =========================================================================
-  // PHASE 4: SUCCESS NOTIFICATION AND REFRESH
-  // =========================================================================
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
-  }
+    // =========================================================================
+    // PHASE 4: SUCCESS NOTIFICATION AND REFRESH
+    // =========================================================================
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+    }
 
-  // Reload from localStorage so the live store reflects the import
-  if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
-    window.location.reload();
-  }
+    // Reload from localStorage so the live store reflects the import
+    if (typeof window !== "undefined" && typeof window.location?.reload === "function") {
+      window.location.reload();
+    }
 
-  return { restored };
+    return { restored };
+  });
 }
 
 export async function wipeAlphaData() {
-  const errors: string[] = [];
+  return await withCrossContextLock("alpha_global_wipe_lock", async () => {
+    const errors: string[] = [];
 
-  // 1. Clear localStorage keys
-  try {
-    const keysToRemove: string[] = [];
-    for (let i = 0; i < window.localStorage.length; i++) {
-      const key = window.localStorage.key(i);
-      if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
-        keysToRemove.push(key);
+    // 1. Clear localStorage keys
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const key = window.localStorage.key(i);
+        if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+          keysToRemove.push(key);
+        }
+      }
+      for (const key of keysToRemove) {
+        window.localStorage.removeItem(key);
+      }
+    } catch (err: unknown) {
+      errors.push(`Failed to clear local storage: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 2. Clear canonical reminders
+    try {
+      const reminderRepo = new LocalReminderRepository();
+      const currentUid = auth.currentUser?.uid || "local-user";
+      await reminderRepo.replaceReminders(currentUid, []);
+    } catch (err: unknown) {
+      errors.push(`Failed to clear canonical reminders: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // 3. Clear IndexedDB music
+    try {
+      const db = await openDb();
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        const store = tx.objectStore(STORE);
+        const req = store.clear();
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error || new Error("Could not clear music."));
+        tx.oncomplete = () => db.close();
+      });
+    } catch (err: unknown) {
+      errors.push(`Failed to clear music store: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    if (errors.length > 0) {
+      throw new Error(`Wipe operation failed:\n${errors.join("\n")}`);
+    }
+
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
+      if (typeof window.location?.reload === "function") {
+        window.location.reload();
       }
     }
-    for (const key of keysToRemove) {
-      window.localStorage.removeItem(key);
-    }
-  } catch (err: unknown) {
-    errors.push(`Failed to clear local storage: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // 2. Clear canonical reminders
-  try {
-    const reminderRepo = new LocalReminderRepository();
-    const currentUid = auth.currentUser?.uid || "local-user";
-    const existing = await reminderRepo.listReminders(currentUid);
-    for (const r of existing) {
-      await reminderRepo.deleteReminder(currentUid, r.id);
-    }
-  } catch (err: unknown) {
-    errors.push(`Failed to clear canonical reminders: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  // 3. Clear IndexedDB music
-  try {
-    const db = await openDb();
-    await new Promise<void>((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      const req = store.clear();
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error || new Error("Could not clear music."));
-      tx.oncomplete = () => db.close();
-    });
-  } catch (err: unknown) {
-    errors.push(`Failed to clear music store: ${err instanceof Error ? err.message : String(err)}`);
-  }
-
-  if (errors.length > 0) {
-    throw new Error(`Wipe operation failed:\n${errors.join("\n")}`);
-  }
-
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("alpha:reminders-changed"));
-    if (typeof window.location?.reload === "function") {
-      window.location.reload();
-    }
-  }
+  });
 }

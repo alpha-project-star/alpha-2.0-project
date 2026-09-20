@@ -3,6 +3,7 @@
 import { ReminderDueEvent, validateReminderDueEvent } from './reminder-events';
 import { ReminderRepository, FirestoreReminder } from './reminder-repo';
 import { temporal } from './temporal';
+import { withCrossContextLock } from './cross-context-lock';
 
 export type ConsumptionStatus = 
   | 'consumed'
@@ -130,80 +131,113 @@ export class ReminderEventDelivery {
       };
     }
 
-    // In-flight concurrency lock per event
-    if (this.inFlightClaims.has(event.eventId)) {
-      return {
-        success: false,
-        status: 'locked',
-        eventId: event.eventId,
-        error: 'Event is currently being processed by another consumer'
-      };
-    }
+    const lockName = `alpha_delivery_lock_${authenticatedUserId}_${event.reminderId}`;
 
-    this.inFlightClaims.add(event.eventId);
-
-    try {
-      if (this.repo) {
-        const reminder = await this.repo.getReminder(authenticatedUserId, event.reminderId);
-        
-        // Reminder existence check
-        if (!reminder) {
-          return {
-            success: false,
-            status: 'rejected',
-            eventId: event.eventId,
-            error: `Reminder ${event.reminderId} not found`
-          };
-        }
-
-        // Active state check
-        if (reminder.reminderState !== 'active') {
-          return {
-            success: false,
-            status: 'rejected',
-            eventId: event.eventId,
-            error: `Reminder is in non-active state: ${reminder.reminderState}`
-          };
-        }
-
-        // Already-consumed check (notificationState === 'accepted')
-        if (reminder.notificationState === 'accepted') {
-          return {
-            success: true,
-            status: 'already_consumed',
-            eventId: event.eventId
-          };
-        }
+    return await withCrossContextLock(lockName, async () => {
+      // In-flight concurrency lock per event (same JS execution context)
+      if (this.inFlightClaims.has(event.eventId)) {
+        return {
+          success: false,
+          status: 'locked',
+          eventId: event.eventId,
+          error: 'Event is currently being processed by another consumer'
+        };
       }
 
-      // Execute consumer logic if provided
-      if (consumerFn) {
-        await consumerFn(event);
-      }
+      this.inFlightClaims.add(event.eventId);
 
-      // Acknowledge consumption in repository if available
-      if (this.repo) {
-        await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
-          notificationState: 'accepted',
-          updatedAt: Date.now()
-        });
-      }
+      try {
+        if (this.repo) {
+          // READ AUTHORITATIVE CURRENT REMINDER STATE INSIDE LOCK
+          const reminder = await this.repo.getReminder(authenticatedUserId, event.reminderId);
+          
+          // Reminder existence check
+          if (!reminder) {
+            return {
+              success: false,
+              status: 'rejected',
+              eventId: event.eventId,
+              error: `Reminder ${event.reminderId} not found`
+            };
+          }
 
-      return {
-        success: true,
-        status: 'consumed',
-        eventId: event.eventId
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        status: 'failed',
-        eventId: event.eventId,
-        error: err?.message || 'Consumer execution failed'
-      };
-    } finally {
-      this.inFlightClaims.delete(event.eventId);
-    }
+          // Active state check
+          if (reminder.reminderState !== 'active') {
+            return {
+              success: false,
+              status: 'rejected',
+              eventId: event.eventId,
+              error: `Reminder is in non-active state: ${reminder.reminderState}`
+            };
+          }
+
+          // Already-consumed check (notificationState === 'accepted')
+          if (reminder.notificationState === 'accepted') {
+            return {
+              success: true,
+              status: 'already_consumed',
+              eventId: event.eventId
+            };
+          }
+
+          // Check if actively claimed by another context within lease
+          if (reminder.notificationState === 'claimed') {
+            const claimTime = reminder.updatedAt || 0;
+            const now = temporal.now().getTime();
+            if (now - claimTime < 30000) {
+              return {
+                success: false,
+                status: 'locked',
+                eventId: event.eventId,
+                error: 'Event is currently claimed by another consumer'
+              };
+            }
+          }
+
+          // CLAIM / ADVANCE NOTIFICATION STATE
+          await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+            notificationState: 'claimed',
+            updatedAt: Date.now()
+          });
+        }
+
+        // EXECUTE CONSUMER ACTION
+        if (consumerFn) {
+          await consumerFn(event);
+        }
+
+        // FINALIZE PERSISTENT NOTIFICATION STATE
+        if (this.repo) {
+          await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+            notificationState: 'accepted',
+            updatedAt: Date.now()
+          });
+        }
+
+        return {
+          success: true,
+          status: 'consumed',
+          eventId: event.eventId
+        };
+      } catch (err: any) {
+        if (this.repo) {
+          try {
+            await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+              notificationState: 'pending',
+              updatedAt: Date.now()
+            });
+          } catch {}
+        }
+        return {
+          success: false,
+          status: 'failed',
+          eventId: event.eventId,
+          error: err?.message || 'Consumer execution failed'
+        };
+      } finally {
+        this.inFlightClaims.delete(event.eventId);
+      }
+    });
   }
 
   /**
@@ -221,12 +255,21 @@ export class ReminderEventDelivery {
       if (r.notificationState === 'claimed') {
         const claimTime = r.updatedAt || r.legacyFiredAt || 0;
         if (now - claimTime > leaseTimeoutMs) {
-          // Stale claim detected: reset to pending so scheduler or consumer can reclaim
-          await this.repo.updateReminder(authenticatedUserId, r.id, {
-            notificationState: 'pending',
-            updatedAt: now
+          const lockName = `alpha_delivery_lock_${authenticatedUserId}_${r.id}`;
+          await withCrossContextLock(lockName, async () => {
+            const fresh = await this.repo!.getReminder(authenticatedUserId, r.id);
+            if (fresh && fresh.notificationState === 'claimed') {
+              const freshClaimTime = fresh.updatedAt || fresh.legacyFiredAt || 0;
+              if (now - freshClaimTime > leaseTimeoutMs) {
+                // Stale claim detected: reset to pending so scheduler or consumer can reclaim
+                await this.repo!.updateReminder(authenticatedUserId, r.id, {
+                  notificationState: 'pending',
+                  updatedAt: now
+                });
+                recoveredIds.push(r.id);
+              }
+            }
           });
-          recoveredIds.push(r.id);
         }
       }
     }

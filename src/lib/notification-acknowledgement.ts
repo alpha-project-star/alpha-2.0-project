@@ -1,6 +1,7 @@
 import { doc, getDoc, setDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from './firebase';
 import { reminderContextManager, ActiveReminderContext } from './reminder-context';
+import { withCrossContextLock } from './cross-context-lock';
 
 export type AcknowledgementStatus = 'pending' | 'delivered' | 'acknowledged' | 'failed';
 
@@ -433,41 +434,45 @@ export class NotificationAcknowledgementManager {
 
     const userId = authenticatedUserId.trim();
     const ackId = generateAcknowledgementId(eventId, channel);
-    const existing = await this.repo.getAcknowledgement(userId, ackId);
+    const lockName = `alpha_ack_lock_${userId}_${ackId}`;
 
-    if (existing) {
-      if (existing.status === 'acknowledged') {
-        return existing;
+    return await withCrossContextLock(lockName, async () => {
+      const existing = await this.repo.getAcknowledgement(userId, ackId);
+
+      if (existing) {
+        if (existing.status === 'acknowledged') {
+          return existing;
+        }
+        const updated: AcknowledgementRecord = {
+          ...existing,
+          status: 'delivered',
+          deliveredAt: Date.now(),
+          updatedAt: Date.now(),
+        };
+        await this.repo.updateAcknowledgement(userId, ackId, updated);
+        this.notify(updated);
+        return updated;
       }
-      const updated: AcknowledgementRecord = {
-        ...existing,
+
+      const newRecord: AcknowledgementRecord = {
+        ackId,
+        eventId: eventId.trim(),
+        reminderId: reminderId.trim(),
+        userId,
+        channel,
         status: 'delivered',
         deliveredAt: Date.now(),
+        title,
+        dueAt,
+        createdAt: Date.now(),
         updatedAt: Date.now(),
+        version: 1,
       };
-      await this.repo.updateAcknowledgement(userId, ackId, updated);
-      this.notify(updated);
-      return updated;
-    }
 
-    const newRecord: AcknowledgementRecord = {
-      ackId,
-      eventId: eventId.trim(),
-      reminderId: reminderId.trim(),
-      userId,
-      channel,
-      status: 'delivered',
-      deliveredAt: Date.now(),
-      title,
-      dueAt,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-      version: 1,
-    };
-
-    await this.repo.saveAcknowledgement(userId, newRecord);
-    this.notify(newRecord);
-    return newRecord;
+      await this.repo.saveAcknowledgement(userId, newRecord);
+      this.notify(newRecord);
+      return newRecord;
+    });
   }
 
   /**
@@ -524,150 +529,156 @@ export class NotificationAcknowledgementManager {
       ackId = generateAcknowledgementId(eventId, channel);
     }
 
-    let record: AcknowledgementRecord | null = null;
+    const lockIdentifier = ackId || eventId || cleanReminderId;
+    const lockName = `alpha_ack_lock_${userId}_${lockIdentifier}`;
 
-    try {
-      if (ackId) {
-        record = await this.repo.getAcknowledgement(userId, ackId);
-      } else if (cleanReminderId) {
-        const all = await this.repo.listAcknowledgements(userId);
-        record =
-          all
-            .filter((a) => a.reminderId === cleanReminderId)
-            .sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+    return await withCrossContextLock(lockName, async () => {
+      // In-flight concurrency check per record (same JS context fast path)
+      const lockKey = `${userId}:${lockIdentifier}`;
+      if (this.inFlightAcks.has(lockKey)) {
+        return {
+          success: false,
+          status: 'concurrency_conflict',
+          ackId: ackId || '',
+          eventId: eventId || '',
+          error: {
+            code: 'CONCURRENCY_CONFLICT',
+            message: 'An acknowledgement is already in progress for this reminder event',
+          },
+        };
       }
-    } catch (err: any) {
-      return {
-        success: false,
-        status: 'persistence_failure',
-        ackId,
-        eventId,
-        error: {
-          code: 'PERSISTENCE_FAILURE',
-          message: `Failed to read acknowledgement record: ${err?.message || err}`,
-        },
-      };
-    }
 
-    if (!record) {
-      // Check if this record belongs to another user
-      const globalFinder = (this.repo as any).findAcknowledgementGlobally;
-      if (typeof globalFinder === 'function') {
-        const otherUserRec = globalFinder.call(this.repo, ackId || eventId || cleanReminderId);
-        if (otherUserRec && otherUserRec.userId !== userId) {
+      this.inFlightAcks.add(lockKey);
+
+      try {
+        // READ AUTHORITATIVE CURRENT ACKNOWLEDGEMENT STATE INSIDE LOCK
+        let record: AcknowledgementRecord | null = null;
+        try {
+          if (ackId) {
+            record = await this.repo.getAcknowledgement(userId, ackId);
+          } else if (cleanReminderId) {
+            const all = await this.repo.listAcknowledgements(userId);
+            record =
+              all
+                .filter((a) => a.reminderId === cleanReminderId)
+                .sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+          }
+        } catch (err: any) {
+          return {
+            success: false,
+            status: 'persistence_failure',
+            ackId,
+            eventId,
+            error: {
+              code: 'PERSISTENCE_FAILURE',
+              message: `Failed to read acknowledgement record: ${err?.message || err}`,
+            },
+          };
+        }
+
+        if (!record) {
+          // Check if this record belongs to another user
+          const globalFinder = (this.repo as any).findAcknowledgementGlobally;
+          if (typeof globalFinder === 'function') {
+            const otherUserRec = globalFinder.call(this.repo, ackId || eventId || cleanReminderId);
+            if (otherUserRec && otherUserRec.userId !== userId) {
+              return {
+                success: false,
+                status: 'user_mismatch',
+                ackId: otherUserRec.ackId,
+                eventId: otherUserRec.eventId,
+                error: {
+                  code: 'USER_MISMATCH',
+                  message: 'Cross-user acknowledgement attempt was rejected',
+                },
+              };
+            }
+          }
+
+          return {
+            success: false,
+            status: 'not_found',
+            ackId,
+            eventId,
+            error: {
+              code: 'NOT_FOUND',
+              message: 'No delivered reminder notification found to acknowledge',
+            },
+          };
+        }
+
+        if (record.userId !== userId) {
           return {
             success: false,
             status: 'user_mismatch',
-            ackId: otherUserRec.ackId,
-            eventId: otherUserRec.eventId,
+            ackId: record.ackId,
+            eventId: record.eventId,
             error: {
               code: 'USER_MISMATCH',
               message: 'Cross-user acknowledgement attempt was rejected',
             },
           };
         }
+
+        // CHECK WHETHER ALREADY ACKNOWLEDGED (INSIDE LOCK)
+        if (record.status === 'acknowledged') {
+          const conversationalReply = generateConversationalAcknowledgementReply(
+            input.userConfirmationText || 'acknowledged',
+            record,
+          );
+          return {
+            success: true,
+            status: 'already_acknowledged',
+            ackId: record.ackId,
+            eventId: record.eventId,
+            reminderId: record.reminderId,
+            record,
+            conversationalReply,
+          };
+        }
+
+        // APPLY ACKNOWLEDGEMENT & PERSIST RESULT (INSIDE LOCK)
+        const updatedRecord: AcknowledgementRecord = {
+          ...record,
+          status: 'acknowledged',
+          acknowledgedAt: Date.now(),
+          userConfirmationText: input.userConfirmationText || record.userConfirmationText,
+          updatedAt: Date.now(),
+          version: (record.version || 1) + 1,
+        };
+
+        await this.repo.saveAcknowledgement(userId, updatedRecord);
+        this.notify(updatedRecord);
+
+        const conversationalReply = generateConversationalAcknowledgementReply(
+          input.userConfirmationText || '',
+          updatedRecord,
+        );
+
+        return {
+          success: true,
+          status: 'acknowledged',
+          ackId: updatedRecord.ackId,
+          eventId: updatedRecord.eventId,
+          reminderId: updatedRecord.reminderId,
+          record: updatedRecord,
+          conversationalReply,
+        };
+      } catch (err: any) {
+        return {
+          success: false,
+          status: 'persistence_failure',
+          ackId: record?.ackId || ackId,
+          eventId: record?.eventId || eventId,
+          error: {
+            code: 'PERSISTENCE_FAILURE',
+            message: `Failed to persist acknowledgement: ${err?.message || err}`,
+          },
+        };
+      } finally {
+        this.inFlightAcks.delete(lockKey);
       }
-
-      return {
-        success: false,
-        status: 'not_found',
-        ackId,
-        eventId,
-        error: {
-          code: 'NOT_FOUND',
-          message: 'No delivered reminder notification found to acknowledge',
-        },
-      };
-    }
-
-    if (record.userId !== userId) {
-      return {
-        success: false,
-        status: 'user_mismatch',
-        ackId: record.ackId,
-        eventId: record.eventId,
-        error: {
-          code: 'USER_MISMATCH',
-          message: 'Cross-user acknowledgement attempt was rejected',
-        },
-      };
-    }
-
-    // Idempotency: If already acknowledged, return idempotent success
-    if (record.status === 'acknowledged') {
-      const conversationalReply = generateConversationalAcknowledgementReply(
-        input.userConfirmationText || 'acknowledged',
-        record,
-      );
-      return {
-        success: true,
-        status: 'already_acknowledged',
-        ackId: record.ackId,
-        eventId: record.eventId,
-        reminderId: record.reminderId,
-        record,
-        conversationalReply,
-      };
-    }
-
-    // Concurrency / In-Flight Locking
-    const lockKey = `${userId}:${record.ackId}`;
-    if (this.inFlightAcks.has(lockKey)) {
-      return {
-        success: false,
-        status: 'concurrency_conflict',
-        ackId: record.ackId,
-        eventId: record.eventId,
-        error: {
-          code: 'CONCURRENCY_CONFLICT',
-          message: 'An acknowledgement is already in progress for this reminder event',
-        },
-      };
-    }
-
-    this.inFlightAcks.add(lockKey);
-
-    try {
-      const updatedRecord: AcknowledgementRecord = {
-        ...record,
-        status: 'acknowledged',
-        acknowledgedAt: Date.now(),
-        userConfirmationText: input.userConfirmationText || record.userConfirmationText,
-        updatedAt: Date.now(),
-        version: (record.version || 1) + 1,
-      };
-
-      await this.repo.saveAcknowledgement(userId, updatedRecord);
-      this.notify(updatedRecord);
-
-      const conversationalReply = generateConversationalAcknowledgementReply(
-        input.userConfirmationText || '',
-        updatedRecord,
-      );
-
-      return {
-        success: true,
-        status: 'acknowledged',
-        ackId: updatedRecord.ackId,
-        eventId: updatedRecord.eventId,
-        reminderId: updatedRecord.reminderId,
-        record: updatedRecord,
-        conversationalReply,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        status: 'persistence_failure',
-        ackId: record.ackId,
-        eventId: record.eventId,
-        error: {
-          code: 'PERSISTENCE_FAILURE',
-          message: `Failed to persist acknowledgement: ${err?.message || err}`,
-        },
-      };
-    } finally {
-      this.inFlightAcks.delete(lockKey);
-    }
+    });
   }
 
   /**

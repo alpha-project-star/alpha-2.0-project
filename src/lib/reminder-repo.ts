@@ -52,7 +52,8 @@ export interface ReminderRepository {
   createReminder(userId: string, reminder: FirestoreReminder): Promise<void>;
   updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void>;
   deleteReminder(userId: string, reminderId: string): Promise<void>;
-  clear?(): void;
+  replaceReminders(userId: string, reminders: FirestoreReminder[]): Promise<void>;
+  clear(): Promise<void>;
 }
 
 const STORAGE_PREFIX = 'alpha.reminders.v1';
@@ -346,23 +347,50 @@ export class LocalReminderRepository implements ReminderRepository {
     });
   }
 
-  clear(): void {
-    this.store.clear();
-    const storage = getStorage();
-    if (storage) {
-      try {
-        const keysToRemove: string[] = [];
-        for (let i = 0; i < storage.length; i++) {
-          const k = storage.key(i);
-          if (k && k.startsWith(STORAGE_PREFIX)) {
-            keysToRemove.push(k);
+  async clear(): Promise<void> {
+    await withCrossContextLock(STORAGE_PREFIX, async () => {
+      this.store.clear();
+      const storage = getStorage();
+      if (storage) {
+        try {
+          const keysToRemove: string[] = [];
+          for (let i = 0; i < storage.length; i++) {
+            const k = storage.key(i);
+            if (k && k.startsWith(STORAGE_PREFIX)) {
+              keysToRemove.push(k);
+            }
           }
+          for (const k of keysToRemove) {
+            storage.removeItem(k);
+          }
+        } catch {}
+      }
+    });
+  }
+
+  async replaceReminders(userId: string, reminders: FirestoreReminder[]): Promise<void> {
+    if (this.shouldFail) throw new Error(this.failureError);
+    const effectiveUserId = userId || 'local-user';
+    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
+      const nextMap = new Map<string, FirestoreReminder>();
+      for (const r of reminders) {
+        nextMap.set(r.id, {
+          ...r,
+          userId: effectiveUserId,
+          updatedAt: Date.now(),
+        });
+      }
+      this.save(effectiveUserId, nextMap);
+      // Update in-memory store for matching userId
+      for (const [id, r] of this.store.entries()) {
+        if (r.userId === effectiveUserId) {
+          this.store.delete(id);
         }
-        for (const k of keysToRemove) {
-          storage.removeItem(k);
-        }
-      } catch {}
-    }
+      }
+      for (const [id, r] of nextMap.entries()) {
+        this.store.set(id, r);
+      }
+    });
   }
 }
 
@@ -418,7 +446,27 @@ export class InMemoryReminderRepository extends LocalReminderRepository {
     });
   }
 
-  override clear(): void {
+  override async replaceReminders(userId: string, reminders: FirestoreReminder[]): Promise<void> {
+    if (this.shouldFail) throw new Error(this.failureError);
+    await withCrossContextLock(`alpha_inmem_reminder_${userId}`, async () => {
+      // Clear existing for this user
+      const keysToRemove: string[] = [];
+      for (const [k, v] of this.store.entries()) {
+        if (v.userId === userId) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) {
+        this.store.delete(k);
+      }
+      // Add new ones
+      for (const r of reminders) {
+        this.store.set(this.key(userId, r.id), { ...r, userId });
+      }
+    });
+  }
+
+  override async clear(): Promise<void> {
     this.store.clear();
   }
 }

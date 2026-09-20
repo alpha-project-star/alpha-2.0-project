@@ -6,6 +6,7 @@ import {
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
+import { withCrossContextLock } from "./cross-context-lock";
 
 /**
  * Proactive daemon — Alpha initiates.
@@ -29,19 +30,21 @@ function todayKey(): string {
   const d = new Date();
   return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 }
-function readOnce(key: string): boolean {
+async function tryClaimOnce(key: string): Promise<boolean> {
   const storage = getStorage();
   if (!storage) return false;
-  try {
-    if (storage.getItem(key) === todayKey()) return false;
-    storage.setItem(key, todayKey());
-    return true;
-  } catch (err) {
-    if (err && typeof err === "object" && (err as any).name === "PersistenceError") {
-      throw err;
+  return await withCrossContextLock(`alpha_lock_proactive_${key}`, async () => {
+    try {
+      if (storage.getItem(key) === todayKey()) return false;
+      storage.setItem(key, todayKey());
+      return true;
+    } catch (err) {
+      if (err && typeof err === "object" && (err as any).name === "PersistenceError") {
+        throw err;
+      }
+      throw new PersistenceError(key, err);
     }
-    throw new PersistenceError(key, err);
-  }
+  });
 }
 
 function speakAndLog(line: string) {
@@ -143,12 +146,12 @@ export async function tick(force = false, options?: MorningBriefOptions) {
   // Morning brief window 5am–11am local, once per day.
   if (hour >= 5 && hour <= 11) {
     const brief = await buildMorningBrief(options);
-    if (brief && readOnce(LS_LAST_BRIEF)) speakAndLog(brief);
+    if (brief && (await tryClaimOnce(LS_LAST_BRIEF))) speakAndLog(brief);
   }
 
   // Overdue-bill standalone nudge (any time of day, once).
   const overdue = s.bills.filter(b => b.status !== "paid" && Date.parse(b.dueDate) < Date.now() - 86400000);
-  if (overdue.length && readOnce(LS_LAST_BILLS)) {
+  if (overdue.length && (await tryClaimOnce(LS_LAST_BILLS))) {
     const total = overdue.reduce((a, b) => a + Number(b.balance || 0), 0);
     speakAndLog(`Quick reminder — ${overdue.length} bill${overdue.length === 1 ? " is" : "s are"} overdue${total ? `, totalling ${total.toFixed(2)}` : ""}. Want me to open the bills view?`);
   }
@@ -161,7 +164,7 @@ export async function tick(force = false, options?: MorningBriefOptions) {
       const t = p.dueAt || 0;
       return !Number.isNaN(t) && t >= startOfDay.getTime() && t <= endOfDay.getTime();
     });
-    if (tasksToday.length && readOnce(LS_LAST_PLANS)) {
+    if (tasksToday.length && (await tryClaimOnce(LS_LAST_PLANS))) {
       const first = tasksToday[0];
       speakAndLog(`Reminder — you still have ${tasksToday.length === 1 ? "a task" : `${tasksToday.length} tasks`} today, starting with ${first.title}.`);
     }
