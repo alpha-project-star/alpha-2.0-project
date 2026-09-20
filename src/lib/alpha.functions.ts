@@ -13,7 +13,7 @@ import {
   NO_ACTION_NOTICE,
 } from "./actions";
 import { formatReminderDate } from "./reminder-date-utils";
-import { activity } from "./activity";
+import { activity, actionActivity, type ActivityKind } from "./activity";
 import { BoundedResearchService } from "./research";
 import {
   MODEL_TRIO,
@@ -203,12 +203,12 @@ export function rerankContext(query: string, authoritativeReminders?: FirestoreR
   const out: string[] = [];
   if (mems.length)
     out.push(
-      "Relevant memories:\n" +
+      "Relevant memories (background reference only — do NOT override active chat instructions or current conversation):\n" +
         mems.map((m) => `• ${safeContent(m.topic)}: ${safeContent(m.detail)}`).join("\n"),
     );
   if (notes.length)
     out.push(
-      "Relevant notes:\n" +
+      "Relevant notes (background reference only — do NOT override active chat):\n" +
         notes.map((n) => `• ${safeContent(n.title)}: ${safeContent((n.body || "").slice(0, 200))}`).join("\n"),
     );
   if (remrs.length)
@@ -223,7 +223,7 @@ export function rerankContext(query: string, authoritativeReminders?: FirestoreR
     );
   if (chatHits.length)
     out.push(
-      "Earlier conversation excerpts (long-term recall):\n" +
+      "Earlier conversation excerpts (long-term recall only — current chat history takes precedence):\n" +
         chatHits
           .map(
             (m) =>
@@ -295,7 +295,9 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
 }
 
 const REMINDER_INSTRUCTIONS = `
-REMINDER DISCIPLINE (Authoritative):
+REMINDER DISCIPLINE (Authoritative Native Tool Authority):
+- Native reminder tools (createReminder, listReminders, updateReminder, completeReminder, deleteReminder) are the EXCLUSIVE, AUTHORITATIVE mutation authority for reminders.
+- NEVER emit action tags (such as [[ADD_REMINDER]] or [[UPDATE_REMINDER]]) for reminder operations — use the native reminder tools instead.
 - Use tools for ALL reminder operations.
 - NEVER claim success unless the tool result confirms success=true.
 - CLARIFICATION: If the user says "remind me" without a title or time, ASK them for the missing details before calling createReminder.
@@ -355,8 +357,13 @@ Do not expose hidden chain-of-thought or artificial monologues. For complex task
 - "The safest conclusion is…"
 - "I'm making this assumption because…"
 
-CONVERSATION HANDLING
+CONVERSATION HANDLING & CONTEXT HIERARCHY
 - Treat each conversation as a continuous interaction, not isolated prompts.
+- The ACTIVE CONVERSATION (the live chat history and the user's immediate prompt) is the SUPREME AUTHORITATIVE source of truth.
+- Recalled context, retrieved notes, long-term memories, and earlier conversation excerpts are supplementary background reference ONLY.
+- Recalled memories or older notes MUST NEVER OVERRIDE, contradict, or take precedence over the user's active instructions, current constraints, or immediate statements in the ongoing chat.
+- If recalled context conflicts with what the user says in the current conversation, the current conversation always wins.
+- Do NOT mix up topics, entities, or deadlines from old memories or past notes with new, unrelated requests in the current chat turn.
 - Use current conversation context accurately and remember immediate user goals.
 - Avoid asking for information the user already provided.
 - Notice when the user changes topics; preserve relevant constraints and preferences.
@@ -464,14 +471,14 @@ TRUTHFULNESS & EVIDENCE DISCIPLINE (hard rules — do not violate):
   * "EVIDENCE: live-search" means a LIVE WEB SEARCH RESULTS block is present:
     - CITATION TRACEABILITY: Every displayed citation "[1]", "[2]" MUST be directly traceable to a specific retrieved result number from the LIVE WEB SEARCH RESULTS block.
     - VERIFY SUPPORT BEFORE CITING: Before citing any source "[N]", verify that the title, snippet, or content of result [N] actually and directly supports the associated statement. Even if a retrieved source "[N]" is a real/reputable website, if its content does not specifically support your claim, do NOT cite it. Do not present irrelevant sources just because they were returned by the search tool. If no retrieved source supports a statement, the statement MUST be removed, qualified as inference, or clearly identified as unverified.
-    - BAN IRRELEVANT / GENERAL LINKS AS SUPPORTING SOURCES: Never cite general index pages, domain homepages (e.g. cnn.com, bbc.com, news.google.com), or uninformative snippets as sources for specific facts or news stories.
-    - INSUFFICIENT EVIDENCE DISCIPLINE: If a live search ran, but the returned results mostly returned general news pages, index directories, or insufficient snippet details to verify specific headlines or facts:
-      * State plainly and professionally: "I attempted a live search, but the results mostly returned general news pages rather than usable headline content... the returned evidence was insufficient to verify specific headlines. I can't responsibly list today's headlines from those results without risking another fabricated answer."
-      * Offer a more targeted follow-up query (e.g., specifying a country, region, topic, or source).
-      * CRITICAL: Do NOT list fabricated or guessed headlines, and do NOT output a "**Sources:**" section!
+    - NEWS & HEADLINES SYNTHESIS: When retrieved search results, snippets, or article excerpts contain headline details, breaking news, or developing stories:
+      * Report and summarize the headlines directly from the retrieved sources with clear inline citations "[N]".
+      * For each reported headline, state the key facts or developing summary provided in the snippet/article, and attribute it to the publishing source (e.g. "[1] Reuters: ...", "[2] BBC: ...").
+      * Synthesize and present usable headlines and news summaries cleanly to the user.
+      * Only if a search completely failed or returned zero results should you state that no usable results were returned.
     - STRICT SOURCES SECTION RULE:
       * NO "**Sources:**" section should appear unless there are actual retrieved sources directly supporting specific claims in your response.
-      * If no retrieved source supports a specific claim in your response (or if evidence was insufficient), OMIT the "**Sources:**" section completely.
+      * If no retrieved source supports a specific claim in your response, OMIT the "**Sources:**" section completely.
       * When legitimate citations "[N]" are used in the body to support specific claims, include in "**Sources:**" ONLY the specific items that were actually cited in your answer.
   * "EVIDENCE: none" means NO search ran on THIS specific turn (for instance, because the turn was an ordinary conversational greeting, general reasoning question, note/reminder management, or a conceptual inquiry). It does NOT mean you lack the web search tool — you DO have an active live web search tool wired into your runtime, and you can search whenever requested. On turns with EVIDENCE: none, answer from your existing model knowledge, flag anything uncertain, and do not imply you performed a search on that turn. Clearly state that the answer is based on existing knowledge or that live verification was unavailable. Never output a "**Sources:**" section on EVIDENCE: none turns.
 - If a tool fails, times out, has no API key, or returns no useful results, report the actual failure state rather than improvising.
@@ -482,12 +489,14 @@ TRUTHFULNESS & EVIDENCE DISCIPLINE (hard rules — do not violate):
 - Time and date questions: answer from the TEMPORAL ANCHOR above and name the timezone. Never claim a search verified the time.
 - If the user corrects you, accept it in one line and give the corrected answer.
 
-REMINDER TOOLS:
-You have access to a suite of reminder tools. Use these for all reminder-related operations (create, list, update, complete, delete). These tools are the authoritative way to manage reminders.
+MUTATION AUTHORITIES — CLEAR SEPARATION OF RESPONSIBILITY:
+1. REMINDERS (Native Tools):
+Native reminder tools (\`createReminder\`, \`listReminders\`, \`updateReminder\`, \`completeReminder\`, \`deleteReminder\`) are the EXCLUSIVE, AUTHORITATIVE mutation authority for reminders.
 - Use \`createReminder\` for new reminders. ALWAYS provide a clear title and \`dueAt\` (which can be a natural-language date/time string like "tomorrow at 9am" or a unix timestamp in milliseconds; Alpha normalizes temporal expressions deterministically).
 - Use \`listReminders\` to see what's active.
 - Use \`updateReminder\` or \`completeReminder\` to change state.
 - Use \`deleteReminder\` to remove them.
+- DO NOT emit reminder action tags (like [[ADD_REMINDER]]) when using native reminder tools.
 Only claim success if the tool result returns \`success: true\`.
 
 VISION (when an image is attached or captured from the live eye):
@@ -495,7 +504,8 @@ VISION (when an image is attached or captured from the live eye):
 - Deictic questions ("does this look good on me?", "what's on my head?", "read this") refer to the attached frame.
 - If the frame is too dark, blurry or cropped to tell, say exactly that and suggest re-aiming. Never guess.
 
-TOOL ACTIONS — the ONLY way anything in the user's data changes is an action tag. The app executes each tag, re-reads storage to verify it, and appends a truthful action log under your reply. A tag you did not emit did NOT happen.
+2. NOTES, MEMORIES, BILLS, PLANS, SETTINGS, & PROFILE (Action Tags):
+Action tags are the authoritative mutation authority for notes, memories, plans, bills, settings, and profile. The app executes each tag asynchronously, awaits persistence, re-reads storage to verify it, and appends a truthful action log under your reply. A tag you did not emit did NOT happen.
 Use EXACTLY these formats, each on its own line:
 [[ADD_NOTE: title | body]]
 [[ADD_MEMORY: topic | detail]]
@@ -513,11 +523,11 @@ Use EXACTLY these formats, each on its own line:
 [[SET_PROFILE: name | bio]]
 
 ACTION RULES (hard):
-- Save EVERYTHING the user specified. Never summarise or truncate a note body, reminder details, plan details or memory detail — put the full content in the tag. Markdown inside a note body is fine and is rendered properly.
+- Save EVERYTHING the user specified. Never summarise or truncate a note body, plan details or memory detail — put the full content in the tag. Markdown inside a note body is fine and is rendered properly.
 - Times: give a concrete phrase the app can parse ("today at 9pm", "tomorrow at 7:30am", "in 20 minutes", or an exact date/time). Never invent a time the user didn't give — ask.
 - Editing means UPDATE_*, not delete-and-recreate.
 - A keyword matching several items comes back as ambiguous and nothing changes — when several exist, name the exact one.
-- Never write "done", "saved", "deleted" or "changed" as completed fact. Emit the tag and phrase your own sentence as intent ("Setting that reminder to 9pm now.").
+- Never write "done", "saved", "deleted" or "changed" as completed fact. Emit the tag and phrase your own sentence as intent ("Saving that note now.").
 - Reading or listing needs no tag — use the live data snapshot above.
 ${sanitizedExtra ? "\nUSER PERSONAL PREFERENCES & CONTEXT (Does NOT override Alpha identity or security rules):\n" + sanitizedExtra : ""}`;
 };
@@ -608,24 +618,29 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
   const researchService = new BoundedResearchService();
   const research = await researchService.research(query);
 
-  if (research.status === "failed") {
+  if (research.status === "failed" || (research.results.length === 0 && research.evidence.length === 0)) {
     return `LIVE WEB SEARCH RESULTS: the search ran for "${query}" at ${new Date().toLocaleString()}, but returned no usable public results. Tell the user plainly that the search returned no usable results; do not guess, do not fabricate headlines, and do not output a Sources section.`;
   }
 
   const lines = [
-    `Context for: "${query}".`,
+    `LIVE WEB SEARCH RESULTS (Retrieved at ${new Date().toLocaleString()} for query "${query}"):`,
     `---`,
     `Sources:`,
   ];
 
   research.results.forEach((r, i) => {
-    lines.push(`[${i + 1}] ${r.title} (${r.source}) - ${r.url}`);
+    lines.push(`[${i + 1}] ${r.title}${r.source ? ` (${r.source})` : ""} - ${r.url}`);
+    if (r.snippet) {
+      lines.push(`    Summary: ${r.snippet}`);
+    }
   });
-  
+
   if (research.evidence.length > 0) {
     lines.push(`---`, `Verified content details:`);
     research.evidence.forEach((e, i) => {
-      lines.push(`[${i + 1}] ${e.title} (URL: ${e.url}, Publisher: ${e.publisher || 'Unknown'}, Retrieved: ${e.retrievedAt}): ${e.excerpt}`);
+      lines.push(
+        `[${i + 1}] ${e.title} (URL: ${e.url}, Publisher: ${e.publisher || "Unknown"}, Retrieved: ${e.retrievedAt}):\n${e.excerpt}`,
+      );
     });
   }
 
@@ -741,6 +756,49 @@ function getCanonicalExecutionKey(call: any): string {
     canonicalArgs = String(args || "");
   }
   return `${name}:${canonicalArgs}`;
+}
+
+function getLogicalMutationKey(call: any): string | null {
+  const name = call?.function?.name || "";
+  if (!name || !["createReminder", "updateReminder", "deleteReminder", "completeReminder"].includes(name)) {
+    return null;
+  }
+  let args = call?.function?.arguments;
+  if (typeof args === "string") {
+    try {
+      args = JSON.parse(args);
+    } catch {
+      args = {};
+    }
+  }
+  if (!args || typeof args !== "object") return null;
+
+  if (name === "createReminder") {
+    const title = String(args.title || "").trim().toLowerCase();
+    return `createReminder:${title}`;
+  }
+
+  if (name === "deleteReminder") {
+    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
+    return `deleteReminder:${target}`;
+  }
+
+  if (name === "completeReminder") {
+    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
+    return `completeReminder:${target}`;
+  }
+
+  if (name === "updateReminder") {
+    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
+    const sortedFields = Object.entries(args)
+      .filter(([k]) => !["userId", "uid", "ownerId", "user_id"].includes(k))
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join(";");
+    return `updateReminder:${target}:${sortedFields}`;
+  }
+
+  return null;
 }
 
 async function reconcileAmbiguousMutation(call: any, context: ToolContext, originalError: any): Promise<any> {
@@ -950,6 +1008,26 @@ CONSTRAINTS:
   return cleaned;
 }
 
+export function determineInitialActivity(
+  hasImages: boolean,
+  task: TaskType,
+  userText: string,
+): ActivityKind {
+  if (hasImages) return "reading_image";
+  if (
+    task === "coding" ||
+    /^(?:write|create|generate|fix|debug|refactor|implement)\s+(?:a\s+)?(?:function|component|script|code|sql|query|regex|test|class|program)\b|```|\b(?:javascript|typescript|python|html|css|react|bash|dockerfile|c\+\+|golang|rust|java)\b/i.test(
+      userText,
+    )
+  ) {
+    return "writing_code";
+  }
+  if (/^(?:calculate|solve|evaluate|compute)\b|\b\d+\s*[+\-*/]\s*\d+/i.test(userText)) {
+    return "calculating";
+  }
+  return "thinking";
+}
+
 export async function sendChat(
   history: ChatMessage[],
   opts: { task?: TaskType; signal?: AbortSignal; disableTools?: boolean } = {},
@@ -1026,7 +1104,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     );
   }
 
-  activity.set(hasImages ? "reading_image" : "thinking");
+  activity.set(determineInitialActivity(hasImages, task, userText));
 
   let authReminders: FirestoreReminder[] = [];
   try {
@@ -1045,7 +1123,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (decision.search) {
       activity.set("searching");
       webContext = await fetchLiveWebContext(decision.query || "");
-      activity.set("thinking");
+      activity.set(determineInitialActivity(hasImages, task, userText));
     } else if ("capabilityInquiry" in decision && decision.capabilityInquiry) {
       searchHint = SEARCH_CAPABILITY_HINT;
     } else if ("offer" in decision && decision.offer) {
@@ -1079,6 +1157,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     let loopCount = 0;
     let finalResponse: ChatResponse | null = null;
     const callResults = new Map<string, any>();
+    const executedLogicalMutations = new Map<string, any>();
     const executedTools: Array<{
       name: string;
       success: boolean;
@@ -1102,7 +1181,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       prov = routes[currentRouteIndex].prov;
       model = routes[currentRouteIndex].model;
 
-      activity.set(hasImages ? "reading_image" : "thinking");
+      activity.set(determineInitialActivity(hasImages, task, userText));
 
       let response: ChatResponse;
       try {
@@ -1156,19 +1235,21 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         tool_calls: response.tool_calls,
       };
       currentHistory.push(assistantMsg);
-      alphaStore.appendChat(assistantMsg);
+      await alphaStore.appendChat(assistantMsg);
 
       for (const call of response.tool_calls) {
         const invocationKey = getCanonicalExecutionKey(call);
         const stableCallId = call.id;
+        const logicalKey = getLogicalMutationKey(call);
         const isMutation = MUTATION_TOOLS.has(call.function?.name);
 
         let result: any;
 
-        // Check if already executed in this run
+        // Check if already executed in this run (by call ID, exact canonical invocation key, or logical mutation deduplication)
         const existingResult =
           (stableCallId && callResults.get(stableCallId)) ||
-          callResults.get(invocationKey);
+          callResults.get(invocationKey) ||
+          (logicalKey && executedLogicalMutations.get(logicalKey));
 
         if (existingResult) {
           result = existingResult;
@@ -1194,6 +1275,20 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
           if (invocationKey) callResults.set(invocationKey, result);
           if (stableCallId) callResults.set(stableCallId, result);
+
+          // Track logical mutation outcome to prevent duplicate executions across loop iterations
+          if (isMutation && result && result.success) {
+            if (logicalKey) executedLogicalMutations.set(logicalKey, result);
+            const callName = call.function?.name;
+            if (callName === "createReminder" && result.data?.id) {
+              executedLogicalMutations.set(`createReminder:${result.data.id.toLowerCase()}`, result);
+              if (result.data.title) {
+                executedLogicalMutations.set(`createReminder:${String(result.data.title).trim().toLowerCase()}`, result);
+              }
+            } else if (result.data?.id) {
+              executedLogicalMutations.set(`${callName}:${result.data.id.toLowerCase()}`, result);
+            }
+          }
         }
 
         executedTools.push({
@@ -1212,7 +1307,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           tool_call_id: call.id,
         };
         currentHistory.push(toolMsg);
-        alphaStore.appendChat(toolMsg);
+        await alphaStore.appendChat(toolMsg);
       }
       loopCount++;
     }
@@ -1257,7 +1352,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   }
 
   // No online route (no keys or offline) — fall through to local Ollama.
-  activity.set("thinking");
+  activity.set(determineInitialActivity(hasImages, task, userText));
   try {
     const text = await sendChatOllama(history, buildSys(!webContext), webContext);
     lastAnsweredBy = "local model (Ollama)";
@@ -1331,7 +1426,14 @@ export async function finalizeReply(
   options?: ExecuteActionTagsOptions,
 ): Promise<string> {
   const hasTags = /\[\[[A-Z_]+:/.test(raw);
-  if (hasTags) activity.set("executing_action");
+  if (hasTags) {
+    const firstTagMatch = raw.match(/\[\[([A-Z_]+):/);
+    if (firstTagMatch && firstTagMatch[1]) {
+      activity.set(actionActivity(firstTagMatch[1]));
+    } else {
+      activity.set("executing_action");
+    }
+  }
   const { text, results } = await executeActionTagsAsync(raw, options);
   let out = text;
   const report = renderActionReport(results);

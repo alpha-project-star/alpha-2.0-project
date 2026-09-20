@@ -181,6 +181,12 @@ export function stripSearchPreamble(text: string): string {
     .replace(/^[,:;-]+|[?!.]+$/g, "")
     .trim();
   if (q.length < 3) q = text.trim();
+
+  // If query is an unadorned request for current headlines or news, optimize for live news search
+  if (/^(?:what\s+(?:are|is)\s+(?:the\s+)?(?:latest\s+|top\s+)?)?(?:today(?:'s|\s+)?(?:top\s+)?)?(?:headlines|news|breaking\s+news)(?:\s+today)?$/i.test(q)) {
+    return "top breaking news headlines today";
+  }
+
   return q;
 }
 

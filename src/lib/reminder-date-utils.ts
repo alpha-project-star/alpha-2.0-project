@@ -11,6 +11,7 @@ import {
   startOfDay,
   isValid
 } from 'date-fns';
+import { parseWhen } from './when';
 
 /**
  * Robustly interpret a date/time string or number.
@@ -21,8 +22,14 @@ export function interpretReminderDate(input: string | number, referenceDate: Dat
     return isValid(new Date(input)) ? input : null;
   }
 
-  const text = input.toLowerCase().trim();
+  const text = (input || '').toLowerCase().trim();
   if (!text) return null;
+
+  // Canonical temporal interpretation across all reminder execution paths
+  const canonical = parseWhen(text, referenceDate);
+  if (canonical !== null) {
+    return canonical;
+  }
 
   // 0. ISO or other standard formats (check this first before greedy regex)
   const parsed = new Date(input);

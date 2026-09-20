@@ -6,6 +6,7 @@ import { getReminderTool } from "./tool-registry";
 import { ensureAuthenticatedUser } from "./auth";
 import { formatReminderDate } from "./reminder-date-utils";
 import type { FirestoreReminder } from "./reminder-repo";
+import { parseWhen } from "./when";
 import { activity } from "./activity";
 import type { ActivityKind } from "./activity";
 
@@ -414,59 +415,16 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
 }
 
 /**
- * Very small natural-language date parser for reminder shortcuts.
- * Supports: "in 5 minutes", "in 2 hours", "tomorrow 8am", "8pm", "at 15:30".
- * Returns an ISO string or empty on failure.
+ * Canonical natural-language date parser for reminder shortcuts.
+ * Resolves consistently with when.ts and reminder-date-utils.
  */
 function parseNaturalWhen(raw: string): string {
-  const s = raw.trim().toLowerCase();
-  const now = new Date();
-
-  let m = s.match(/^in\s+(\d+)\s*(second|minute|min|hour|hr|day)s?$/);
-  if (m) {
-    const n = Number(m[1]);
-    const unit = m[2];
-    const ms = /second/.test(unit)
-      ? n * 1000
-      : /min/.test(unit)
-        ? n * 60000
-        : /hour|hr/.test(unit)
-          ? n * 3600000
-          : n * 86400000;
-    return new Date(now.getTime() + ms).toISOString();
-  }
-
-  // "8pm", "8:30 am"
-  m = s.match(/^(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/);
-  if (m) {
-    let h = Number(m[1]);
-    const mm = Number(m[2] || 0);
-    const ampm = m[3];
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    const d = new Date(now);
-    d.setHours(h, mm, 0, 0);
-    if (d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
-    return d.toISOString();
-  }
-
-  // "tomorrow 8am"
-  m = s.match(/^tomorrow(?:\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?)?$/);
-  if (m) {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 1);
-    let h = m[1] ? Number(m[1]) : 9;
-    const mm = Number(m[2] || 0);
-    const ampm = m[3];
-    if (ampm === "pm" && h < 12) h += 12;
-    if (ampm === "am" && h === 12) h = 0;
-    d.setHours(h, mm, 0, 0);
-    return d.toISOString();
-  }
+  const t = parseWhen(raw);
+  if (t !== null) return new Date(t).toISOString();
 
   // Try native Date.parse as a fallback
-  const t = Date.parse(raw);
-  if (!isNaN(t)) return new Date(t).toISOString();
+  const fallback = Date.parse(raw);
+  if (!isNaN(fallback)) return new Date(fallback).toISOString();
 
   return "";
 }

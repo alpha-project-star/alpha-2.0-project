@@ -52,6 +52,7 @@ function OrbHome() {
   );
   const bgEnabled = useAlpha((s) => s.settings.backgroundEnabled);
   const thinkingRef = useRef(false);
+  const lastVoiceRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
   const [speaking, setSpeaking] = useState(false);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -90,7 +91,17 @@ function OrbHome() {
 
   async function handleFinal(text: string) {
     if (thinkingRef.current) return;
-    const intent = parseIntent(text);
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // Discard rapid double voice submissions
+    const now = Date.now();
+    if (trimmed === lastVoiceRef.current.text && now - lastVoiceRef.current.ts < 1000) {
+      return;
+    }
+    lastVoiceRef.current = { text: trimmed, ts: now };
+
+    const intent = parseIntent(trimmed);
     if (intent.kind === "navigate") {
       setStatus(`Opening ${intent.to.slice(1) || "home"}…`);
       router.navigate({ to: intent.to });
@@ -103,44 +114,44 @@ function OrbHome() {
       return;
     }
 
-    // Local CRUD intents — skip when the user is asking Alpha to LOOK.
-    const eyeRes = await handleEyeCommand(text);
-    const local = eyeRes ?? (!isVisionCommand(text) ? await tryLocalIntent(text) : null);
-    if (local) {
-      alphaStore.appendChat({ id: uid(), role: "user", text, ts: Date.now() });
-      alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
-      setStatus("Speaking…");
-      await speakWith(local);
-      setStatus(recognizer.isWanted ? "Listening…" : "Tap the orb to begin");
-      return;
-    }
-
-    if (!hasUsableBrain) {
-      setStatus("No model key — opening settings");
-      router.navigate({ to: "/settings" });
-      return;
-    }
-
     thinkingRef.current = true;
-    setStatus("Thinking…");
-    // Suspend mic while thinking so Alpha doesn't hear ambient noise / its own pre-speech
     const wasListening = recognizer.isWanted;
     if (wasListening) recognizer.suspend();
-    let outImages: string[] | undefined;
-    if (isVisionCommand(text)) {
-      const frame = await captureLiveFrame();
-      if (frame) outImages = [frame];
-    }
-    alphaStore.appendChat({ id: uid(), role: "user", text, images: outImages, ts: Date.now() });
+
     try {
+      // Local CRUD intents — skip when the user is asking Alpha to LOOK.
+      const eyeRes = await handleEyeCommand(trimmed);
+      const local = eyeRes ?? (!isVisionCommand(trimmed) ? await tryLocalIntent(trimmed) : null);
+      if (local) {
+        await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
+        await alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
+        setStatus("Speaking…");
+        await speakWith(local);
+        setStatus(recognizer.isWanted ? "Listening…" : "Tap the orb to begin");
+        return;
+      }
+
+      if (!hasUsableBrain) {
+        setStatus("No model key — opening settings");
+        router.navigate({ to: "/settings" });
+        return;
+      }
+
+      setStatus("Thinking…");
+      let outImages: string[] | undefined;
+      if (isVisionCommand(trimmed)) {
+        const frame = await captureLiveFrame();
+        if (frame) outImages = [frame];
+      }
+      await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, images: outImages, ts: Date.now() });
       const reply = await sendChat(alphaStore.get().chat, { task: outImages ? "auto" : "fast" });
-      alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
+      await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       setStatus("Speaking…");
       await speakWith(reply);
       setStatus(recognizer.isWanted ? "Listening…" : "Tap the orb to begin");
     } catch (e: any) {
       const msg = e?.message || "Error";
-      alphaStore.appendChat({ id: uid(), role: "system", text: msg, ts: Date.now(), error: true });
+      await alphaStore.appendChat({ id: uid(), role: "system", text: msg, ts: Date.now(), error: true });
       setStatus(msg.slice(0, 80));
     } finally {
       thinkingRef.current = false;

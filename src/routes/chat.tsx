@@ -73,6 +73,8 @@ function ChatRoute() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const lastFinalRef = useRef("");
   const lastFinalAtRef = useRef(0);
+  const busyRef = useRef(false);
+  const lastSubmissionRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
 
   function autoGrow() {
     const el = taRef.current;
@@ -135,42 +137,55 @@ function ChatRoute() {
 
   /** Regenerate an assistant reply: drop it, then re-send the user turn. */
   async function retry(assistantId: string) {
-    if (busy) return;
+    if (busyRef.current || busy) return;
     const r = await alphaStore.prepareRetry(assistantId);
     if (!r) return;
     await send(r.userText, { skipAppend: true });
   }
 
   async function send(overrideText?: string, opts?: { skipAppend?: boolean }) {
-    if (busy) return;
+    if (busyRef.current || busy) return;
     const t = (overrideText ?? text).trim();
     if (!t && images.length === 0) return;
-    prepareUtterance();
-    let outImages = images;
-    if (t && shouldCaptureFrame(t, eyeOn, images.length > 0)) {
-      const frame = await captureLiveFrame(eyeOn);
-      if (frame) outImages = [...outImages, frame].slice(0, 4);
+
+    // Discard rapid double-clicks (identical text within 1000ms)
+    const now = Date.now();
+    if (!opts?.skipAppend && t && t === lastSubmissionRef.current.text && now - lastSubmissionRef.current.ts < 1000) {
+      return;
     }
-    if (!opts?.skipAppend) {
-      alphaStore.appendChat({
-        id: uid(),
-        role: "user",
-        text: t,
-        images: outImages.length ? outImages : undefined,
-        ts: Date.now(),
-      });
-    }
+    lastSubmissionRef.current = { text: t, ts: now };
+
+    // Synchronous guard immediately before any async execution
+    busyRef.current = true;
+    setBusy(true);
+
+    const currentImages = images;
     setText("");
     setImages([]);
-    setBusy(true);
+
+    prepareUtterance();
+    let outImages = currentImages;
     try {
+      if (t && shouldCaptureFrame(t, eyeOn, currentImages.length > 0)) {
+        const frame = await captureLiveFrame(eyeOn);
+        if (frame) outImages = [...outImages, frame].slice(0, 4);
+      }
+      if (!opts?.skipAppend) {
+        await alphaStore.appendChat({
+          id: uid(),
+          role: "user",
+          text: t,
+          images: outImages.length ? outImages : undefined,
+          ts: Date.now(),
+        });
+      }
       const eyeRes = t ? await handleEyeCommand(t) : null;
       const local = eyeRes ?? (t && !isVisionCommand(t) ? await tryLocalIntent(t) : null);
       const reply = local ?? (await sendChat(alphaStore.get().chat, { task }));
-      alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
+      await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {
-      alphaStore.appendChat({
+      await alphaStore.appendChat({
         id: uid(),
         role: "system",
         text: e?.message || "Error",
@@ -178,6 +193,7 @@ function ChatRoute() {
         error: true,
       });
     } finally {
+      busyRef.current = false;
       setBusy(false);
     }
   }
@@ -518,7 +534,7 @@ function ChatRoute() {
                 </button>
                 <button
                   onClick={() => send()}
-                  disabled={busy}
+                  disabled={busy || busyRef.current || (!text.trim() && images.length === 0)}
                   className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50"
                   aria-label="Send"
                 >

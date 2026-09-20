@@ -83,71 +83,108 @@ export class BoundedResearchService {
       if (openedPages >= this.maxPages) {
         break;
       }
-      
+
       const page = await this.provider.readPage(result.url);
       openedPages++;
       processedUrls.add(result.url);
 
       if (page.status === "success") {
-        // If it's a landing page (has many article links), extract them
+        const extracted = extractRelevantEvidence(page.content, query);
+        if (extracted && extracted.trim().length > 30) {
+          let publisher = "Unknown";
+          try {
+            publisher = new URL(result.url).hostname;
+          } catch {}
+          evidence.push({
+            url: result.url,
+            title: page.title || result.title,
+            excerpt: extracted,
+            status: "page-read-success",
+            publisher,
+            retrievedAt: new Date().toISOString(),
+          });
+        }
+
+        // If it's a landing page (has many article links), extract them for deeper reading
         const links = extractArticleLinks(page.content, result.url);
-        
         if (links.length > 2) {
-            // It's a landing page! Add links to candidates
-            const scoredLinks = links
-                .filter(link => !processedUrls.has(link))
-                .map(link => ({ link, score: scoreCandidateLink(link, query) }))
-                .sort((a, b) => b.score - a.score);
-            
-            for (const { link } of scoredLinks) {
-                if (articleLinks.length >= 5) break;
-                // Only take links with positive or neutral scores
-                if (scoreCandidateLink(link, query) >= 0) {
-                    articleLinks.push(link);
-                    processedUrls.add(link);
-                }
+          const scoredLinks = links
+            .filter((link) => !processedUrls.has(link))
+            .map((link) => ({ link, score: scoreCandidateLink(link, query) }))
+            .sort((a, b) => b.score - a.score);
+
+          for (const { link } of scoredLinks) {
+            if (articleLinks.length >= 5) break;
+            if (scoreCandidateLink(link, query) >= 0) {
+              articleLinks.push(link);
+              processedUrls.add(link);
             }
-        } else {
-           evidence.push({
-             url: result.url,
-             title: page.title,
-             excerpt: extractRelevantEvidence(page.content, query),
-             status: "page-read-success",
-             publisher: new URL(result.url).hostname,
-             retrievedAt: new Date().toISOString(),
-           });
+          }
         }
       } else {
-        evidence.push({
-          url: result.url,
-          title: result.title,
-          excerpt: "",
-          status: "page-read-failed",
-          retrievedAt: new Date().toISOString(),
-        });
+        // Full page read failed — fallback immediately to the search snippet as reliable evidence
+        if (result.snippet && result.snippet.trim().length > 15) {
+          let publisher = "Unknown";
+          try {
+            publisher = new URL(result.url).hostname;
+          } catch {}
+          evidence.push({
+            url: result.url,
+            title: result.title,
+            excerpt: result.snippet,
+            status: "snippet-evidence",
+            publisher,
+            retrievedAt: new Date().toISOString(),
+          });
+        }
       }
     }
 
-    // Pass 2: Fetch articles
-    for (const link of articleLinks) {
-       if (openedPages >= this.maxPages) {
-         break;
-       }
-       
-       activity.set("reading_article");
-       const page = await this.provider.readPage(link);
-       openedPages++;
-       
-       if (page.status === "success") {
-        evidence.push({
-          url: link,
-          title: page.title,
-          excerpt: extractRelevantEvidence(page.content, query),
-          status: "page-read-success",
-          publisher: new URL(link).hostname,
-          retrievedAt: new Date().toISOString(),
-        });
-       }
+    // Pass 2: Fetch specific candidate articles if we need more depth
+    if (evidence.length < 3 && articleLinks.length > 0) {
+      for (const link of articleLinks) {
+        if (openedPages >= 8) break;
+        activity.set("reading_article");
+        const page = await this.provider.readPage(link);
+        openedPages++;
+        if (page.status === "success") {
+          const extracted = extractRelevantEvidence(page.content, query);
+          if (extracted && extracted.trim().length > 30) {
+            let publisher = "Unknown";
+            try {
+              publisher = new URL(link).hostname;
+            } catch {}
+            evidence.push({
+              url: link,
+              title: page.title,
+              excerpt: extracted,
+              status: "page-read-success",
+              publisher,
+              retrievedAt: new Date().toISOString(),
+            });
+          }
+        }
+      }
+    }
+
+    // Pass 3 (Guarantee): If evidence is still empty, populate from all available search snippets
+    if (evidence.length === 0) {
+      for (const r of results) {
+        if (r.snippet && r.snippet.trim().length > 10) {
+          let publisher = "Unknown";
+          try {
+            publisher = new URL(r.url).hostname;
+          } catch {}
+          evidence.push({
+            url: r.url,
+            title: r.title,
+            excerpt: r.snippet,
+            status: "snippet-fallback",
+            publisher,
+            retrievedAt: new Date().toISOString(),
+          });
+        }
+      }
     }
     receipt.openedCount = openedPages;
 
@@ -155,7 +192,7 @@ export class BoundedResearchService {
       query,
       results,
       evidence,
-      status: evidence.length > 0 ? "success" : "insufficient",
+      status: evidence.length > 0 || results.length > 0 ? "success" : "insufficient",
       receipt,
     };
   }

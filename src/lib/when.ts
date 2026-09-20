@@ -26,7 +26,10 @@ function applyClock(d: Date, h: number, min: number, ampm?: string) {
  * Parse a phrase into epoch ms. Returns null when it can't be understood —
  * callers must treat null as "unparseable" rather than inventing a time.
  */
-export function parseWhen(raw: string, now: Date = new Date()): number | null {
+export function parseWhen(raw: string | number, now: Date = new Date()): number | null {
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
+  }
   const input = (raw || "").trim();
   if (!input) return null;
   const s = input.toLowerCase().replace(/\s+/g, " ").replace(/^(?:on|at)\s+/, "");

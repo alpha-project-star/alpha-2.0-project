@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "@tanstack/react-router";
 import { recognizer, prepareUtterance, stopSpeaking, speakingState } from "../lib/voice";
 import { useActivity } from "../lib/activity";
@@ -21,12 +21,24 @@ export function MiniOrb({ size = 56 }: { size?: number }) {
   const act = useActivity();
   const isBusy = act.kind !== "idle" && act.kind !== "listening";
   const effectiveActive = active || isBusy;
+  const busyRef = useRef(false);
+  const lastVoiceRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
 
   useEffect(() => speakingState.sub(setSpeaking), []);
 
   async function handleFinal(text: string) {
-    if (!text.trim()) return;
-    const intent = parseIntent(text);
+    if (busyRef.current) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    // Discard rapid double voice submissions
+    const now = Date.now();
+    if (trimmed === lastVoiceRef.current.text && now - lastVoiceRef.current.ts < 1000) {
+      return;
+    }
+    lastVoiceRef.current = { text: trimmed, ts: now };
+
+    const intent = parseIntent(trimmed);
     if (intent.kind === "navigate") {
       router.navigate({ to: intent.to });
       return;
@@ -37,27 +49,31 @@ export function MiniOrb({ size = 56 }: { size?: number }) {
       setActive(false);
       return;
     }
-    const eyeRes = await handleEyeCommand(text);
-    const local = eyeRes ?? (await tryLocalIntent(text));
-    if (local) {
-      alphaStore.appendChat({ id: uid(), role: "user", text, ts: Date.now() });
-      alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
-      speakWith(local, { auto: true });
-      return;
-    }
-    alphaStore.appendChat({ id: uid(), role: "user", text, ts: Date.now() });
+
+    busyRef.current = true;
     try {
+      const eyeRes = await handleEyeCommand(trimmed);
+      const local = eyeRes ?? (await tryLocalIntent(trimmed));
+      if (local) {
+        await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
+        await alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
+        speakWith(local, { auto: true });
+        return;
+      }
+      await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
       const reply = await sendChat(alphaStore.get().chat);
-      alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
+      await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {
-      alphaStore.appendChat({
+      await alphaStore.appendChat({
         id: uid(),
         role: "system",
         text: e?.message || "Error",
         ts: Date.now(),
         error: true,
       });
+    } finally {
+      busyRef.current = false;
     }
   }
 
