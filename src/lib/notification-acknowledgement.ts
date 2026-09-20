@@ -409,7 +409,7 @@ export class NotificationAcknowledgementManager {
 
   /**
    * Called when a reminder event is delivered to the user in-app (e.g. from Phase 3E delivery).
-   * Creates or updates a durable acknowledgement record in 'delivered' state.
+   * Creates or updates an acknowledgement record in 'delivered' state.
    */
   public async recordDelivery(input: {
     authenticatedUserId: string;
@@ -799,7 +799,7 @@ export class NotificationAcknowledgementManager {
       };
     }
 
-    // 4. Perform durable acknowledgement
+    // 4. Perform acknowledgement recording
     return this.acknowledgeReminder({
       authenticatedUserId: cleanUserId,
       ackId: target.ackId,

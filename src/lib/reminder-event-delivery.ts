@@ -80,7 +80,7 @@ export class ReminderEventDelivery {
   /**
    * Consumes an event safely:
    * 1. Validates event structure and user isolation.
-   * 2. Checks durable reminder state in repository to avoid duplicate consumption.
+   * 2. Checks authoritative reminder state in repository to avoid duplicate consumption.
    * 3. Executes consumer function if provided.
    * 4. Upon consumer success, authoritatively updates notificationState to 'accepted'.
    * 5. If consumer fails, leaves event unacknowledged for future retry.

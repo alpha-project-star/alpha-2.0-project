@@ -383,7 +383,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   }
 
   // =========================================================================
-  // PHASE 2: CAPTURE PREVIOUS STATE FOR ATOMIC ROLLBACK
+  // PHASE 2: CAPTURE PREVIOUS STATE FOR BEST-EFFORT ROLLBACK
   // =========================================================================
   const previousLocalStorage: Record<string, string> = {};
   if (typeof window !== "undefined" && window.localStorage) {

@@ -6,14 +6,18 @@
  * Implements the browser/system notification delivery provider conforming
  * to the Phase 3J NotificationChannelProvider contract.
  *
- * Features:
- * - Safe runtime feature detection (SSR, Node, Vitest, unsupported WebViews)
- * - Clean permission state abstraction (not_required, unknown, granted, denied, unavailable)
- * - Explicit user-triggered permission request flow (no auto-prompt on startup)
- * - Deterministic, idempotent delivery identity (`${eventId}:browser`)
- * - Cross-context mutual exclusion and delivery claim tracking via delivery repository under cross-context locks
- * - Complete failure isolation preventing rollback of in-app delivery
- * - Strict decoupling between delivery, visibility, and acknowledgement
+ * Architecture & Concurrency Model:
+ * - Cross-context ownership: Encloses the entire delivery pipeline (read -> check -> claim -> execute -> persist)
+ *   within the canonical cross-context lock (Web Locks API in browsers; local queue in test environments).
+ * - Claim state & recovery: Tracks delivery claims in local storage via delivery repository. Stale claims
+ *   exceeding leaseTimeoutMs may be recovered as an operational heuristic for crashed contexts (not an
+ *   absolute distributed consensus guarantee).
+ * - Safe runtime feature detection (SSR, Node, Vitest, unsupported WebViews).
+ * - Clean permission state abstraction (not_required, unknown, granted, denied, unavailable).
+ * - Explicit user-triggered permission request flow (no auto-prompt on startup).
+ * - Deterministic, idempotent delivery identity (`${eventId}:browser`).
+ * - Complete failure isolation preventing rollback of in-app delivery.
+ * - Strict decoupling between delivery, visibility, and acknowledgement.
  */
 
 import {
@@ -133,7 +137,6 @@ export class BrowserNotificationChannelProvider implements NotificationChannelPr
   private deliveryRepo?: NotificationDeliveryRepository;
   private deliveryManager?: NotificationDeliveryManager;
   private leaseTimeoutMs: number;
-  private inFlightClaims = new Set<string>();
   private onNotificationCreated?: (notification: any) => void;
 
   constructor(options: BrowserNotificationChannelOptions = {}) {
@@ -290,81 +293,65 @@ export class BrowserNotificationChannelProvider implements NotificationChannelPr
       };
     }
 
-    // 5. In-flight Concurrency Check (Local Tab)
-    if (this.inFlightClaims.has(deliveryId)) {
-      return {
-        success: false,
-        channel: this.id,
-        status: 'rejected' as any,
-        deliveryId,
-        eventId: validated.eventId,
-        error: {
-          code: 'DELIVERY_IN_PROGRESS',
-          message: `Browser delivery for ${deliveryId} is currently in progress`,
-        },
-      };
-    }
-
-    // 6 & 7. Read authoritative claim state and acquire execution claim under cross-context lock
+    // 5. Canonical Cross-Context Locked Delivery Flow
+    // Encloses the entire read -> check -> claim -> execute -> persist sequence
+    // within the canonical cross-context lock to enforce mutual exclusion and minimize duplicate execution across contexts.
     const repo = this.getDeliveryRepo();
     const lockName = `alpha_browser_delivery_lock_${authUser}_${deliveryId}`;
-    const claimResult = await withCrossContextLock(lockName, async () => {
+
+    return await withCrossContextLock(lockName, async (): Promise<ChannelDeliveryResult> => {
+      // 1. Read authoritative delivery state
       let existing: DeliveryRecord | null = null;
       try {
         existing = await repo.getDelivery(authUser, deliveryId);
-        if (existing) {
-          if (existing.status === 'delivered') {
-            return {
-              status: 'resolved' as const,
-              result: {
-                success: true,
-                channel: this.id,
-                status: 'already_delivered' as const,
-                deliveryId,
-                eventId: validated.eventId,
-                deliveredAt: existing.deliveredAt || Date.now(),
-              },
-            };
-          }
-
-          if (existing.status === 'delivering') {
-            const elapsed = Date.now() - (existing.updatedAt || 0);
-            if (elapsed < this.leaseTimeoutMs) {
-              return {
-                status: 'resolved' as const,
-                result: {
-                  success: false,
-                  channel: this.id,
-                  status: 'rejected' as const,
-                  deliveryId,
-                  eventId: validated.eventId,
-                  error: {
-                    code: 'DELIVERY_IN_PROGRESS',
-                    message: 'Browser delivery claim actively held by another process (delivery in progress)',
-                  },
-                },
-              };
-            }
-          }
-        }
       } catch (err: any) {
         return {
-          status: 'resolved' as const,
-          result: {
-            success: false,
-            channel: this.id,
-            status: 'temporary_failure' as const,
-            deliveryId,
-            eventId: validated.eventId,
-            error: {
-              code: 'PERSISTENCE_FAILURE',
-              message: `Failed reading delivery repository: ${err?.message}`,
-              retryable: true,
-            },
+          success: false,
+          channel: this.id,
+          status: 'temporary_failure',
+          deliveryId,
+          eventId: validated.eventId,
+          error: {
+            code: 'PERSISTENCE_FAILURE',
+            message: `Failed reading delivery repository: ${err?.message}`,
+            retryable: true,
           },
         };
       }
 
+      // 2. Check already delivered
+      if (existing && existing.status === 'delivered') {
+        return {
+          success: true,
+          channel: this.id,
+          status: 'already_delivered',
+          deliveryId,
+          eventId: validated.eventId,
+          deliveredAt: existing.deliveredAt || Date.now(),
+        };
+      }
+
+      // 3. Check active delivery claim / recovery state
+      if (existing && existing.status === 'delivering') {
+        const elapsed = Date.now() - (existing.updatedAt || 0);
+        // Stale-claim recovery after leaseTimeoutMs is an operational heuristic for crashed contexts,
+        // not an absolute distributed consensus or unbreakable lease guarantee.
+        if (elapsed < this.leaseTimeoutMs) {
+          return {
+            success: false,
+            channel: this.id,
+            status: 'rejected',
+            deliveryId,
+            eventId: validated.eventId,
+            error: {
+              code: 'DELIVERY_IN_PROGRESS',
+              message: 'Browser delivery claim actively held by another process (delivery in progress)',
+            },
+          };
+        }
+      }
+
+      // 4. Establish claim in delivery repository
       const now = Date.now();
       try {
         if (!existing) {
@@ -389,128 +376,113 @@ export class BrowserNotificationChannelProvider implements NotificationChannelPr
         }
       } catch (repoErr: any) {
         return {
-          status: 'resolved' as const,
-          result: {
-            success: false,
-            channel: this.id,
-            status: 'temporary_failure' as const,
-            deliveryId,
-            eventId: validated.eventId,
-            error: {
-              code: 'PERSISTENCE_FAILURE',
-              message: `Failed acquiring browser delivery claim: ${repoErr?.message}`,
-              retryable: true,
-            },
+          success: false,
+          channel: this.id,
+          status: 'temporary_failure',
+          deliveryId,
+          eventId: validated.eventId,
+          error: {
+            code: 'PERSISTENCE_FAILURE',
+            message: `Failed acquiring browser delivery claim: ${repoErr?.message}`,
+            retryable: true,
           },
         };
       }
 
-      return { status: 'acquired' as const };
-    });
+      // 5. Execute Browser Notification Display
+      try {
+        const title = `🔔 Alpha: ${validated.title}`;
+        const notificationOptions: NotificationOptions = {
+          body: validated.body,
+          tag: validated.eventId,
+          icon: '/icon-192.png',
+          data: {
+            eventId: validated.eventId,
+            reminderId: validated.reminderId,
+            url: '/',
+            notes: validated.notes,
+            metadata: validated.metadata,
+          },
+        };
 
-    if (claimResult.status === 'resolved') {
-      return claimResult.result;
-    }
+        let notificationInstance: any = null;
 
-    this.inFlightClaims.add(deliveryId);
-
-    // 8. Execute Browser Notification Display
-    try {
-      const title = `🔔 Alpha: ${validated.title}`;
-      const notificationOptions: NotificationOptions = {
-        body: validated.body,
-        tag: validated.eventId,
-        icon: '/icon-192.png',
-        data: {
-          eventId: validated.eventId,
-          reminderId: validated.reminderId,
-          url: '/',
-          notes: validated.notes,
-          metadata: validated.metadata,
-        },
-      };
-
-      let notificationInstance: any = null;
-
-      // Try Service Worker showNotification if active; otherwise use standard window.Notification
-      if (
-        typeof navigator !== 'undefined' &&
-        'serviceWorker' in navigator &&
-        navigator.serviceWorker.controller
-      ) {
-        try {
-          const reg = await navigator.serviceWorker.ready;
-          if (reg && typeof reg.showNotification === 'function') {
-            await reg.showNotification(title, notificationOptions);
-          } else {
+        // Try Service Worker showNotification if active; otherwise use standard window.Notification
+        if (
+          typeof navigator !== 'undefined' &&
+          'serviceWorker' in navigator &&
+          navigator.serviceWorker.controller
+        ) {
+          try {
+            const reg = await navigator.serviceWorker.ready;
+            if (reg && typeof reg.showNotification === 'function') {
+              await reg.showNotification(title, notificationOptions);
+            } else {
+              notificationInstance = new (window as any).Notification(title, notificationOptions);
+            }
+          } catch {
             notificationInstance = new (window as any).Notification(title, notificationOptions);
           }
-        } catch {
+        } else {
           notificationInstance = new (window as any).Notification(title, notificationOptions);
         }
-      } else {
-        notificationInstance = new (window as any).Notification(title, notificationOptions);
-      }
 
-      if (notificationInstance) {
-        notificationInstance.onclick = (event: any) => {
-          try {
-            event?.preventDefault?.();
-            window.focus?.();
-          } catch {}
-        };
-        if (this.onNotificationCreated) {
-          this.onNotificationCreated(notificationInstance);
+        if (notificationInstance) {
+          notificationInstance.onclick = (event: any) => {
+            try {
+              event?.preventDefault?.();
+              window.focus?.();
+            } catch {}
+          };
+          if (this.onNotificationCreated) {
+            this.onNotificationCreated(notificationInstance);
+          }
         }
-      }
 
-      const deliveredAt = Date.now();
+        const deliveredAt = Date.now();
 
-      // Update delivery repository to 'delivered'
-      await repo.updateDelivery(authUser, deliveryId, {
-        status: 'delivered',
-        deliveredAt,
-        updatedAt: deliveredAt,
-      });
-
-      this.inFlightClaims.delete(deliveryId);
-
-      return {
-        success: true,
-        channel: this.id,
-        status: 'delivered',
-        deliveryId,
-        eventId: validated.eventId,
-        messageId: validated.messageId,
-        deliveredAt,
-      };
-    } catch (deliveryErr: any) {
-      this.inFlightClaims.delete(deliveryId);
-
-      try {
+        // 6. Persist final delivery state
         await repo.updateDelivery(authUser, deliveryId, {
-          status: 'failed',
-          failedAt: Date.now(),
-          updatedAt: Date.now(),
-          error: deliveryErr?.message || 'Browser notification creation failed',
+          status: 'delivered',
+          deliveredAt,
+          updatedAt: deliveredAt,
         });
-      } catch {
-        // Non-blocking on cleanup error
-      }
 
-      return {
-        success: false,
-        channel: this.id,
-        status: 'temporary_failure',
-        deliveryId,
-        eventId: validated.eventId,
-        messageId: validated.messageId,
-        error: {
-          code: 'DELIVERY_FAILED',
-          message: deliveryErr?.message || 'Browser notification creation failed',
-        },
-      };
-    }
+        return {
+          success: true,
+          channel: this.id,
+          status: 'delivered',
+          deliveryId,
+          eventId: validated.eventId,
+          messageId: validated.messageId,
+          deliveredAt,
+        };
+      } catch (deliveryErr: any) {
+        try {
+          await repo.updateDelivery(authUser, deliveryId, {
+            status: 'failed',
+            failedAt: Date.now(),
+            updatedAt: Date.now(),
+            error: deliveryErr?.message || 'Browser notification creation failed',
+          });
+        } catch {
+          // Non-blocking on cleanup error
+        }
+
+        return {
+          success: false,
+          channel: this.id,
+          status: 'temporary_failure',
+          deliveryId,
+          eventId: validated.eventId,
+          messageId: validated.messageId,
+          error: {
+            code: 'DELIVERY_FAILED',
+            message: deliveryErr?.message || 'Browser notification creation failed',
+          },
+        };
+      }
+    });
   }
 }
 

@@ -73,7 +73,9 @@ export class ReminderScheduler {
 
   /**
    * Application-level recovery: resets stale claims whose ownership window has expired
-   * (e.g. after crash or interrupted worker).
+   * (e.g. after an interrupted worker or closed tab).
+   * Note: This timeout-based heuristic does not provide an unbreakable lease or absolute consensus guarantee,
+   * but allows recovery of abandoned claims.
    */
   public async recoverStaleClaims(
     userId: string,

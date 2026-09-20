@@ -240,6 +240,7 @@ export class ProactiveTrigger {
           if (rem.proactiveState === 'generating' && rem.proactiveEventId === event.eventId) {
             const leaseTimeout = this.options.leaseTimeoutMs ?? 30000;
             const elapsed = Date.now() - (rem.updatedAt || 0);
+            // Stale-claim recovery after leaseTimeout is an operational heuristic for crashed/abandoned processing
             if (elapsed < leaseTimeout) {
               return {
                 status: 'error' as const,
@@ -307,7 +308,7 @@ export class ProactiveTrigger {
         const trimmed = text.trim();
         const messageId = uid();
 
-        // 10. Update Durable Repository State to 'generated'
+        // 10. Update reminder repository state to 'generated'
         if (this.options.repo) {
           await this.options.repo.updateReminder(authUser, event.reminderId, {
             proactiveState: 'generated',

@@ -707,7 +707,7 @@ export class NotificationDeliveryManager {
         });
       }
 
-      // Record durable acknowledgement tracking in delivered state
+      // Record persistent acknowledgement tracking in delivered state
       try {
         await notificationAcknowledgementManager.recordDelivery({
           authenticatedUserId: authUser,
@@ -785,6 +785,7 @@ export class NotificationDeliveryManager {
 
   /**
    * Application-level recovery: resets stale claims where a delivering status expired without completion.
+   * Note: This timeout heuristic allows recovering abandoned delivery states without providing unbreakable leases or consensus guarantees.
    */
   public async recoverStaleClaims(
     userId: string,

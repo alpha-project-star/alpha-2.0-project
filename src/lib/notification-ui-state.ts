@@ -53,8 +53,8 @@ export async function resolveNotificationStatus(
   // 1. Check if underlying reminder is completed in authoritative repository
   if (reminderId) {
     try {
-      const durableMatch = await reminderRepo.getReminder(cleanUid, reminderId);
-      if (durableMatch && durableMatch.reminderState === 'completed') {
+      const repoMatch = await reminderRepo.getReminder(cleanUid, reminderId);
+      if (repoMatch && repoMatch.reminderState === 'completed') {
         return 'completed';
       }
     } catch {

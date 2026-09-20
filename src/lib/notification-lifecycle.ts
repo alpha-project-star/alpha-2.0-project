@@ -11,7 +11,7 @@
  * 5. Notification Delivery State: Owned by NotificationDelivery ('pending' | 'delivering' | 'delivered' | 'failed').
  * 6. Acknowledgement State: Owned by AcknowledgementRepository ('pending' | 'delivered' | 'acknowledged' | 'failed').
  * 7. Recovery State: Owned by NotificationRecovery (read-only query of delivered-but-unacknowledged records).
- * 8. UI State: Non-authoritative cache/representation. Reconciles against authoritative durable state.
+ * 8. UI State: Non-authoritative cache/representation. Reconciles against authoritative repository state.
  */
 
 import type { ReminderState, NotificationState, ProactiveResponseState } from './reminder-repo';

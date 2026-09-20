@@ -14,7 +14,7 @@
  * NOT RESPONSIBLE FOR:
  *  - Planning or decomposition structures (owned by `src/lib/execution.ts`).
  *  - Action-tag coordination and execution sequencing (owned by `src/lib/actions.ts`).
- *  - Durable, canonical reminder database persistence (owned by `src/lib/reminder-repo.ts`).
+ *  - Canonical reminder repository persistence (owned by `src/lib/reminder-repo.ts`).
  * ============================================================================
  */
 

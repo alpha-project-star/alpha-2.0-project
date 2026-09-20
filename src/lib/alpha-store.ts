@@ -498,366 +498,222 @@ function upsert<T extends { id: string }>(list: T[], item: T): T[] {
   return i >= 0 ? list.map((x) => (x.id === item.id ? item : x)) : [item, ...list];
 }
 
-function syncWithLock(fn: () => Promise<void> | void): Promise<void> {
-  const p = withCrossContextLock("alpha_store_lock", fn);
-  p.catch(() => {});
-  return p;
-}
-
 export const alphaStore = {
   get: () => state,
   /** Subscribe to any persisted state change. Returns an unsubscribe fn. */
   sub: (l: () => void) => subscribe(l),
-  setSettings(patch: Partial<Settings>) {
-    reloadState();
-    const next = { ...state.settings, ...patch };
-    const result = SettingsSchema.safeParse(next);
-    if (!result.success) {
-      console.error("Invalid settings patch:", result.error);
-      return Promise.resolve();
-    }
-    writeLS(K.settings, result.data);
-    state = { ...state, settings: result.data };
-    emit();
-    return syncWithLock( async () => {
+  setSettings(patch: Partial<Settings>): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = { ...state.settings, ...patch };
-      const parsed = SettingsSchema.safeParse(synced);
-      if (parsed.success) {
-        writeLS(K.settings, parsed.data);
-        state = { ...state, settings: parsed.data };
-        emit();
+      const next = { ...state.settings, ...patch };
+      const result = SettingsSchema.safeParse(next);
+      if (!result.success) {
+        console.error("Invalid settings patch:", result.error);
+        return;
       }
-    });
-  },
-  appendChat(msg: ChatMessage) {
-    reloadState();
-    const next = [...state.chat, msg].slice(-200);
-    writeLS(K.chat, next);
-    state = { ...state, chat: next };
-    emit();
-    return syncWithLock( async () => {
-      reloadState();
-      const synced = [...state.chat, msg].slice(-200);
-      writeLS(K.chat, synced);
-      state = { ...state, chat: synced };
+      writeLS(K.settings, result.data);
+      state = { ...state, settings: result.data };
       emit();
     });
   },
-  setChat(msgs: ChatMessage[]) {
-    reloadState();
-    const next = msgs.slice(-200);
-    writeLS(K.chat, next);
-    state = { ...state, chat: next };
-    emit();
-    return syncWithLock( async () => {
+  appendChat(msg: ChatMessage): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = msgs.slice(-200);
-      writeLS(K.chat, synced);
-      state = { ...state, chat: synced };
+      const next = [...state.chat, msg].slice(-200);
+      writeLS(K.chat, next);
+      state = { ...state, chat: next };
       emit();
     });
   },
-  clearChat() {
-    reloadState();
-    conversationSummary.clear();
-    writeLS(K.chat, []);
-    state = { ...state, chat: [] };
-    reminderContextManager.clear();
-    try {
-      import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
-    } catch {}
-    emit();
-    return syncWithLock( async () => {
+  setChat(msgs: ChatMessage[]): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      const next = msgs.slice(-200);
+      writeLS(K.chat, next);
+      state = { ...state, chat: next };
+      emit();
+    });
+  },
+  clearChat(): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
       conversationSummary.clear();
       writeLS(K.chat, []);
       state = { ...state, chat: [] };
       reminderContextManager.clear();
+      try {
+        import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
+      } catch {}
       emit();
     });
   },
-  upsertNote(n: Note) {
-    reloadState();
-    const next = upsert(state.notes, n);
-    writeLS(K.notes, next);
-    state = { ...state, notes: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertNote(n: Note): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = upsert(state.notes, n);
-      writeLS(K.notes, synced);
-      state = { ...state, notes: synced };
+      const next = upsert(state.notes, n);
+      writeLS(K.notes, next);
+      state = { ...state, notes: next };
       emit();
     });
   },
-  deleteNote(id: string) {
-    reloadState();
-    const next = state.notes.filter((x) => x.id !== id);
-    writeLS(K.notes, next);
-    state = { ...state, notes: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteNote(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.notes.filter((x) => x.id !== id);
-      writeLS(K.notes, synced);
-      state = { ...state, notes: synced };
+      const next = state.notes.filter((x) => x.id !== id);
+      writeLS(K.notes, next);
+      state = { ...state, notes: next };
       emit();
     });
   },
-  upsertBill(b: Bill) {
-    reloadState();
-    const next = upsert(state.bills, b);
-    writeLS(K.bills, next);
-    state = { ...state, bills: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertBill(b: Bill): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = upsert(state.bills, b);
-      writeLS(K.bills, synced);
-      state = { ...state, bills: synced };
+      const next = upsert(state.bills, b);
+      writeLS(K.bills, next);
+      state = { ...state, bills: next };
       emit();
     });
   },
-  deleteBill(id: string) {
-    reloadState();
-    const next = state.bills.filter((x) => x.id !== id);
-    writeLS(K.bills, next);
-    state = { ...state, bills: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteBill(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.bills.filter((x) => x.id !== id);
-      writeLS(K.bills, synced);
-      state = { ...state, bills: synced };
+      const next = state.bills.filter((x) => x.id !== id);
+      writeLS(K.bills, next);
+      state = { ...state, bills: next };
       emit();
     });
   },
-  upsertTask(t: Task) {
-    reloadState();
-    const next = upsert(state.tasks, t);
-    writeLS(K.tasks, next);
-    state = { ...state, tasks: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertTask(t: Task): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = upsert(state.tasks, t);
-      writeLS(K.tasks, synced);
-      state = { ...state, tasks: synced };
+      const next = upsert(state.tasks, t);
+      writeLS(K.tasks, next);
+      state = { ...state, tasks: next };
       emit();
     });
   },
-  deleteTask(id: string) {
-    reloadState();
-    const next = state.tasks.filter((x) => x.id !== id);
-    writeLS(K.tasks, next);
-    state = { ...state, tasks: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteTask(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.tasks.filter((x) => x.id !== id);
-      writeLS(K.tasks, synced);
-      state = { ...state, tasks: synced };
+      const next = state.tasks.filter((x) => x.id !== id);
+      writeLS(K.tasks, next);
+      state = { ...state, tasks: next };
       emit();
     });
   },
-  upsertGoal(g: Goal) {
-    reloadState();
-    const next = upsert(state.goals, g);
-    writeLS(K.goals, next);
-    state = { ...state, goals: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertGoal(g: Goal): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = upsert(state.goals, g);
-      writeLS(K.goals, synced);
-      state = { ...state, goals: synced };
+      const next = upsert(state.goals, g);
+      writeLS(K.goals, next);
+      state = { ...state, goals: next };
       emit();
     });
   },
-  deleteGoal(id: string) {
-    reloadState();
-    const next = state.goals.filter((x) => x.id !== id);
-    writeLS(K.goals, next);
-    state = { ...state, goals: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteGoal(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.goals.filter((x) => x.id !== id);
-      writeLS(K.goals, synced);
-      state = { ...state, goals: synced };
+      const next = state.goals.filter((x) => x.id !== id);
+      writeLS(K.goals, next);
+      state = { ...state, goals: next };
       emit();
     });
   },
-  upsertRun(r: Run) {
-    reloadState();
-    const nextRuns = upsert(state.runs, r);
-    const active = nextRuns.filter(x => ["queued", "running", "waiting", "blocked"].includes(x.status));
-    let inactive = nextRuns.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-    if (nextRuns.length > 50) {
-      inactive = inactive.slice(-(Math.max(0, 50 - active.length)));
-    }
-    const next = [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
-    writeLS(K.runs, next);
-    state = { ...state, runs: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertRun(r: Run): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const syncedRuns = upsert(state.runs, r);
-      const syncedActive = syncedRuns.filter(x => ["queued", "running", "waiting", "blocked"].includes(x.status));
-      let syncedInactive = syncedRuns.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-      if (syncedRuns.length > 50) {
-        syncedInactive = syncedInactive.slice(-(Math.max(0, 50 - syncedActive.length)));
+      const nextRuns = upsert(state.runs, r);
+      const active = nextRuns.filter(x => ["queued", "running", "waiting", "blocked"].includes(x.status));
+      let inactive = nextRuns.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
+      if (nextRuns.length > 50) {
+        inactive = inactive.slice(-(Math.max(0, 50 - active.length)));
       }
-      const synced = [...syncedInactive, ...syncedActive].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
-      writeLS(K.runs, synced);
-      state = { ...state, runs: synced };
+      const next = [...inactive, ...active].sort((a,b) => (a.startedAt || 0) - (b.startedAt || 0));
+      writeLS(K.runs, next);
+      state = { ...state, runs: next };
       emit();
     });
   },
-  deleteRun(id: string) {
-    reloadState();
-    const next = state.runs.filter((x) => x.id !== id);
-    writeLS(K.runs, next);
-    state = { ...state, runs: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteRun(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.runs.filter((x) => x.id !== id);
-      writeLS(K.runs, synced);
-      state = { ...state, runs: synced };
+      const next = state.runs.filter((x) => x.id !== id);
+      writeLS(K.runs, next);
+      state = { ...state, runs: next };
       emit();
     });
   },
-  upsertStep(s: Step) {
-    reloadState();
-    const nextSteps = upsert(state.steps, s);
-    const active = nextSteps.filter(x => ["pending", "running"].includes(x.status));
-    let inactive = nextSteps.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-    if (nextSteps.length > 200) {
-       inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
-    }
-    const next = [...inactive, ...active].sort((a,b) => a.sequence - b.sequence);
-    writeLS(K.steps, next);
-    state = { ...state, steps: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertStep(s: Step): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const syncedSteps = upsert(state.steps, s);
-      const syncedActive = syncedSteps.filter(x => ["pending", "running"].includes(x.status));
-      let syncedInactive = syncedSteps.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
-      if (syncedSteps.length > 200) {
-         syncedInactive = syncedInactive.slice(-(Math.max(0, 200 - syncedActive.length)));
+      const nextSteps = upsert(state.steps, s);
+      const active = nextSteps.filter(x => ["pending", "running"].includes(x.status));
+      let inactive = nextSteps.filter(x => ["completed", "failed", "cancelled"].includes(x.status));
+      if (nextSteps.length > 200) {
+         inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
       }
-      const synced = [...syncedInactive, ...syncedActive].sort((a,b) => a.sequence - b.sequence);
-      writeLS(K.steps, synced);
-      state = { ...state, steps: synced };
+      const next = [...inactive, ...active].sort((a,b) => a.sequence - b.sequence);
+      writeLS(K.steps, next);
+      state = { ...state, steps: next };
       emit();
     });
   },
-  upsertObservation(o: Observation) {
-    reloadState();
-    const nextObs = upsert(state.observations, o);
-    const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-    const active = nextObs.filter(x => activeRunIds.has(x.runId));
-    let inactive = nextObs.filter(x => !activeRunIds.has(x.runId));
-    if (nextObs.length > 200) {
-      inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
-    }
-    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
-    writeLS(K.observations, next);
-    state = { ...state, observations: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertObservation(o: Observation): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const syncedObs = upsert(state.observations, o);
-      const syncedActiveRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-      const syncedActive = syncedObs.filter(x => syncedActiveRunIds.has(x.runId));
-      let syncedInactive = syncedObs.filter(x => !syncedActiveRunIds.has(x.runId));
-      if (syncedObs.length > 200) {
-        syncedInactive = syncedInactive.slice(-(Math.max(0, 200 - syncedActive.length)));
+      const nextObs = upsert(state.observations, o);
+      const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
+      const active = nextObs.filter(x => activeRunIds.has(x.runId));
+      let inactive = nextObs.filter(x => !activeRunIds.has(x.runId));
+      if (nextObs.length > 200) {
+        inactive = inactive.slice(-(Math.max(0, 200 - active.length)));
       }
-      const synced = [...syncedInactive, ...syncedActive].sort((a,b) => a.timestamp - b.timestamp);
-      writeLS(K.observations, synced);
-      state = { ...state, observations: synced };
+      const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+      writeLS(K.observations, next);
+      state = { ...state, observations: next };
       emit();
     });
   },
-  upsertResult(r: Result) {
-    reloadState();
-    const nextRes = upsert(state.results, r);
-    const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-    const active = nextRes.filter(x => activeRunIds.has(x.runId));
-    let inactive = nextRes.filter(x => !activeRunIds.has(x.runId));
-    if (nextRes.length > 100) {
-      inactive = inactive.slice(-(Math.max(0, 100 - active.length)));
-    }
-    const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
-    writeLS(K.results, next);
-    state = { ...state, results: next };
-    emit();
-    return syncWithLock( async () => {
+  upsertResult(r: Result): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const syncedRes = upsert(state.results, r);
-      const syncedActiveRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
-      const syncedActive = syncedRes.filter(x => syncedActiveRunIds.has(x.runId));
-      let syncedInactive = syncedRes.filter(x => !syncedActiveRunIds.has(x.runId));
-      if (syncedRes.length > 100) {
-        syncedInactive = syncedInactive.slice(-(Math.max(0, 100 - syncedActive.length)));
+      const nextRes = upsert(state.results, r);
+      const activeRunIds = new Set(state.runs.filter(r => ["queued", "running", "waiting", "blocked"].includes(r.status)).map(r => r.id));
+      const active = nextRes.filter(x => activeRunIds.has(x.runId));
+      let inactive = nextRes.filter(x => !activeRunIds.has(x.runId));
+      if (nextRes.length > 100) {
+        inactive = inactive.slice(-(Math.max(0, 100 - active.length)));
       }
-      const synced = [...syncedInactive, ...syncedActive].sort((a,b) => a.timestamp - b.timestamp);
-      writeLS(K.results, synced);
-      state = { ...state, results: synced };
+      const next = [...inactive, ...active].sort((a,b) => a.timestamp - b.timestamp);
+      writeLS(K.results, next);
+      state = { ...state, results: next };
       emit();
     });
   },
-  upsertMemory(m: Memory) {
-    reloadState();
-    const now = Date.now();
-    const cleanTopic = (m.topic || "").trim();
-    const cleanDetail = (m.detail || "").trim();
-    const cleanMem: Memory = {
-      ...m,
-      topic: cleanTopic,
-      detail: cleanDetail,
-      category: m.category || "general",
-      provenance: m.provenance || "explicit_user",
-      confidence: m.confidence || "high",
-      status: m.status || "active",
-      createdAt: m.createdAt || now,
-      updatedAt: m.updatedAt || now,
-      lastUsedAt: m.lastUsedAt || now,
-    };
-    const existingIdx = state.memories.findIndex(
-      (x) => x.id === cleanMem.id || (cleanTopic && x.topic.toLowerCase().trim() === cleanTopic.toLowerCase() && x.status !== "archived"),
-    );
-    let nextMemories: Memory[];
-    if (existingIdx >= 0) {
-      const existing = state.memories[existingIdx];
-      const updated: Memory = {
-        ...existing,
-        ...cleanMem,
-        id: existing.id,
-        createdAt: existing.createdAt || cleanMem.createdAt,
-        updatedAt: now,
-        lastUsedAt: now,
+  upsertMemory(m: Memory): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      const now = Date.now();
+      const cleanTopic = (m.topic || "").trim();
+      const cleanDetail = (m.detail || "").trim();
+      const cleanMem: Memory = {
+        ...m,
+        topic: cleanTopic,
+        detail: cleanDetail,
+        category: m.category || "general",
+        provenance: m.provenance || "explicit_user",
+        confidence: m.confidence || "high",
+        status: m.status || "active",
+        createdAt: m.createdAt || now,
+        updatedAt: m.updatedAt || now,
+        lastUsedAt: m.lastUsedAt || now,
       };
-      nextMemories = [...state.memories];
-      nextMemories[existingIdx] = updated;
-    } else {
-      nextMemories = upsert(state.memories, cleanMem);
-    }
-    writeLS(K.memories, nextMemories);
-    state = { ...state, memories: nextMemories };
-    emit();
-    return syncWithLock( async () => {
-      reloadState();
-      const syncedIdx = state.memories.findIndex(
+      const existingIdx = state.memories.findIndex(
         (x) => x.id === cleanMem.id || (cleanTopic && x.topic.toLowerCase().trim() === cleanTopic.toLowerCase() && x.status !== "archived"),
       );
-      let syncedMemories: Memory[];
-      if (syncedIdx >= 0) {
-        const existing = state.memories[syncedIdx];
+      let nextMemories: Memory[];
+      if (existingIdx >= 0) {
+        const existing = state.memories[existingIdx];
         const updated: Memory = {
           ...existing,
           ...cleanMem,
@@ -866,36 +722,27 @@ export const alphaStore = {
           updatedAt: now,
           lastUsedAt: now,
         };
-        syncedMemories = [...state.memories];
-        syncedMemories[syncedIdx] = updated;
+        nextMemories = [...state.memories];
+        nextMemories[existingIdx] = updated;
       } else {
-        syncedMemories = upsert(state.memories, cleanMem);
+        nextMemories = upsert(state.memories, cleanMem);
       }
-      writeLS(K.memories, syncedMemories);
-      state = { ...state, memories: syncedMemories };
+      writeLS(K.memories, nextMemories);
+      state = { ...state, memories: nextMemories };
       emit();
     });
   },
-  deleteMemory(id: string) {
-    reloadState();
-    const next = state.memories.filter((x) => x.id !== id);
-    writeLS(K.memories, next);
-    state = { ...state, memories: next };
-    emit();
-    return syncWithLock( async () => {
+  deleteMemory(id: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const synced = state.memories.filter((x) => x.id !== id);
-      writeLS(K.memories, synced);
-      state = { ...state, memories: synced };
+      const next = state.memories.filter((x) => x.id !== id);
+      writeLS(K.memories, next);
+      state = { ...state, memories: next };
       emit();
     });
   },
-  setProfile(p: Profile) {
-    reloadState();
-    writeLS(K.profile, p);
-    state = { ...state, profile: p };
-    emit();
-    return syncWithLock( async () => {
+  setProfile(p: Profile): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
       writeLS(K.profile, p);
       state = { ...state, profile: p };
@@ -903,23 +750,8 @@ export const alphaStore = {
     });
   },
   /** Replace or reset parts or all of state (useful for test isolation and data imports). */
-  replaceAll(patch: Partial<AlphaState>) {
-    reloadState();
-    if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
-    if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
-    if (patch.tasks !== undefined) writeLS(K.tasks, patch.tasks);
-    if (patch.goals !== undefined) writeLS(K.goals, patch.goals);
-    if (patch.runs !== undefined) writeLS(K.runs, patch.runs);
-    if (patch.steps !== undefined) writeLS(K.steps, patch.steps);
-    if (patch.observations !== undefined) writeLS(K.observations, patch.observations);
-    if (patch.results !== undefined) writeLS(K.results, patch.results);
-    if (patch.memories !== undefined) writeLS(K.memories, patch.memories);
-    if (patch.chat !== undefined) writeLS(K.chat, patch.chat);
-    if (patch.settings !== undefined) writeLS(K.settings, patch.settings);
-    if (patch.profile !== undefined) writeLS(K.profile, patch.profile);
-    state = { ...state, ...patch };
-    emit();
-    return syncWithLock( async () => {
+  replaceAll(patch: Partial<AlphaState>): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
       if (patch.notes !== undefined) writeLS(K.notes, patch.notes);
       if (patch.bills !== undefined) writeLS(K.bills, patch.bills);
@@ -971,8 +803,8 @@ export const alphaStore = {
         }
       if (userIdx < 0) return null;
       const next = state.chat.slice(0, userIdx + 1);
+      writeLS(K.chat, next);
       state = { ...state, chat: next };
-      writeLS(K.chat, state.chat);
       emit();
       return { userText: state.chat[userIdx].text || "" };
     });

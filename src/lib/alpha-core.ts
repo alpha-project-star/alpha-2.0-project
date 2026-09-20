@@ -391,7 +391,7 @@ export class AlphaCoreAuthority {
   }
 
   /**
-   * Authoritative Core Mutation Boundary (Atomic, Versioned, Idempotent, Guarded).
+   * Authoritative Core Mutation Boundary (Synchronous In-Memory, Versioned, Idempotent, Guarded).
    */
   public mutateCore(proposal: CoreMutationProposal, authority: string = "AuthorizedMutationBoundary"): {
     success: boolean;
@@ -599,7 +599,7 @@ export class AlphaCoreAuthority {
       };
     }
 
-    // Atomic commit
+    // In-memory state update
     this.currentRecord = parsed.data;
     return { success: true, mutationId, record: this.currentRecord };
   }

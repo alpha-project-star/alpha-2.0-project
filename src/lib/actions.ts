@@ -13,7 +13,7 @@
  * NOT RESPONSIBLE FOR:
  *  - Conversational reminder context or focus tracking (owned by `src/lib/reminder-context.ts`).
  *  - Data structures, dependency mapping, and relational state schemas (owned by `src/lib/execution.ts`).
- *  - Durable, canonical reminder database persistence (owned by `src/lib/reminder-repo.ts`).
+ *  - Canonical reminder repository persistence (owned by `src/lib/reminder-repo.ts`).
  * ============================================================================
  *
  * Action-tag executor with an explicit result contract.
