@@ -1,69 +1,81 @@
 import { alphaStore } from "./alpha-store";
 import { GROQ_EMERGENCY_MODEL, MODEL_TRIO, isSupportedModel, ProviderId } from "./models";
+import { activity } from "./activity";
 
 /**
  * Voice/text intents that flip settings or return a canned answer.
  * Returns confirmation string, or null if no match.
  */
-export function trySettingsIntent(raw: string): string | null {
+export async function trySettingsIntent(raw: string): Promise<string | null> {
   const original = raw.trim();
   const t = original.toLowerCase();
 
   // Voice on/off
   if (/(mute|silence|stop\s+speaking\s+aloud|voice\s+off|disable\s+voice)/.test(t)) {
-    alphaStore.setSettings({ voiceEnabled: false });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ voiceEnabled: false });
     return "Voice replies disabled.";
   }
   if (/(unmute|voice\s+on|enable\s+voice|speak\s+aloud)/.test(t)) {
-    alphaStore.setSettings({ voiceEnabled: true });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ voiceEnabled: true });
     return "Voice replies enabled.";
   }
 
   if (/(continuous\s+listening|hands.?free|voice.?first).*(off|disable|stop)/.test(t)) {
-    alphaStore.setSettings({ continuousListen: false });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ continuousListen: false });
     return "Continuous listening disabled.";
   }
   if (/(continuous\s+listening|hands.?free|voice.?first).*(on|enable|start)/.test(t)) {
-    alphaStore.setSettings({ continuousListen: true });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ continuousListen: true });
     return "Continuous listening enabled.";
   }
   if (/(background|scanner|watchlist).*(off|disable|stop)/.test(t)) {
-    alphaStore.setSettings({ backgroundEnabled: false });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ backgroundEnabled: false });
     return "Background processing disabled.";
   }
   if (/(background|scanner|watchlist).*(on|enable|start)/.test(t)) {
-    alphaStore.setSettings({ backgroundEnabled: true });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ backgroundEnabled: true });
     return "Background processing enabled.";
   }
 
   let mm = original.match(/(?:set|change|make)\s+(?:my\s+)?name\s+(?:to|as)\s+(.+)$/i);
   if (mm) {
+    activity.set("editing_settings");
     const profile = alphaStore.get().profile;
-    alphaStore.setProfile({ ...profile, name: mm[1].trim() });
+    await alphaStore.setProfile({ ...profile, name: mm[1].trim() });
     return `Your name is now set to ${mm[1].trim()}.`;
   }
   mm = original.match(/(?:set|change|update)\s+(?:my\s+)?bio\s+(?:to|as)\s+(.+)$/i);
   if (mm) {
+    activity.set("editing_settings");
     const profile = alphaStore.get().profile;
-    alphaStore.setProfile({ ...profile, bio: mm[1].trim() });
+    await alphaStore.setProfile({ ...profile, bio: mm[1].trim() });
     return "Updated your profile bio.";
   }
   mm = original.match(/(?:set|change)\s+(?:kokoro\s+)?voice\s+(?:to|as)\s+([a-z]{2}_[a-z0-9_]+)/i);
   if (mm) {
-    alphaStore.setSettings({ kokoroVoice: mm[1].trim() });
+    activity.set("editing_settings");
+    await alphaStore.setSettings({ kokoroVoice: mm[1].trim() });
     return `Kokoro voice set to ${mm[1].trim()}.`;
   }
   mm = original.match(/(?:set|change)\s+(?:speech\s+)?rate\s+(?:to|as)\s+(\d+(?:\.\d+)?)/i);
   if (mm) {
+    activity.set("editing_settings");
     const rate = Math.max(0.7, Math.min(1.4, Number(mm[1])));
-    alphaStore.setSettings({ ttsRate: rate });
+    await alphaStore.setSettings({ ttsRate: rate });
     return `Speech rate set to ${rate.toFixed(2)}x.`;
   }
   mm = original.match(/(?:watch|monitor|add\s+to\s+watchlist)\s+(.+)$/i);
   if (mm) {
+    activity.set("editing_settings");
     const cur = alphaStore.get().settings.backgroundData.trim();
     const topic = mm[1].trim();
-    alphaStore.setSettings({
+    await alphaStore.setSettings({
       backgroundData: cur ? `${cur}\n${topic}` : topic,
       backgroundEnabled: true,
     });
@@ -94,8 +106,9 @@ export function trySettingsIntent(raw: string): string | null {
       : /thinking|deep/.test(m[3])
         ? "thinking"
         : "fast";
+    activity.set("editing_settings");
     const cur = alphaStore.get().settings.taskModels;
-    alphaStore.setSettings({ taskModels: { ...cur, [key]: `${prov}:${model}` } });
+    await alphaStore.setSettings({ taskModels: { ...cur, [key]: `${prov}:${model}` } });
     return `Set ${key} to ${prov}:${model}.`;
   }
 

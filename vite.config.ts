@@ -39,6 +39,33 @@ export function serverBoundaryPlugin() {
   };
 }
 
+export function removeUseClientDirectivePlugin() {
+  return {
+    name: "remove-use-client-directive",
+    enforce: "pre" as const,
+    transform(code: string, id: string) {
+      if (code.includes('"use client"') || code.includes("'use client'")) {
+        return {
+          code: code.replace(/(?:^|\n)\s*['"]use client['"];?\s*/g, "\n"),
+          map: null,
+        };
+      }
+      return null;
+    },
+  };
+}
+
+const onwarn = (warning: any, warn: any) => {
+  if (
+    warning.code === "MODULE_LEVEL_DIRECTIVE" ||
+    warning.message?.includes('"use client"') ||
+    warning.message?.includes("Module level directives")
+  ) {
+    return;
+  }
+  warn(warning);
+};
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -54,6 +81,7 @@ export default defineConfig({
     ],
   },
   plugins: [
+    removeUseClientDirectivePlugin(),
     serverBoundaryPlugin(),
     tailwindcss(),
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
@@ -64,16 +92,37 @@ export default defineConfig({
     !isTest &&
       nitro({
         preset: "node-server",
+        rollupConfig: {
+          onwarn,
+        },
+        hooks: {
+          "rollup:before"(_nitro: any, rollupConfig: any) {
+            if (rollupConfig) {
+              rollupConfig.onwarn = onwarn;
+            }
+          },
+        },
       }),
     react(),
   ].filter(Boolean),
   build: {
     rollupOptions: {
-      onwarn(warning, warn) {
-        if (warning.code === 'MODULE_LEVEL_DIRECTIVE' || warning.message?.includes('"use client"')) {
-          return;
-        }
-        warn(warning);
+      onwarn,
+    },
+  },
+  environments: {
+    client: {
+      build: {
+        rollupOptions: {
+          onwarn,
+        },
+      },
+    },
+    ssr: {
+      build: {
+        rollupOptions: {
+          onwarn,
+        },
       },
     },
   },

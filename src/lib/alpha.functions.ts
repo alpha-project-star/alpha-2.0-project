@@ -981,10 +981,15 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       activity.clear();
       return eyeRes;
     }
-    const local = await tryLocalIntent(userText);
-    if (local) {
+    try {
+      const local = await tryLocalIntent(userText);
+      if (local) {
+        activity.clear();
+        return local;
+      }
+    } catch (err) {
       activity.clear();
-      return local;
+      throw err;
     }
 
     // Explicit notification acknowledgement check for active/delivered reminders
@@ -1097,11 +1102,6 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       prov = routes[currentRouteIndex].prov;
       model = routes[currentRouteIndex].model;
 
-      // If we are on a fallback route and haven't started tool-looping yet, show switching.
-      // But we immediately follow with 'thinking' to represent the reasoning phase.
-      if (currentRouteIndex > 0 && loopCount === 0) {
-        activity.set("switching_model");
-      }
       activity.set(hasImages ? "reading_image" : "thinking");
 
       let response: ChatResponse;

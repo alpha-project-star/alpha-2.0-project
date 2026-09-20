@@ -17,11 +17,17 @@ export interface ChannelResolutionResult {
 
 export class NotificationChannelRegistry {
   private channels = new Map<string, NotificationChannelProvider>();
+  private autoRegisterDefaults: boolean;
+  private defaultsRegistered = false;
 
   constructor(registerDefaults = true) {
-    if (registerDefaults) {
-      this.registerDefaultChannels();
-    }
+    this.autoRegisterDefaults = registerDefaults;
+  }
+
+  private ensureDefaults(): void {
+    if (!this.autoRegisterDefaults || this.defaultsRegistered) return;
+    this.defaultsRegistered = true;
+    this.registerDefaultChannels();
   }
 
   private registerDefaultChannels(): void {
@@ -36,6 +42,7 @@ export class NotificationChannelRegistry {
     provider: NotificationChannelProvider,
     options: { allowOverride?: boolean } = {}
   ): void {
+    this.ensureDefaults();
     if (!provider || typeof provider.id !== 'string' || !provider.id.trim()) {
       throw new Error('A valid NotificationChannelProvider with a non-empty string id is required');
     }
@@ -52,6 +59,7 @@ export class NotificationChannelRegistry {
    * Unregisters a channel by ID. Returns true if removed, false if not found.
    */
   public unregisterChannel(channelId: string): boolean {
+    this.ensureDefaults();
     if (!channelId || typeof channelId !== 'string') return false;
     return this.channels.delete(channelId.trim().toLowerCase());
   }
@@ -60,6 +68,7 @@ export class NotificationChannelRegistry {
    * Retrieves a registered channel provider by ID.
    */
   public getChannel(channelId: string): NotificationChannelProvider | undefined {
+    this.ensureDefaults();
     if (!channelId || typeof channelId !== 'string') return undefined;
     return this.channels.get(channelId.trim().toLowerCase());
   }
@@ -68,6 +77,7 @@ export class NotificationChannelRegistry {
    * Checks whether a channel is registered.
    */
   public hasChannel(channelId: string): boolean {
+    this.ensureDefaults();
     if (!channelId || typeof channelId !== 'string') return false;
     return this.channels.has(channelId.trim().toLowerCase());
   }
@@ -76,6 +86,7 @@ export class NotificationChannelRegistry {
    * Lists all registered channel providers.
    */
   public listChannels(): NotificationChannelProvider[] {
+    this.ensureDefaults();
     return Array.from(this.channels.values());
   }
 
@@ -83,6 +94,7 @@ export class NotificationChannelRegistry {
    * Lists all channel providers that report availability in the current environment.
    */
   public async listAvailableChannels(userId?: string): Promise<NotificationChannelProvider[]> {
+    this.ensureDefaults();
     const available: NotificationChannelProvider[] = [];
     for (const provider of this.channels.values()) {
       const isAvail = await provider.isAvailable(userId);
@@ -171,6 +183,7 @@ export class NotificationChannelRegistry {
    * Resolves a channel by ID (defaults to 'in_app' if unspecified).
    */
   public async resolveChannel(channelId?: string, userId?: string): Promise<ChannelResolutionResult> {
+    this.ensureDefaults();
     const targetId = (channelId || 'in_app').trim().toLowerCase();
 
     if (!this.channels.has(targetId)) {
@@ -201,8 +214,10 @@ export class NotificationChannelRegistry {
    */
   public reset(restoreDefaults = true): void {
     this.channels.clear();
+    this.autoRegisterDefaults = restoreDefaults;
+    this.defaultsRegistered = false;
     if (restoreDefaults) {
-      this.registerDefaultChannels();
+      this.ensureDefaults();
     }
   }
 
@@ -211,6 +226,7 @@ export class NotificationChannelRegistry {
    */
   public clear(): void {
     this.channels.clear();
+    this.defaultsRegistered = true;
   }
 }
 

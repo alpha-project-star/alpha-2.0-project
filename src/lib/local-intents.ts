@@ -6,6 +6,8 @@ import { getReminderTool } from "./tool-registry";
 import { ensureAuthenticatedUser } from "./auth";
 import { formatReminderDate } from "./reminder-date-utils";
 import type { FirestoreReminder } from "./reminder-repo";
+import { activity } from "./activity";
+import type { ActivityKind } from "./activity";
 
 async function getActiveUserId(): Promise<string | null> {
   const user = await ensureAuthenticatedUser();
@@ -22,7 +24,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   const lower = t.toLowerCase();
 
   // Settings / backend / voice flip commands first.
-  const settingsHit = trySettingsIntent(t);
+  const settingsHit = await trySettingsIntent(t);
   if (settingsHit) return settingsHit;
 
   // ---- MUSIC -------------------------------------------------------------
@@ -52,6 +54,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     if (kind === "reminder") activity.set("reading_reminder");
     else if (kind === "note") activity.set("reading_note");
     else if (kind === "memory") activity.set("reading_memory");
+    else if (kind === "task") activity.set("updating_plan");
     return await listItems(kind);
   }
   if (/^(?:what|which)\s+do\s+you\s+remember/.test(lower)) {
@@ -68,6 +71,8 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     if (kind === "reminder") activity.set("writing_reminder");
     else if (kind === "note") activity.set("writing_note");
     else if (kind === "memory") activity.set("writing_memory");
+    else if (kind === "bill") activity.set("writing_bill");
+    else if (kind === "task") activity.set("updating_plan");
     return await bulkClear(kind);
   }
   if (/^(?:clear|delete|remove)\s+(?:all\s+)?done\s+reminders/.test(lower)) {
@@ -107,7 +112,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
       );
     if (!n) return `I couldn't find a note matching "${q}".`;
     activity.set("writing_note");
-    alphaStore.upsertNote({ ...n, title: to, updatedAt: Date.now() });
+    await alphaStore.upsertNote({ ...n, title: to, updatedAt: Date.now() });
     return `Renamed note to "${to}".`;
   }
   mm = lower.match(/^mark\s+(?:the\s+)?bill\s+(.+?)\s+(?:as\s+)?paid/);
@@ -116,7 +121,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     const b = alphaStore.get().bills.find((x) => x.name.toLowerCase().includes(q));
     if (!b) return `I couldn't find a bill matching "${q}".`;
     activity.set("writing_bill");
-    alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
+    await alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
     return `Marked bill "${b.name}" as paid.`;
   }
 
@@ -156,7 +161,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   if (m) {
     const body = trim(m[m.length - 1]);
     activity.set("writing_note");
-    alphaStore.upsertNote({ id: uid(), title: body.slice(0, 40), body, updatedAt: Date.now() });
+    await alphaStore.upsertNote({ id: uid(), title: body.slice(0, 40), body, updatedAt: Date.now() });
     return `Got it — note saved: "${body.slice(0, 60)}".`;
   }
 
@@ -167,7 +172,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   if (m) {
     const detail = trim(m[m.length - 1]);
     activity.set("writing_memory");
-    alphaStore.upsertMemory({
+    await alphaStore.upsertMemory({
       id: uid(),
       topic: detail.slice(0, 40),
       detail,
@@ -182,7 +187,8 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     const name = trim(m[1]);
     const amount = Number(m[2] || 0);
     const dueDate = trim(m[3] || "");
-    alphaStore.upsertBill({ id: uid(), name, amount, balance: amount, dueDate, status: "due" });
+    activity.set("writing_bill");
+    await alphaStore.upsertBill({ id: uid(), name, amount, balance: amount, dueDate, status: "due" });
     return `Bill added: ${name}${amount ? " for $" + amount : ""}.`;
   }
 
@@ -195,6 +201,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     if (kind === "reminder") {
       const userId = auth.currentUser?.uid || null;
       if (!userId) return "You need to be signed in to manage reminders.";
+      activity.set("writing_reminder");
       const tool = getReminderTool(userId);
       const res = await tool.listReminders();
       if (!res.success || !res.data?.length) return "No reminders to delete.";
@@ -204,15 +211,16 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
       return `Deleted the last reminder: "${latest.title}".`;
     }
     const s = alphaStore.get();
-    const map: Record<string, { list: any[]; del: (id: string) => void }> = {
-      note: { list: s.notes, del: alphaStore.deleteNote },
-      memory: { list: s.memories, del: alphaStore.deleteMemory },
-      task: { list: s.tasks, del: alphaStore.deleteTask },
-      bill: { list: s.bills, del: alphaStore.deleteBill },
+    const map: Record<string, { list: any[]; del: (id: string) => Promise<void>; act: ActivityKind }> = {
+      note: { list: s.notes, del: (id) => alphaStore.deleteNote(id), act: "writing_note" },
+      memory: { list: s.memories, del: (id) => alphaStore.deleteMemory(id), act: "writing_memory" },
+      task: { list: s.tasks, del: (id) => alphaStore.deleteTask(id), act: "updating_plan" },
+      bill: { list: s.bills, del: (id) => alphaStore.deleteBill(id), act: "writing_bill" },
     };
     const e = map[kind];
     if (e?.list[0]) {
-      e.del(e.list[0].id);
+      activity.set(e.act);
+      await e.del(e.list[0].id);
       return `Deleted the last ${kind}.`;
     }
     return `No ${kind}s to delete.`;
@@ -224,6 +232,7 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     const q = trim(m[1]);
     const userId = await getActiveUserId();
     if (!userId) return "You need to be signed in to manage reminders.";
+    activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.completeReminder(q);
     if (res.success && res.data) {
@@ -307,6 +316,7 @@ async function bulkClear(kind: string): Promise<string> {
   if (kind === "reminder") {
     const userId = auth.currentUser?.uid || null;
     if (!userId) return "You need to be signed in to manage reminders.";
+    activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
     if (!res.success || !res.data?.length) return "No reminders to clear.";
@@ -317,22 +327,28 @@ async function bulkClear(kind: string): Promise<string> {
     return `Cleared all ${n} reminders.`;
   }
   let list: { id: string }[] = [];
-  let del: (id: string) => void = () => {};
+  let del: (id: string) => Promise<void> = async () => {};
   if (kind === "note") {
+    activity.set("writing_note");
     list = s.notes;
-    del = alphaStore.deleteNote;
+    del = (id) => alphaStore.deleteNote(id);
   } else if (kind === "memory") {
+    activity.set("writing_memory");
     list = s.memories;
-    del = alphaStore.deleteMemory;
+    del = (id) => alphaStore.deleteMemory(id);
   } else if (kind === "task") {
+    activity.set("updating_plan");
     list = s.tasks;
-    del = alphaStore.deleteTask;
+    del = (id) => alphaStore.deleteTask(id);
   } else if (kind === "bill") {
+    activity.set("writing_bill");
     list = s.bills;
-    del = alphaStore.deleteBill;
+    del = (id) => alphaStore.deleteBill(id);
   } else return `I don't know how to clear "${kind}".`;
   const n = list.length;
-  for (const item of [...list]) del(item.id);
+  for (const item of [...list]) {
+    await del(item.id);
+  }
   return `Cleared all ${n} ${kind}${n === 1 ? "" : "s"}.`;
 }
 
@@ -362,7 +378,7 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
     if (!matches.length) return `No note matching "${q}".`;
     if (matches.length > 1)
       return `Multiple notes match "${q}" — which one? (${matches.map((m) => m.title || m.body.slice(0, 20)).join(", ")})`;
-    alphaStore.deleteNote(matches[0].id);
+    await alphaStore.deleteNote(matches[0].id);
     return `Deleted note "${matches[0].title || matches[0].body.slice(0, 30)}".`;
   }
   if (kind === "memory") {
@@ -373,23 +389,25 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
     if (!matches.length) return `No memory matching "${q}".`;
     if (matches.length > 1)
       return `Multiple memories match "${q}" — which? (${matches.map((m) => m.topic).join(", ")})`;
-    alphaStore.deleteMemory(matches[0].id);
+    await alphaStore.deleteMemory(matches[0].id);
     return `Forgot memory "${matches[0].topic}".`;
   }
   if (kind === "task") {
+    activity.set("updating_plan");
     const matches = s.tasks.filter((p) => p.title.toLowerCase().includes(lc));
     if (!matches.length) return `No task matching "${q}".`;
     if (matches.length > 1)
       return `Multiple tasks match "${q}" — which one? (${matches.map((p) => p.title).join(", ")})`;
-    alphaStore.deleteTask(matches[0].id);
+    await alphaStore.deleteTask(matches[0].id);
     return `Deleted task "${matches[0].title}".`;
   }
   if (kind === "bill") {
+    activity.set("writing_bill");
     const matches = s.bills.filter((b) => b.name.toLowerCase().includes(lc));
     if (!matches.length) return `No bill matching "${q}".`;
     if (matches.length > 1)
       return `Multiple bills match "${q}" — which one? (${matches.map((b) => b.name).join(", ")})`;
-    alphaStore.deleteBill(matches[0].id);
+    await alphaStore.deleteBill(matches[0].id);
     return `Deleted bill "${matches[0].name}".`;
   }
   return `I don't know how to delete "${kind}".`;
