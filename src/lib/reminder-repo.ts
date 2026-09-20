@@ -8,10 +8,11 @@
  * RESPONSIBILITIES:
  *  - Serves as the single authoritative persistence engine for reminders.
  *  - Backed by browser local persistence (alpha.reminders.v1 via getStorage()).
+ *    Note: localStorage provides browser-origin local persistence, not server-durable storage.
  *  - In-memory fallback for SSR and test environments.
  *  - Zero network dependence; works offline and for unauthenticated users.
  *  - Persist-before-commit semantics with safe error handling (PersistenceError).
- *  - Atomic read-modify-write with transaction-like claim state conflict detection.
+ *  - Serialized read-modify-write claim transitions protected by cross-context locks with claim conflict detection.
  *
  * NOT RESPONSIBLE FOR:
  *  - Conversational context / focus tracking (owned by `src/lib/reminder-context.ts`).
@@ -318,7 +319,7 @@ export class LocalReminderRepository implements ReminderRepository {
         throw new Error(`Reminder not found: ${reminderId}`);
       }
       if (patch.notificationState === 'claimed' && existing.notificationState && existing.notificationState !== 'pending') {
-        throw new Error('Transaction conflict: already claimed');
+        throw new Error('Claim conflict: already claimed');
       }
       const updated: FirestoreReminder = {
         ...existing,
@@ -404,7 +405,7 @@ export class InMemoryReminderRepository extends LocalReminderRepository {
       const r = this.store.get(k);
       if (!r || r.userId !== userId) throw new Error('Reminder not found');
       if (patch.notificationState === 'claimed' && r.notificationState && r.notificationState !== 'pending') {
-        throw new Error('Transaction conflict: already claimed');
+        throw new Error('Claim conflict: already claimed');
       }
       this.store.set(k, { ...r, ...patch, updatedAt: Date.now() });
     });

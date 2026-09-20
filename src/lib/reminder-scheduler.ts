@@ -72,7 +72,8 @@ export class ReminderScheduler {
   }
 
   /**
-   * Recovers stale claims whose leases have expired (e.g. after crash or interrupted worker).
+   * Application-level recovery: resets stale claims whose ownership window has expired
+   * (e.g. after crash or interrupted worker).
    */
   public async recoverStaleClaims(
     userId: string,
@@ -155,7 +156,7 @@ export class ReminderScheduler {
 
   /**
    * Executes a single scheduler tick: fetches reminders, evaluates due ones,
-   * atomically claims them, and emits due events.
+   * claims them under cross-context lock, and emits due events.
    */
   public async runTick(userIdOverride?: string, nowTimeOverride?: number): Promise<ReminderDueEvent[]> {
     const activeUser = userIdOverride || this.userId;
@@ -183,7 +184,7 @@ export class ReminderScheduler {
             continue;
           }
 
-          // Atomically claim the reminder
+          // Claim the reminder under cross-context lock
           await this.repo.updateReminder(activeUser, reminder.id, {
             notificationState: 'claimed',
             legacyFiredAt: now,

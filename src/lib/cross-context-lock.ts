@@ -4,8 +4,14 @@ const inMemoryLocks = new Map<string, Promise<any>>();
 
 /**
  * Acquires a cross-context exclusive lock.
- * Uses browser navigator.locks.request if available for true cross-tab mutual exclusion,
- * and falls back to an in-memory async mutex queue for Node / Vitest test environments.
+ *
+ * Guarantees:
+ * - Cross-context mutual exclusion: Uses browser navigator.locks.request if available
+ *   to provide mutual exclusion among participating contexts within the relevant browser origin.
+ * - In-memory fallback: Falls back to an in-memory async mutex queue for Node / Vitest
+ *   test environments where navigator.locks is not available.
+ * - Single-operation serialization: The lock is held for the duration of the provided async
+ *   callback to protect decision-critical read/validate/modify/persist sequences.
  */
 export async function withCrossContextLock<T>(lockName: string, fn: () => Promise<T>): Promise<T> {
   if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {

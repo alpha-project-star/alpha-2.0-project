@@ -7,6 +7,38 @@ import { nitro } from "nitro/vite";
 
 const isTest = Boolean(process.env.VITEST);
 
+export function serverBoundaryPlugin() {
+  return {
+    name: "server-only-boundary-guard",
+    resolveId(source: string, importer?: string, options?: { ssr?: boolean }) {
+      const isClient = !options?.ssr;
+      if (isClient && importer) {
+        const isServerOrTestImporter =
+          importer.includes(".server.") ||
+          importer.includes("/server/") ||
+          importer.includes("/tests/") ||
+          importer.includes(".test.") ||
+          importer.includes(".spec.");
+
+        if (!isServerOrTestImporter) {
+          if (
+            source === "web-push" ||
+            source.includes("push-sender.server") ||
+            source.endsWith(".server") ||
+            source.endsWith(".server.ts") ||
+            source.endsWith(".server.js")
+          ) {
+            throw new Error(
+              `[Server Boundary Violation] Client module "${importer}" attempted to import server-only module or package "${source}".`
+            );
+          }
+        }
+      }
+      return null;
+    },
+  };
+}
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -22,6 +54,7 @@ export default defineConfig({
     ],
   },
   plugins: [
+    serverBoundaryPlugin(),
     tailwindcss(),
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     !isTest &&

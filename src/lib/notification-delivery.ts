@@ -291,7 +291,7 @@ export class NotificationDeliveryManager {
 
   /**
    * Authoritatively delivers a generated proactive Alpha response record to the requested channel.
-   * Enforces authentication, user isolation, idempotency, atomic claiming, and safe in-app store commit.
+   * Enforces authentication, user isolation, idempotency, serialized claim transitions, and safe in-app store commit.
    */
   public async deliverProactiveResponse(
     input: DeliverProactiveInput,
@@ -487,7 +487,7 @@ export class NotificationDeliveryManager {
       };
     }
 
-    // 6, 7, 8. Check Durable State, Idempotency, and Acquire Claim Atomically via Cross-Context Lock
+    // 6, 7, 8. Check Repository State, Idempotency, and Acquire Claim via Cross-Context Lock
     const lockName = `alpha_delivery_lock_${authUser}_${deliveryId}`;
     const claimResult = await withCrossContextLock(lockName, async () => {
       if (this.repo) {
@@ -535,7 +535,7 @@ export class NotificationDeliveryManager {
                     status: 'rejected',
                     error: {
                       code: 'DELIVERY_IN_PROGRESS',
-                      message: 'Delivery claim is actively held by another process (lease active)',
+                      message: 'Delivery claim is actively held by another process (delivery in progress)',
                     },
                   },
                 };
@@ -639,7 +639,7 @@ export class NotificationDeliveryManager {
               status: 'failed',
               error: {
                 code: 'PERSISTENCE_FAILURE',
-                message: `Failed to acquire durable delivery claim: ${repoErr?.message}`,
+                message: `Failed to acquire delivery claim: ${repoErr?.message}`,
               },
             },
           };
@@ -784,7 +784,7 @@ export class NotificationDeliveryManager {
   }
 
   /**
-   * Recovers stale claims where a delivering lease expired without completion.
+   * Application-level recovery: resets stale claims where a delivering status expired without completion.
    */
   public async recoverStaleClaims(
     userId: string,
