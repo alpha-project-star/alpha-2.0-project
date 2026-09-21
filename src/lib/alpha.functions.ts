@@ -628,9 +628,19 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
   const lines = [
     `LIVE WEB SEARCH RESULTS (Retrieved at ${new Date().toLocaleString()} for query "${query}"):`,
     `---`,
-    `Sources:`,
   ];
 
+  if (isHeadlineQuery && research.articles && research.articles.length > 0) {
+    lines.push(`STRUCTURED NEWS ARTICLES & HEADLINES (Primary Results):`);
+    research.articles.slice(0, 6).forEach((a, i) => {
+      lines.push(
+        `[${i + 1}] Headline: "${a.headline}"\n    Publisher: ${a.publisher}\n    URL: ${a.url}${a.publishedDate ? `\n    Date: ${a.publishedDate}` : ""}\n    Summary: ${a.summary}`
+      );
+    });
+    lines.push(`---`);
+  }
+
+  lines.push(`Sources:`);
   research.results.forEach((r, i) => {
     lines.push(`[${i + 1}] ${r.title}${r.source ? ` (${r.source})` : ""} - ${r.url}`);
     if (r.snippet) {
@@ -638,7 +648,7 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
     }
   });
 
-  if (research.articles && research.articles.length > 0 && isHeadlineQuery) {
+  if (!isHeadlineQuery && research.articles && research.articles.length > 0) {
     lines.push(`---`, `STRUCTURED NEWS ARTICLES & HEADLINES:`);
     research.articles.slice(0, 6).forEach((a, i) => {
       lines.push(
@@ -1201,6 +1211,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         if (retryableElsewhere && currentRouteIndex + 1 < routes.length) {
           currentRouteIndex++;
           activity.set("switching_model");
+          await new Promise((r) => setTimeout(r, 250));
           continue;
         }
         break;
@@ -1230,6 +1241,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         const isMutation = MUTATION_TOOLS.has(call.function?.name);
 
         let result: any;
+        const logicalKeysForTool: string[] = [];
 
         // Check if already executed in this run (by call ID, exact canonical invocation key, or logical mutation deduplication)
         const existingResult =
@@ -1261,22 +1273,21 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
           if (invocationKey) callResults.set(invocationKey, result);
           if (stableCallId) callResults.set(stableCallId, result);
+        }
 
-          // Track canonical mutation outcome to prevent duplicate executions across loop iterations
-          const logicalKeysForTool: string[] = [];
-          if (isMutation && result && result.success) {
-            const canonicalKeys = extractNativeReminderMutationKeys(
-              call.function?.name,
-              call.function?.arguments,
-              result.data,
-            );
-            for (const k of canonicalKeys) {
-              executedLogicalMutations.set(k, result);
-              logicalKeysForTool.push(k);
-            }
-            if (invocationKey) {
-              executedLogicalMutations.set(invocationKey, result);
-            }
+        // Track canonical mutation outcome to prevent duplicate executions across loop iterations
+        if (isMutation && result && result.success) {
+          const canonicalKeys = extractNativeReminderMutationKeys(
+            call.function?.name,
+            call.function?.arguments,
+            result.data,
+          );
+          for (const k of canonicalKeys) {
+            executedLogicalMutations.set(k, result);
+            logicalKeysForTool.push(k);
+          }
+          if (invocationKey) {
+            executedLogicalMutations.set(invocationKey, result);
           }
         }
 

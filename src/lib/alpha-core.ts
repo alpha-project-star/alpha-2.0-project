@@ -18,7 +18,16 @@ import { learningEngine, LearningRecord } from "./learning-engine";
  * ============================================================================
  */
 
-// --- 1. SCHEMAS & TAXONOMY ---
+const RUNTIME_SESSION_ADMIN_KEY = (typeof crypto !== "undefined" && crypto.randomUUID) 
+  ? crypto.randomUUID() 
+  : `alpha-admin-${Math.random().toString(36).substring(2)}-${Date.now()}`;
+
+function verifyAdminKey(key: string): boolean {
+  if (!key) return false;
+  const envKey = typeof process !== "undefined" && process.env?.ALPHA_CORE_ADMIN_KEY;
+  if (envKey && key === envKey) return true;
+  return key === RUNTIME_SESSION_ADMIN_KEY;
+}
 
 export const CoreConfidenceSchema = z.enum([
   "VERIFIED",
@@ -572,15 +581,28 @@ export class AlphaCoreAuthority {
       }
     }
 
-    // Record mutation log
+    // Record mutation log & advance version
     const prevVersion = newRecord.coreVersion;
+    let nextVersionNum = parseInt(newRecord.coreVersion, 10);
+    if (isNaN(nextVersionNum)) {
+      const parts = newRecord.coreVersion.split(".");
+      const last = parseInt(parts[parts.length - 1], 10);
+      nextVersionNum = isNaN(last) ? 1 : last + 1;
+      parts[parts.length - 1] = String(nextVersionNum);
+      newRecord.coreVersion = parts.join(".");
+    } else {
+      nextVersionNum += 1;
+      newRecord.coreVersion = String(nextVersionNum);
+    }
+    const resultingVersion = newRecord.coreVersion;
+
     newRecord.mutations.push({
       mutationId,
       source: proposal.source,
       reason: proposal.reason,
       evidence: proposal.evidence,
       previousVersion: prevVersion,
-      resultingVersion: prevVersion,
+      resultingVersion,
       timestamp: now,
       authority,
     });
@@ -761,14 +783,14 @@ export class AlphaCoreAuthority {
    * Secure import / export boundaries.
    */
   public exportCore(adminKey: string): { success: boolean; data?: AlphaCoreRecord; reason?: string } {
-    if (!adminKey || adminKey !== "alpha-admin-secure-key") {
+    if (!verifyAdminKey(adminKey)) {
       return { success: false, reason: "Unauthorized Core export attempt." };
     }
     return { success: true, data: JSON.parse(JSON.stringify(this.currentRecord)) };
   }
 
   public importCore(raw: unknown, adminKey: string): { success: boolean; reason?: string } {
-    if (!adminKey || adminKey !== "alpha-admin-secure-key") {
+    if (!verifyAdminKey(adminKey)) {
       return { success: false, reason: "Unauthorized Core import attempt." };
     }
 

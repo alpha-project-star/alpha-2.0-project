@@ -129,7 +129,7 @@ export function extractNativeReminderMutationKeys(
       );
     }
   } else if (callName === "updateReminder") {
-    const targetId = resultData?.id || parsedArgs?.id || "";
+    const targetId = resultData?.id || parsedArgs?.id || parsedArgs?.idOrQuery || parsedArgs?.query || "";
     if (targetId) {
       const patch = { ...parsedArgs };
       delete patch.id;
@@ -162,12 +162,12 @@ export function extractNativeReminderMutationKeys(
       }
     }
   } else if (callName === "deleteReminder") {
-    const targetId = resultData?.id || parsedArgs?.id || "";
+    const targetId = resultData?.id || parsedArgs?.id || parsedArgs?.idOrQuery || parsedArgs?.query || "";
     if (targetId) {
       keys.push(getCanonicalReminderDeleteKey({ targetIds: [targetId] }));
     }
   } else if (callName === "completeReminder") {
-    const targetId = resultData?.id || parsedArgs?.id || "";
+    const targetId = resultData?.id || parsedArgs?.id || parsedArgs?.idOrQuery || parsedArgs?.query || "";
     if (targetId) {
       keys.push(getCanonicalReminderCompleteKey({ targetId }));
       keys.push(

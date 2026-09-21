@@ -33,7 +33,6 @@ export type ActivityKind =
   | "calling_tool"
   | "executing_action"
   | "waiting_confirmation"
-  | "waiting_provider"
   | "switching_model"
   | "retrying"
   | "preparing_voice"
@@ -67,7 +66,6 @@ const LABELS: Record<ActivityKind, string> = {
   calling_tool: "Calling tool…",
   executing_action: "Executing action…",
   waiting_confirmation: "Waiting for confirmation…",
-  waiting_provider: "Waiting for provider…",
   switching_model: "Switching model…",
   retrying: "Retrying…",
   preparing_voice: "Preparing voice…",

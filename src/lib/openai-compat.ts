@@ -134,6 +134,13 @@ export async function sendChatOpenAICompat(
     const ctrl = new AbortController();
     const timeoutMs = opts.allowImages ? 90_000 : 60_000;
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        ctrl.abort();
+      } else {
+        opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+      }
+    }
     let res: Response;
     try {
       if (attempt > 1) {
@@ -141,7 +148,7 @@ export async function sendChatOpenAICompat(
       }
       res = await fetch(url, {
         method: "POST",
-        signal: opts.signal || ctrl.signal,
+        signal: ctrl.signal,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${apiKey}`,
