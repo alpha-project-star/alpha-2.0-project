@@ -39,6 +39,7 @@ export interface ResearchResult {
     publisher?: string;
     publishedDate?: string;
     retrievedAt: string;
+    rawContent?: string;
   }[];
   status: "success" | "insufficient" | "failed";
   receipt: WebToolReceipt;
@@ -48,15 +49,26 @@ export function isHomepageOrPortalUrl(urlStr: string): boolean {
   try {
     const u = new URL(urlStr);
     const path = u.pathname.replace(/\/+$/, "").toLowerCase();
-    if (!path || path === "" || path === "/" || path === "/index.html" || path === "/index.php" || path === "/home" || path === "/homepage") {
+    if (!path || path === "" || path === "/" || path === "/index.html" || path === "/index.php" || path === "/home" || path === "/homepage" || path === "/frontpage") {
       return true;
     }
     const genericSections = new Set([
       "/news", "/world", "/us", "/uk", "/politics", "/business",
       "/tech", "/technology", "/sport", "/sports", "/opinion", "/entertainment",
-      "/lifestyle", "/science", "/health", "/culture", "/features", "/markets"
+      "/lifestyle", "/science", "/health", "/culture", "/features", "/markets",
+      "/economy", "/finance", "/money", "/travel", "/weather", "/live", "/video",
+      "/videos", "/podcasts", "/latest", "/breaking", "/top-stories", "/all",
+      "/headlines", "/front", "/front-page", "/search", "/feed", "/rss"
     ]);
     if (genericSections.has(path)) {
+      return true;
+    }
+
+    // Check category, section, topic, tag, author, feed patterns
+    if (/^\/(?:category|categories|section|sections|topic|topics|tag|tags|author|authors|by|feed|rss|search)\/[^/]+$/i.test(path)) {
+      return true;
+    }
+    if (/^\/(?:news|world|us|uk|politics|business|tech|technology|sport|sports|opinion)\/(?:all|latest|headlines|index|feed)?$/i.test(path)) {
       return true;
     }
   } catch {}
@@ -120,21 +132,123 @@ export function isValidArticle(article: NewsArticle): boolean {
   return true;
 }
 
+export function extractJsonLdArticle(content: string, pageUrl: string): Partial<NewsArticle> | null {
+  if (!content) return null;
+  const scriptRegex = /<script\s+[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let match;
+  while ((match = scriptRegex.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1]);
+      const items = Array.isArray(parsed) ? parsed : (parsed["@graph"] ? parsed["@graph"] : [parsed]);
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const type = String(item["@type"] || "");
+        if (/^(?:NewsArticle|Article|Report|TechArticle|AnalysisNewsArticle|ReviewNewsArticle|BackgroundNewsArticle|BlogPosting)$/i.test(type)) {
+          const headline = String(item.headline || item.name || "").trim();
+          const pubDate = String(item.datePublished || item.dateModified || "").trim();
+          let pubName = "";
+          if (typeof item.publisher === "string") {
+            pubName = item.publisher.trim();
+          } else if (item.publisher && typeof item.publisher === "object") {
+            pubName = String(item.publisher.name || "").trim();
+          }
+          const articleUrl = String(item.url || item.mainEntityOfPage || "").trim();
+          const desc = String(item.description || item.articleBody || "").trim();
+
+          if (headline && headline.length >= 15) {
+            return {
+              headline,
+              publisher: pubName || undefined,
+              publishedDate: pubDate || undefined,
+              url: articleUrl && articleUrl.startsWith("http") ? articleUrl : pageUrl,
+              summary: desc || undefined,
+            };
+          }
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+export function extractOpenGraphArticle(content: string, pageUrl: string): Partial<NewsArticle> | null {
+  if (!content) return null;
+  
+  const ogTypeMatch = content.match(/<meta\s+[^>]*property=["']og:type["']\s+content=["']([^"']+)["']/i) ||
+                      content.match(/<meta\s+[^>]*content=["']([^"']+)["']\s+property=["']og:type["']/i);
+  const ogTitleMatch = content.match(/<meta\s+[^>]*property=["']og:title["']\s+content=["']([^"']+)["']/i) ||
+                       content.match(/<meta\s+[^>]*content=["']([^"']+)["']\s+property=["']og:title["']/i) ||
+                       content.match(/<meta\s+[^>]*name=["']twitter:title["']\s+content=["']([^"']+)["']/i);
+  const ogSiteMatch = content.match(/<meta\s+[^>]*property=["']og:site_name["']\s+content=["']([^"']+)["']/i) ||
+                      content.match(/<meta\s+[^>]*content=["']([^"']+)["']\s+property=["']og:site_name["']/i);
+  const ogPubDateMatch = content.match(/<meta\s+[^>]*property=["']article:published_time["']\s+content=["']([^"']+)["']/i) ||
+                         content.match(/<meta\s+[^>]*content=["']([^"']+)["']\s+property=["']article:published_time["']/i) ||
+                         content.match(/<meta\s+[^>]*name=["']pubdate["']\s+content=["']([^"']+)["']/i);
+  const ogDescMatch = content.match(/<meta\s+[^>]*property=["']og:description["']\s+content=["']([^"']+)["']/i) ||
+                      content.match(/<meta\s+[^>]*name=["']description["']\s+content=["']([^"']+)["']/i);
+
+  const jinaTitleMatch = content.match(/^Title:\s*(.*)$/im);
+  const jinaDateMatch = content.match(/^Published Time:\s*(.*)$/im);
+
+  const ogType = (ogTypeMatch ? ogTypeMatch[1] : "").toLowerCase();
+  const ogTitle = ogTitleMatch ? ogTitleMatch[1].trim() : (jinaTitleMatch ? jinaTitleMatch[1].trim() : "");
+  const ogSite = ogSiteMatch ? ogSiteMatch[1].trim() : "";
+  const ogDate = ogPubDateMatch ? ogPubDateMatch[1].trim() : (jinaDateMatch ? jinaDateMatch[1].trim() : "");
+  const ogDesc = ogDescMatch ? ogDescMatch[1].trim() : "";
+
+  if (ogTitle && ogTitle.length >= 15 && (ogType === "article" || ogType === "news" || ogDate || ogSite)) {
+    return {
+      headline: ogTitle,
+      publisher: ogSite || undefined,
+      publishedDate: ogDate || undefined,
+      summary: ogDesc || undefined,
+    };
+  }
+  return null;
+}
+
 export function parseStructuredArticle(
   title: string,
   url: string,
   snippet: string,
   fallbackPublisher?: string,
   fallbackDate?: string,
+  pageContent?: string,
 ): NewsArticle | null {
-  let headline = (title || "").trim();
-  let publisher = (fallbackPublisher || "").trim();
+  if (!url || isHomepageOrPortalUrl(url)) {
+    return null;
+  }
+
+  let rawHeadline = title || "";
+  let publisher = fallbackPublisher || "";
+  let publishedDate = fallbackDate;
+  let summary = snippet || "";
+
+  if (pageContent) {
+    const jsonLd = extractJsonLdArticle(pageContent, url);
+    if (jsonLd && jsonLd.headline) {
+      rawHeadline = jsonLd.headline;
+      if (jsonLd.publisher) publisher = jsonLd.publisher;
+      if (jsonLd.publishedDate) publishedDate = jsonLd.publishedDate;
+      if (jsonLd.summary) summary = jsonLd.summary;
+    } else {
+      const og = extractOpenGraphArticle(pageContent, url);
+      if (og && og.headline) {
+        rawHeadline = og.headline;
+        if (og.publisher) publisher = og.publisher;
+        if (og.publishedDate) publishedDate = og.publishedDate;
+        if (og.summary && og.summary.length > summary.length) summary = og.summary;
+      }
+    }
+  }
+
+  let headline = (rawHeadline || "").trim();
 
   // Extract publisher from "Headline - Publisher" or "Headline | Publisher" or "Headline — Publisher"
   const splitMatch = headline.match(/^(.+?)\s+[-|–—]\s+([^-|–—]+)$/);
   if (splitMatch && splitMatch[2].length < 40) {
     headline = splitMatch[1].trim();
-    if (!publisher || publisher === "Unknown" || publisher === "Web Source") {
+    if (!publisher || publisher === "Unknown" || publisher === "Web Source" || publisher === "DuckDuckGo") {
       publisher = splitMatch[2].trim();
     }
   }
@@ -142,13 +256,13 @@ export function parseStructuredArticle(
   // Extract publisher from "Publisher: Headline" prefix
   const prefixMatch = headline.match(/^([A-Z][A-Za-z0-9\s.&]{2,25}):\s+(.+)$/);
   if (prefixMatch && prefixMatch[1].length < 25) {
-    if (!publisher || publisher === "Unknown" || publisher === "Web Source") {
+    if (!publisher || publisher === "Unknown" || publisher === "Web Source" || publisher === "DuckDuckGo") {
       publisher = prefixMatch[1].trim();
     }
     headline = prefixMatch[2].trim();
   }
 
-  if (!publisher || publisher === "Unknown") {
+  if (!publisher || publisher === "Unknown" || publisher === "DuckDuckGo") {
     try {
       publisher = new URL(url).hostname.replace(/^www\./, "");
     } catch {
@@ -157,12 +271,12 @@ export function parseStructuredArticle(
   }
 
   // Extract date from snippet prefix (e.g. "2 hours ago - ...", "March 20, 2026 ...")
-  let publishedDate = fallbackDate;
-  let summary = (snippet || "").trim();
-  const dateMatch = summary.match(/^([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d+\s+(?:hours?|mins?|minutes?|days?|weeks?)\s+ago)\s*[-–—:]\s*(.*)$/i);
-  if (dateMatch) {
-    publishedDate = dateMatch[1].trim();
-    summary = dateMatch[2].trim();
+  if (!publishedDate) {
+    const dateMatch = summary.match(/^([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d+\s+(?:hours?|mins?|minutes?|days?|weeks?)\s+ago)\s*[-–—:]\s*(.*)$/i);
+    if (dateMatch) {
+      publishedDate = dateMatch[1].trim();
+      summary = dateMatch[2].trim();
+    }
   }
 
   const article: NewsArticle = {
@@ -170,7 +284,7 @@ export function parseStructuredArticle(
     publisher,
     url: url.trim(),
     publishedDate: publishedDate?.trim() || undefined,
-    summary,
+    summary: summary.trim(),
   };
 
   if (!isValidArticle(article)) {
@@ -246,6 +360,7 @@ export class BoundedResearchService {
             publisher,
             publishedDate: result.date,
             retrievedAt: new Date().toISOString(),
+            rawContent: page.content,
           });
         }
 
@@ -306,6 +421,7 @@ export class BoundedResearchService {
               status: "page-read-success",
               publisher,
               retrievedAt: new Date().toISOString(),
+              rawContent: page.content,
             });
           }
         }
@@ -346,6 +462,7 @@ export class BoundedResearchService {
           ev.excerpt,
           ev.publisher,
           ev.publishedDate,
+          ev.rawContent,
         );
         if (art) {
           articles.push(art);

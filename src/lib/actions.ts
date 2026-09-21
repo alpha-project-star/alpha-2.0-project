@@ -772,22 +772,25 @@ export async function executeActionTagsAsync(
     const id = uid();
     const dueAt = parsedMs;
     const lcTitle = title.toLowerCase();
-    const opKey = `rem:add:${lcTitle}:${dueAt}`;
+    const canonicalRawDue = rawWhen.trim().toLowerCase();
+    const opKeyResolved = `rem:add:${lcTitle}:${dueAt}`;
+    const opKeyRaw = `rem:add:${lcTitle}:${canonicalRawDue}`;
+    const nativeToolKeyResolved = `createReminder:${JSON.stringify({ dueAt, title: title.trim() })}`;
+    const nativeToolKeyRaw = `createReminder:${JSON.stringify({ dueAt: canonicalRawDue, title: title.trim() })}`;
+
     if (
-      executedMutations.has(opKey) ||
-      executedMutations.has(`rem:add:${lcTitle}`) ||
-      executedMutations.has(`reminder:create:${lcTitle}`) ||
-      executedMutations.has(`reminder:create:${lcTitle}:${dueAt}`)
+      executedMutations.has(opKeyResolved) ||
+      executedMutations.has(opKeyRaw) ||
+      executedMutations.has(nativeToolKeyResolved) ||
+      executedMutations.has(nativeToolKeyRaw)
     ) {
       // Suppress redundant mutation — already executed authoritatively in this turn
       text = text.replace(fullMatch, "");
       addRemRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(opKey);
-    executedMutations.add(`rem:add:${lcTitle}`);
-    executedMutations.add(`reminder:create:${lcTitle}`);
-    executedMutations.add(`reminder:create:${lcTitle}:${dueAt}`);
+    executedMutations.add(opKeyResolved);
+    executedMutations.add(opKeyRaw);
     const now = Date.now();
     try {
       await repo.createReminder(effectiveUserId, {
@@ -826,15 +829,6 @@ export async function executeActionTagsAsync(
     const lcQuery = query.toLowerCase();
     activity.set(actionActivity("UPDATE_REMINDER"));
 
-    if (
-      executedMutations.has(`rem:upd:${lcQuery}`) ||
-      executedMutations.has(`reminder:update:${lcQuery}`)
-    ) {
-      text = text.replace(fullMatch, "");
-      updRemRe.lastIndex = 0;
-      continue;
-    }
-
     let hits: FirestoreReminder[];
     try {
       hits = await findReminderHits(query);
@@ -868,16 +862,6 @@ export async function executeActionTagsAsync(
         status: "ambiguous",
         message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}). Nothing was changed — say exactly which one.`,
       });
-      text = text.replace(fullMatch, "");
-      updRemRe.lastIndex = 0;
-      continue;
-    }
-
-    const target = hits[0];
-    if (
-      executedMutations.has(`reminder:update:${target.id.toLowerCase()}`) ||
-      executedMutations.has(`reminder:update:${target.title.toLowerCase()}`)
-    ) {
       text = text.replace(fullMatch, "");
       updRemRe.lastIndex = 0;
       continue;
@@ -932,10 +916,40 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add(`rem:upd:${lcQuery}`);
-    executedMutations.add(`reminder:update:${lcQuery}`);
-    executedMutations.add(`reminder:update:${target.id.toLowerCase()}`);
-    executedMutations.add(`reminder:update:${target.title.toLowerCase()}`);
+    const patchEntries = Object.entries(patch)
+      .filter(([k]) => k !== "updatedAt")
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`)
+      .join(";");
+
+    const patchEntriesWithRaw = Object.entries(fields)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`)
+      .join(";");
+
+    const isDuplicate =
+      (patchEntries && (
+        executedMutations.has(`rem:upd:${lcQuery}:${patchEntries}`) ||
+        executedMutations.has(`rem:upd:${target.id.toLowerCase()}:${patchEntries}`) ||
+        executedMutations.has(`rem:upd:${target.title.toLowerCase()}:${patchEntries}`)
+      )) ||
+      (patchEntriesWithRaw && (
+        executedMutations.has(`rem:upd:${lcQuery}:${patchEntriesWithRaw}`) ||
+        executedMutations.has(`rem:upd:${target.id.toLowerCase()}:${patchEntriesWithRaw}`) ||
+        executedMutations.has(`rem:upd:${target.title.toLowerCase()}:${patchEntriesWithRaw}`)
+      ));
+
+    if (isDuplicate) {
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
+
+    if (patchEntries) {
+      executedMutations.add(`rem:upd:${lcQuery}:${patchEntries}`);
+      executedMutations.add(`rem:upd:${target.id.toLowerCase()}:${patchEntries}`);
+      executedMutations.add(`rem:upd:${target.title.toLowerCase()}:${patchEntries}`);
+    }
 
     try {
       await repo.updateReminder(effectiveUserId, target.id, patch);

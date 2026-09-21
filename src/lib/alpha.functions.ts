@@ -792,32 +792,20 @@ function getLogicalMutationKey(call: any): string | null {
   }
   if (!args || typeof args !== "object") return null;
 
-  if (name === "createReminder") {
-    const title = String(args.title || "").trim().toLowerCase();
-    return `createReminder:${title}`;
-  }
+  const copy = { ...args };
+  const forbidden = ["userId", "uid", "ownerId", "user_id"];
+  for (const f of forbidden) delete copy[f];
 
-  if (name === "deleteReminder") {
-    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
-    return `deleteReminder:${target}`;
+  const sortedObj: Record<string, any> = {};
+  for (const k of Object.keys(copy).sort()) {
+    const val = copy[k];
+    if (typeof val === "string") {
+      sortedObj[k] = val.trim();
+    } else {
+      sortedObj[k] = val;
+    }
   }
-
-  if (name === "completeReminder") {
-    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
-    return `completeReminder:${target}`;
-  }
-
-  if (name === "updateReminder") {
-    const target = String(args.id || args.idOrQuery || args.query || "").trim().toLowerCase();
-    const sortedFields = Object.entries(args)
-      .filter(([k]) => !["userId", "uid", "ownerId", "user_id"].includes(k))
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k}=${v}`)
-      .join(";");
-    return `updateReminder:${target}:${sortedFields}`;
-  }
-
-  return null;
+  return `${name}:${JSON.stringify(sortedObj)}`;
 }
 
 async function reconcileAmbiguousMutation(call: any, context: ToolContext, originalError: any): Promise<any> {
@@ -1302,79 +1290,87 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
               executedLogicalMutations.set(logicalKey, result);
               logicalKeysForTool.push(logicalKey);
             }
+            if (invocationKey && invocationKey !== logicalKey) {
+              executedLogicalMutations.set(invocationKey, result);
+              logicalKeysForTool.push(invocationKey);
+            }
             const callName = call.function?.name;
+            let parsedArgs = call.function?.arguments;
+            if (typeof parsedArgs === "string") {
+              try { parsedArgs = JSON.parse(parsedArgs); } catch {}
+            }
+
             if (callName === "createReminder") {
-              if (result.data?.id) {
-                const idKey = `reminder:create:${result.data.id.toLowerCase()}`;
-                executedLogicalMutations.set(idKey, result);
-                logicalKeysForTool.push(idKey, `reminder:id:${result.data.id.toLowerCase()}`);
+              const titleStr = String(parsedArgs?.title || result.data?.title || "").trim().toLowerCase();
+              const rawDue = parsedArgs?.dueAt !== undefined ? String(parsedArgs.dueAt).trim().toLowerCase() : "";
+              const resolvedDue = result.data?.dueAt !== undefined ? String(result.data.dueAt) : "";
+
+              if (titleStr && resolvedDue) {
+                const k1 = `rem:add:${titleStr}:${resolvedDue}`;
+                executedLogicalMutations.set(k1, result);
+                logicalKeysForTool.push(k1);
               }
-              if (result.data?.title) {
-                const titleStr = String(result.data.title).trim().toLowerCase();
-                executedLogicalMutations.set(`createReminder:${titleStr}`, result);
-                executedLogicalMutations.set(`rem:add:${titleStr}`, result);
-                executedLogicalMutations.set(`reminder:create:${titleStr}`, result);
-                logicalKeysForTool.push(`rem:add:${titleStr}`, `reminder:create:${titleStr}`);
-                if (result.data.dueAt) {
-                  const dueKey = `reminder:create:${titleStr}:${result.data.dueAt}`;
-                  const addKey = `rem:add:${titleStr}:${result.data.dueAt}`;
-                  executedLogicalMutations.set(dueKey, result);
-                  executedLogicalMutations.set(addKey, result);
-                  logicalKeysForTool.push(dueKey, addKey);
-                }
+              if (titleStr && rawDue) {
+                const k2 = `rem:add:${titleStr}:${rawDue}`;
+                executedLogicalMutations.set(k2, result);
+                logicalKeysForTool.push(k2);
               }
             } else if (callName === "updateReminder") {
-              let parsedArgs = call.function?.arguments;
-              if (typeof parsedArgs === "string") {
-                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
+              const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || result.data?.id || "").trim().toLowerCase();
+              const patchEntries = Object.entries(parsedArgs || {})
+                .filter(([k]) => !["userId", "uid", "ownerId", "user_id", "id", "idOrQuery", "query"].includes(k))
+                .sort(([a], [b]) => a.localeCompare(b))
+                .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`)
+                .join(";");
+
+              if (target && patchEntries) {
+                const k1 = `rem:upd:${target}:${patchEntries}`;
+                executedLogicalMutations.set(k1, result);
+                logicalKeysForTool.push(k1);
               }
-              const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
-              if (target) {
-                logicalKeysForTool.push(`rem:upd:${target}`, `reminder:update:${target}`);
-                executedLogicalMutations.set(`rem:upd:${target}`, result);
-                executedLogicalMutations.set(`reminder:update:${target}`, result);
+              if (result.data?.id && patchEntries) {
+                const k2 = `rem:upd:${result.data.id.toLowerCase()}:${patchEntries}`;
+                executedLogicalMutations.set(k2, result);
+                logicalKeysForTool.push(k2);
               }
-              if (result.data?.id) {
-                const idKey = `reminder:update:${result.data.id.toLowerCase()}`;
-                executedLogicalMutations.set(idKey, result);
-                logicalKeysForTool.push(idKey);
-              }
-              if (result.data?.title) {
-                const titleKey = `reminder:update:${String(result.data.title).trim().toLowerCase()}`;
-                executedLogicalMutations.set(titleKey, result);
-                logicalKeysForTool.push(titleKey);
+              if (result.data?.title && patchEntries) {
+                const k3 = `rem:upd:${String(result.data.title).trim().toLowerCase()}:${patchEntries}`;
+                executedLogicalMutations.set(k3, result);
+                logicalKeysForTool.push(k3);
               }
             } else if (callName === "deleteReminder") {
-              let parsedArgs = call.function?.arguments;
-              if (typeof parsedArgs === "string") {
-                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
-              }
               const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
               if (target) {
-                logicalKeysForTool.push(`rem:del:${target}`, `reminder:delete:${target}`);
-                executedLogicalMutations.set(`rem:del:${target}`, result);
-                executedLogicalMutations.set(`reminder:delete:${target}`, result);
+                const k = `rem:del:${target}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
               }
               if (result.data?.id) {
-                const idKey = `reminder:delete:${result.data.id.toLowerCase()}`;
-                executedLogicalMutations.set(idKey, result);
-                logicalKeysForTool.push(idKey);
+                const k = `rem:del:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
+              }
+              if (result.data?.title) {
+                const k = `rem:del:${String(result.data.title).trim().toLowerCase()}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
               }
             } else if (callName === "completeReminder") {
-              let parsedArgs = call.function?.arguments;
-              if (typeof parsedArgs === "string") {
-                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
-              }
               const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
               if (target) {
-                logicalKeysForTool.push(`rem:complete:${target}`, `reminder:complete:${target}`);
-                executedLogicalMutations.set(`rem:complete:${target}`, result);
-                executedLogicalMutations.set(`reminder:complete:${target}`, result);
+                const k = `rem:complete:${target}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
               }
               if (result.data?.id) {
-                const idKey = `reminder:complete:${result.data.id.toLowerCase()}`;
-                executedLogicalMutations.set(idKey, result);
-                logicalKeysForTool.push(idKey);
+                const k = `rem:complete:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
+              }
+              if (result.data?.title) {
+                const k = `rem:complete:${String(result.data.title).trim().toLowerCase()}`;
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
               }
             } else if (result.data?.id) {
               executedLogicalMutations.set(`${callName}:${result.data.id.toLowerCase()}`, result);
