@@ -32,15 +32,40 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
   }
   const input = (raw || "").trim();
   if (!input) return null;
+
+  // Numeric timestamp strings (epoch ms or seconds)
+  if (/^\d{10,13}$/.test(input)) {
+    const num = Number(input);
+    if (!Number.isNaN(num) && num > 0) {
+      return input.length === 10 ? num * 1000 : num;
+    }
+  }
+
   const s = input.toLowerCase().replace(/\s+/g, " ").replace(/^(?:on|at)\s+/, "");
 
-  // Absolute ISO / Date-parsable strings first (what we persist).
+  // Absolute ISO / Date-parsable strings first (e.g. 2026-03-25T14:00:00Z, 2026-03-25, 03/25/2026)
   const iso = Date.parse(input);
   if (!Number.isNaN(iso) && /\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|GMT|UTC|[A-Z][a-z]{2} \d/.test(input)) {
     return iso;
   }
 
-  // "in 20 minutes", "in 2 hrs"
+  // "in 2 hours and 30 minutes"
+  const compoundMatch = s.match(/^in (\d+(?:\.\d+)?)\s*([a-z]+)\s*(?:and\s*(\d+(?:\.\d+)?)\s*([a-z]+))?$/);
+  if (compoundMatch) {
+    const unit1 = compoundMatch[2].replace(/s$/, "");
+    const ms1 = UNIT_MS[unit1];
+    if (ms1) {
+      let total = now.getTime() + Number(compoundMatch[1]) * ms1;
+      if (compoundMatch[3] && compoundMatch[4]) {
+        const unit2 = compoundMatch[4].replace(/s$/, "");
+        const ms2 = UNIT_MS[unit2];
+        if (ms2) total += Number(compoundMatch[3]) * ms2;
+      }
+      return total;
+    }
+  }
+
+  // "in 20 minutes", "in 2 hrs", "in 3 days"
   let m = s.match(/^in (\d+(?:\.\d+)?) ?([a-z]+)$/);
   if (m) {
     const unit = m[2].replace(/s$/, "");
@@ -49,7 +74,7 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
     return null;
   }
 
-  // "in an hour" / "in a minute"
+  // "in an hour" / "in a minute" / "in a day"
   m = s.match(/^in an? ([a-z]+)$/);
   if (m) {
     const ms = UNIT_MS[m[1].replace(/s$/, "")];
@@ -59,7 +84,20 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
 
   const clock = "(\\d{1,2})(?::(\\d{2}))? ?(am|pm)?";
 
-  // "today at 9", "at 21:30", "9pm"
+  // "this/tomorrow morning/afternoon/evening/night"
+  if (/^(?:tomorrow|tmrw)\s+(?:morning|afternoon|evening|night)$/.test(s) || /^(?:this\s+)?(?:morning|afternoon|evening|night)$/.test(s)) {
+    const isTmrw = s.includes("tomorrow") || s.includes("tmrw");
+    const d = new Date(now);
+    if (isTmrw) d.setDate(d.getDate() + 1);
+    if (s.includes("morning")) d.setHours(9, 0, 0, 0);
+    else if (s.includes("afternoon")) d.setHours(14, 0, 0, 0);
+    else if (s.includes("evening")) d.setHours(18, 0, 0, 0);
+    else if (s.includes("night")) d.setHours(20, 0, 0, 0);
+    if (!isTmrw && d.getTime() <= now.getTime()) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+
+  // "today at 9", "at 21:30", "9pm", "3 PM"
   m = s.match(new RegExp(`^(?:today )?(?:at )?${clock}$`));
   if (m && (m[2] !== undefined || m[3] !== undefined || Number(m[1]) <= 24)) {
     const d = new Date(now);
@@ -68,8 +106,8 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
     return d.getTime();
   }
 
-  // "tomorrow", "tomorrow at 7:30am"
-  m = s.match(new RegExp(`^tomorrow(?: (?:at )?${clock})?$`));
+  // "tomorrow", "tomorrow at 7:30am", "tomorrow at 9"
+  m = s.match(new RegExp(`^(?:tomorrow|tmrw)(?: (?:at )?${clock})?$`));
   if (m) {
     const d = new Date(now);
     d.setDate(d.getDate() + 1);
@@ -88,14 +126,13 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
     return d.getTime();
   }
 
-  // "monday", "next friday at 6pm"
-  m = s.match(new RegExp(`^(?:next )?(${WEEKDAYS.join("|")})(?: (?:at )?${clock})?$`));
+  // "monday", "next friday at 6pm", "this sunday at 10am"
+  m = s.match(new RegExp(`^(?:next |this )?(${WEEKDAYS.join("|")})(?: (?:at )?${clock})?$`));
   if (m) {
     const target = WEEKDAYS.indexOf(m[1]);
     const d = new Date(now);
     let delta = (target - d.getDay() + 7) % 7;
     if (delta === 0) delta = 7;
-    if (/^next /.test(s) && delta < 7) delta += 0; // "next monday" === upcoming monday
     d.setDate(d.getDate() + delta);
     if (m[2]) applyClock(d, Number(m[2]), Number(m[3] || 0), m[4]);
     else d.setHours(9, 0, 0, 0);

@@ -164,366 +164,6 @@ function verify(kind: Kind, id: string, check?: (x: any) => boolean): boolean {
   return check ? check(found) : true;
 }
 
-// ---------------------------------------------------------------- synchronous executor for non-reminders
-export function executeActionTags(input: string): { text: string; results: ActionResult[] } {
-  let text = input;
-  const results: ActionResult[] = [];
-
-  const apply = (re: RegExp, fn: (m: string[]) => ActionResult) => {
-    text = text.replace(re, (...args) => {
-      const fullMatch = String(args[0] || "");
-      const tagMatch = /\[\[([A-Z_]+)/.exec(fullMatch);
-      if (tagMatch) {
-        activity.set(actionActivity(tagMatch[1]));
-      }
-      const groups = args.slice(0, -2).map((x) => (typeof x === "string" ? x : ""));
-      const res = fn(groups as string[]);
-      if (res.status === "failed") {
-        activity.set("action_failed");
-      }
-      results.push(res);
-      return "";
-    });
-  };
-
-  // ---------------- CREATE NOTE / MEMORY / PLAN / BILL
-  apply(/\[\[ADD_NOTE:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi, (m) => {
-    const title = m[1].trim();
-    const body = m[2].trim();
-    if (!title && !body)
-      return {
-        tag: "ADD_NOTE",
-        status: "invalid",
-        message: "A note needs a title or body — nothing was saved.",
-      };
-    const id = uid();
-    upsert("note", { id, title, body, updatedAt: Date.now() } satisfies Note);
-    return verify("note", id, (x) => x.body === body && x.title === title)
-      ? { tag: "ADD_NOTE", status: "success", message: `Note saved: "${title}"` }
-      : { tag: "ADD_NOTE", status: "failed", message: `Note "${title}" could not be saved.` };
-  });
-
-
-  apply(/\[\[ADD_MEMORY:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi, (m) => {
-    const rawTopic = m[1].trim();
-    const rawDetail = m[2].trim();
-    const topic = rawTopic.replace(/\[\[[\s\S]*?\]\]/g, "").trim();
-    const detail = rawDetail.replace(/\[\[[\s\S]*?\]\]/g, "").trim();
-    if (!topic && !detail)
-      return {
-        tag: "ADD_MEMORY",
-        status: "invalid",
-        message: "A memory needs a topic — nothing was saved.",
-      };
-    const finalTopic = topic || detail.slice(0, 40);
-    const id = uid();
-    upsert("memory", {
-      id,
-      topic: finalTopic,
-      detail,
-      category: "general",
-      provenance: "explicit_user",
-      confidence: "high",
-      status: "active",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    } satisfies Memory);
-    return verify("memory", id, (x) => x.detail === detail)
-      ? { tag: "ADD_MEMORY", status: "success", message: `Memory saved: "${finalTopic}"` }
-      : { tag: "ADD_MEMORY", status: "failed", message: `Memory "${finalTopic}" could not be saved.` };
-  });
-
-  
-
-  apply(/\[\[ADD_BILL:\s*([^|\]]+?)\s*\|\s*([^|\]]*?)\s*\|\s*([^|\]]*?)\s*\]\]/gi, (m) => {
-    const name = m[1].trim();
-    if (!name)
-      return {
-        tag: "ADD_BILL",
-        status: "invalid",
-        message: "A bill needs a name — nothing was saved.",
-      };
-    const amount = Number(m[2].trim().replace(/[^\d.]/g, "")) || 0;
-    const id = uid();
-    upsert("bill", {
-      id,
-      name,
-      amount,
-      balance: amount,
-      dueDate: m[3].trim(),
-      status: "due",
-    } satisfies Bill);
-    return verify("bill", id, (x) => x.amount === amount)
-      ? {
-          tag: "ADD_BILL",
-          status: "success",
-          message: `Bill saved: "${name}"${amount ? ` — ${amount}` : ""}`,
-        }
-      : { tag: "ADD_BILL", status: "failed", message: `Bill "${name}" could not be saved.` };
-  });
-
-  // ---------------- UPDATE
-  const updateTag =
-    (kind: Kind, tag: string, allowed: string[]) =>
-    (m: string[]): ActionResult => {
-      const query = m[1].trim();
-      const hits = findMatches(kind, query);
-      if (!hits.length)
-        return {
-          tag,
-          status: "not_found",
-          message: `No ${kind} matching "${query}" — nothing was changed.`,
-        };
-      if (hits.length > 1) return ambiguous(tag, kind, hits, query);
-      const fields = parseFields(m[2] || "");
-      const keys = Object.keys(fields).filter((k) => allowed.includes(k));
-      if (!keys.length) {
-        return {
-          tag,
-          status: "invalid",
-          message: `I need fields to change (${allowed.join(", ")}) — nothing was changed on "${label(kind, hits[0])}".`,
-        };
-      }
-      const target = hits[0];
-      const patch: Record<string, any> = {};
-      for (const k of keys) {
-        if (kind === "bill" && (k === "amount" || k === "balance")) {
-          patch[k] = Number(fields[k].replace(/[^\d.]/g, "")) || 0;
-        } else {
-          patch[k] = fields[k];
-        }
-      }
-      const next = { ...target, ...patch };
-      if (kind === "note" || kind === "memory") next.updatedAt = Date.now();
-      upsert(kind, next);
-      const ok = verify(kind, target.id, (x) =>
-        keys.every((k) => {
-          if (k === "amount" || k === "balance")
-            return String(x[k]) === String(next[k]);
-          return x[k] === next[k];
-        }),
-      );
-      if (!ok)
-        return {
-          tag,
-          status: "failed",
-          message: `Could not update ${kind} "${label(kind, target)}".`,
-        };
-      const what = keys
-        .map((k) => `${k} → ${next[k]}`)
-        .join(", ");
-      return {
-        tag,
-        status: "success",
-        message: `Updated ${kind} "${label(kind, next)}": ${what}`,
-      };
-    };
-
-  apply(/\[\[UPDATE_NOTE:\s*([^|\]]+?)\s*\|\s*([^|\]]*?)\s*\|\s*([\s\S]*?)\s*\]\]/gi, (m) => {
-    const query = m[1].trim();
-    const hits = findMatches("note", query);
-    if (!hits.length)
-      return {
-        tag: "UPDATE_NOTE",
-        status: "not_found",
-        message: `No note matching "${query}" — nothing was changed.`,
-      };
-    if (hits.length > 1) return ambiguous("UPDATE_NOTE", "note", hits, query);
-    const n = hits[0] as Note;
-    const title = m[2].trim() || n.title;
-    const body = m[3].trim() || n.body;
-    upsert("note", { ...n, title, body, updatedAt: Date.now() });
-    return verify("note", n.id, (x) => x.title === title && x.body === body)
-      ? { tag: "UPDATE_NOTE", status: "success", message: `Updated note "${title}".` }
-      : { tag: "UPDATE_NOTE", status: "failed", message: `Could not update note "${n.title}".` };
-  });
-
-
-  apply(
-    /\[\[UPDATE_MEMORY:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi,
-    updateTag("memory", "UPDATE_MEMORY", ["topic", "detail"]),
-  );
-  
-  apply(
-    /\[\[UPDATE_BILL:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi,
-    updateTag("bill", "UPDATE_BILL", ["name", "amount", "balance", "dueDate", "status"]),
-  );
-
-  // ---------------- DELETE
-  apply(/\[\[DELETE_LAST:\s*(note|memory|bill)\s*\]\]/gi, (m) => {
-    const kind = m[1].toLowerCase() as Kind;
-    const list = listOf(kind);
-    if (!list.length)
-      return {
-        tag: "DELETE_LAST",
-        status: "not_found",
-        message: `There are no ${KIND_PLURAL[kind]} to delete.`,
-      };
-    const victim = list[0];
-    deleteById(kind, victim.id);
-    return listOf(kind).some((x) => x.id === victim.id)
-      ? {
-          tag: "DELETE_LAST",
-          status: "failed",
-          message: `Could not delete ${kind} "${label(kind, victim)}".`,
-        }
-      : {
-          tag: "DELETE_LAST",
-          status: "success",
-          message: `Deleted ${kind} "${label(kind, victim)}".`,
-        };
-  });
-  apply(/\[\[DELETE_LAST:\s*(reminder)\s*\]\]/gi, () => ({ tag: "DELETE_LAST", status: "failed", message: "Reminder actions require asynchronous execution." }));
-
-  const deleteTag =
-    (kind: Kind, tag: string) =>
-    (m: string[]): ActionResult => {
-      const query = m[1].trim();
-      const all = /^all\s+/i.test(query);
-      const hits = findMatches(kind, query);
-      if (!hits.length)
-        return {
-          tag,
-          status: "not_found",
-          message: `No ${kind} matching "${query}" — nothing was deleted.`,
-        };
-      if (hits.length > 1 && !all) return ambiguous(tag, kind, hits, query);
-      hits.forEach((h) => deleteById(kind, h.id));
-      const remaining = listOf(kind);
-      const stuck = hits.filter((h) => remaining.some((x) => x.id === h.id));
-      if (stuck.length)
-        return {
-          tag,
-          status: "failed",
-          message: `Could not delete ${stuck.length} ${KIND_PLURAL[kind]}.`,
-        };
-      return {
-        tag,
-        status: "success",
-        message: `Deleted ${hits.length} ${hits.length === 1 ? kind : KIND_PLURAL[kind]}: ${hits.map((h) => `"${label(kind, h)}"`).join(", ")}.`,
-      };
-    };
-
-  apply(/\[\[DELETE_NOTE:\s*([^\]]+?)\s*\]\]/gi, deleteTag("note", "DELETE_NOTE"));
-
-  apply(/\[\[DELETE_MEMORY:\s*([^\]]+?)\s*\]\]/gi, deleteTag("memory", "DELETE_MEMORY"));
-  
-  apply(/\[\[DELETE_BILL:\s*([^\]]+?)\s*\]\]/gi, deleteTag("bill", "DELETE_BILL"));
-
-  apply(/\[\[CLEAR_ALL:\s*(notes|memoriess|bills)\s*\]\]/gi, (m) => {
-    const plural = m[1].toLowerCase();
-    const kind = (Object.keys(KIND_PLURAL) as Kind[]).find((k) => KIND_PLURAL[k] === plural)!;
-    const list = [...listOf(kind)];
-    if (!list.length)
-      return { tag: "CLEAR_ALL", status: "not_found", message: `There are no ${plural} to clear.` };
-    list.forEach((x) => deleteById(kind, x.id));
-    return listOf(kind).length
-      ? {
-          tag: "CLEAR_ALL",
-          status: "failed",
-          message: `Could not clear all ${plural} — ${listOf(kind).length} remain.`,
-        }
-      : { tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} ${plural}.` };
-  });
-
-
-  // ---------------- COMPLETE
-
-
-  // Settings
-  apply(/\[\[SET_SETTING:\s*([a-zA-Z0-9_-]+)\s*\|\s*([\s\S]*?)\s*\]\]/gi, (m) => {
-    const tag = "SET_SETTING";
-    const key = m[1].trim();
-    const raw = m[2].trim();
-    const cur = alphaStore.get().settings;
-    const boolVal = /^true|yes|on|1$/i.test(raw);
-    const boolKeys = [
-      "soundEnabled",
-      "voiceEnabled",
-      "proactiveVoice",
-      "backgroundEnabled",
-      "autoSpeak",
-      "autoSubmitVoice",
-    ] as const;
-    const ok = (msg: string, check: () => boolean): ActionResult =>
-      check()
-        ? { tag, status: "success", message: msg }
-        : { tag, status: "failed", message: `Could not change ${key}.` };
-
-    if ((boolKeys as readonly string[]).includes(key)) {
-      alphaStore.setSettings({ [key]: boolVal } as any);
-      return ok(
-        `${key} ${boolVal ? "enabled" : "disabled"}.`,
-        () => (alphaStore.get().settings as any)[key] === boolVal,
-      );
-    }
-    if (key === "kokoroVoice") {
-      alphaStore.setSettings({ kokoroVoice: raw });
-      return ok(`Kokoro voice set to ${raw}.`, () => alphaStore.get().settings.kokoroVoice === raw);
-    }
-    if (key === "ttsRate") {
-      const rate = Math.max(0.7, Math.min(1.4, Number(raw) || cur.ttsRate));
-      alphaStore.setSettings({ ttsRate: rate });
-      return ok(
-        `Speech rate set to ${rate.toFixed(2)}x.`,
-        () => alphaStore.get().settings.ttsRate === rate,
-      );
-    }
-    if (key === "fastModel" || key === "thinkingModel" || key === "codingModel") {
-      const lane = key.replace("Model", "") as "fast" | "thinking" | "coding";
-      alphaStore.setSettings({ taskModels: { ...cur.taskModels, [lane]: raw } });
-      return ok(
-        `${lane} model set to ${raw}.`,
-        () => alphaStore.get().settings.taskModels[lane] === raw,
-      );
-    }
-    if (/^(?:eye|camera|vision)$/i.test(key)) {
-      return {
-        tag,
-        status: "invalid",
-        message: `Eye state cannot be changed via settings — use commands like "open your eyes" or "close your eyes".`,
-      };
-    }
-    return {
-      tag,
-      status: "invalid",
-      message: `"${key}" is not a setting I can change — nothing was changed.`,
-    };
-  });
-
-  apply(/\[\[SET_PROFILE:\s*([^|\]]*?)\s*\|\s*([\s\S]*?)\s*\]\]/gi, (m) => {
-    const p = alphaStore.get().profile;
-    const name = m[1].trim() || p.name;
-    const bio = m[2].trim() || p.bio;
-    alphaStore.setProfile({ name, bio });
-    const after = alphaStore.get().profile;
-    return after.name === name && after.bio === bio
-      ? {
-          tag: "SET_PROFILE",
-          status: "success",
-          message: `Profile updated${name ? ` for ${name}` : ""}.`,
-        }
-      : { tag: "SET_PROFILE", status: "failed", message: "Could not update your profile." };
-  });
-
-  apply(/\[\[ADD_REMINDER:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*(?:\|\s*([\s\S]*?)\s*)?\]\]/gi, () => ({ tag: "ADD_REMINDER", status: "failed", message: "Reminder actions require asynchronous execution." }));
-  apply(/\[\[UPDATE_REMINDER:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi, () => ({ tag: "UPDATE_REMINDER", status: "failed", message: "Reminder actions require asynchronous execution." }));
-  apply(/\[\[DELETE_REMINDER:\s*([^\]]+?)\s*\]\]/gi, () => ({ tag: "DELETE_REMINDER", status: "failed", message: "Reminder actions require asynchronous execution." }));
-  apply(/\[\[MARK_REMINDER_DONE:\s*([^\]]+?)\s*\]\]/gi, () => ({ tag: "MARK_REMINDER_DONE", status: "failed", message: "Reminder actions require asynchronous execution." }));
-  apply(/\[\[CLEAR_ALL:\s*(reminders)\s*\]\]/gi, () => ({ tag: "CLEAR_ALL_REMINDERS", status: "failed", message: "Reminder actions require asynchronous execution." }));
-  
-  apply(/\[\[([A-Z_]+)(?::[^\]]*)?\]\]/g, (m) => {
-    // Leave CLEAR_ALL reminders dummy handling to the CLEAR_ALL generic handler above
-    return {
-      tag: m[1],
-      status: "invalid",
-      message: `I tried to use an action I don't support ("${m[1]}") — nothing was changed.`,
-    };
-  });
-
-  return { text: text.replace(/\n{3,}/g, "\n\n").trim(), results };
-}
-
 export interface ExecuteActionTagsOptions {
   userId?: string | null;
   repo?: ReminderRepository;
@@ -545,6 +185,7 @@ export async function executeActionTagsAsync(
 ): Promise<{ text: string; results: ActionResult[] }> {
   let text = input;
   const results: ActionResult[] = [];
+  const executedMutations = new Set<string>();
 
   const effectiveUserId = options?.userId ?? (auth.currentUser?.uid || "local-user");
   const repo = options?.repo ?? new LocalReminderRepository();
@@ -583,6 +224,13 @@ export async function executeActionTagsAsync(
       addNoteRe.lastIndex = 0;
       continue;
     }
+    const opKey = `note:add:${title.toLowerCase()}:${body.toLowerCase()}`;
+    if (executedMutations.has(opKey)) {
+      text = text.replace(fullMatch, "");
+      addNoteRe.lastIndex = 0;
+      continue;
+    }
+    executedMutations.add(opKey);
     const id = uid();
     await upsert("note", { id, title, body, updatedAt: Date.now() } satisfies Note);
     const ok = verify("note", id, (x) => x.body === body && x.title === title);
@@ -617,6 +265,13 @@ export async function executeActionTagsAsync(
       continue;
     }
     const finalTopic = topic || detail.slice(0, 40);
+    const opKey = `memory:add:${finalTopic.toLowerCase()}:${detail.toLowerCase()}`;
+    if (executedMutations.has(opKey)) {
+      text = text.replace(fullMatch, "");
+      addMemRe.lastIndex = 0;
+      continue;
+    }
+    executedMutations.add(opKey);
     const id = uid();
     await upsert("memory", {
       id,
@@ -658,13 +313,21 @@ export async function executeActionTagsAsync(
       continue;
     }
     const amount = Number(match[2].trim().replace(/[^\d.]/g, "")) || 0;
+    const dueDate = match[3].trim();
+    const opKey = `bill:add:${name.toLowerCase()}:${amount}:${dueDate.toLowerCase()}`;
+    if (executedMutations.has(opKey)) {
+      text = text.replace(fullMatch, "");
+      addBillRe.lastIndex = 0;
+      continue;
+    }
+    executedMutations.add(opKey);
     const id = uid();
     await upsert("bill", {
       id,
       name,
       amount,
       balance: amount,
-      dueDate: match[3].trim(),
+      dueDate,
       status: "due",
     } satisfies Bill);
     const ok = verify("bill", id, (x) => x.amount === amount);
@@ -1094,6 +757,13 @@ export async function executeActionTagsAsync(
 
       const id = uid();
       const dueAt = parsedMs;
+      const opKey = `rem:add:${title.toLowerCase()}:${dueAt}`;
+      if (executedMutations.has(opKey)) {
+        text = text.replace(fullMatch, "");
+        addRemRe.lastIndex = 0;
+        continue;
+      }
+      executedMutations.add(opKey);
       const now = Date.now();
       try {
         await repo.createReminder(effectiveUserId, {
@@ -1478,6 +1148,12 @@ export async function executeActionTagsAsync(
 
   return { text: text.replace(/\n{3,}/g, "\n\n").trim(), results };
 }
+
+/**
+ * Synchronous executor is permanently eliminated in favor of executeActionTagsAsync.
+ * Aliased directly to executeActionTagsAsync to satisfy any callers with full async safety.
+ */
+export const executeActionTags = executeActionTagsAsync;
 
 const ICON: Record<ActionStatus, string> = {
   success: "✅",

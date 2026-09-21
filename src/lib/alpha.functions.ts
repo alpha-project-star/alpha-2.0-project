@@ -622,6 +622,8 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
     return `LIVE WEB SEARCH RESULTS: the search ran for "${query}" at ${new Date().toLocaleString()}, but returned no usable public results. Tell the user plainly that the search returned no usable results; do not guess, do not fabricate headlines, and do not output a Sources section.`;
   }
 
+  const isHeadlineQuery = /news|headline|headlines|breaking|top\s+stories|current\s+events|latest/i.test(query);
+
   const lines = [
     `LIVE WEB SEARCH RESULTS (Retrieved at ${new Date().toLocaleString()} for query "${query}"):`,
     `---`,
@@ -634,6 +636,15 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
       lines.push(`    Summary: ${r.snippet}`);
     }
   });
+
+  if (research.articles && research.articles.length > 0 && isHeadlineQuery) {
+    lines.push(`---`, `STRUCTURED NEWS ARTICLES & HEADLINES:`);
+    research.articles.slice(0, 6).forEach((a, i) => {
+      lines.push(
+        `[${i + 1}] Headline: "${a.headline}"\n    Publisher: ${a.publisher}\n    URL: ${a.url}${a.publishedDate ? `\n    Date: ${a.publishedDate}` : ""}\n    Summary: ${a.summary}`
+      );
+    });
+  }
 
   if (research.evidence.length > 0) {
     lines.push(`---`, `Verified content details:`);

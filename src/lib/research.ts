@@ -17,11 +17,20 @@ export interface WebToolReceipt {
     | "transport_error"
     | "malformed_response"
     | "unknown";
-};
+}
+
+export interface NewsArticle {
+  headline: string;
+  publisher: string;
+  url: string;
+  publishedDate?: string;
+  summary: string;
+}
 
 export interface ResearchResult {
   query: string;
   results: SearchResult[];
+  articles: NewsArticle[];
   evidence: {
     url: string;
     title: string;
@@ -35,9 +44,53 @@ export interface ResearchResult {
   receipt: WebToolReceipt;
 }
 
+export function parseStructuredArticle(
+  title: string,
+  url: string,
+  snippet: string,
+  fallbackPublisher?: string,
+  fallbackDate?: string,
+): NewsArticle {
+  let headline = (title || "").trim();
+  let publisher = (fallbackPublisher || "").trim();
+
+  // Extract publisher from "Headline - Publisher" or "Headline | Publisher"
+  const splitMatch = headline.match(/^(.+?)\s+[-|–—]\s+([^-|–—]+)$/);
+  if (splitMatch && splitMatch[2].length < 40) {
+    headline = splitMatch[1].trim();
+    if (!publisher || publisher === "Unknown") {
+      publisher = splitMatch[2].trim();
+    }
+  }
+
+  if (!publisher || publisher === "Unknown") {
+    try {
+      publisher = new URL(url).hostname.replace(/^www\./, "");
+    } catch {
+      publisher = "Web Source";
+    }
+  }
+
+  // Extract date from snippet prefix (e.g. "2 hours ago - ...", "March 20, 2026 ...")
+  let publishedDate = fallbackDate;
+  let summary = (snippet || "").trim();
+  const dateMatch = summary.match(/^([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}|\d+\s+(?:hours?|mins?|minutes?|days?|weeks?)\s+ago)\s*[-–—:]\s*(.*)$/i);
+  if (dateMatch) {
+    publishedDate = dateMatch[1].trim();
+    summary = dateMatch[2].trim();
+  }
+
+  return {
+    headline,
+    publisher,
+    url: url.trim(),
+    publishedDate: publishedDate?.trim() || undefined,
+    summary,
+  };
+}
+
 export class BoundedResearchService {
   private provider: SearchProvider;
-  private maxSearches = 1;
   private maxPages = 5;
 
   constructor(provider: SearchProvider = new DuckDuckGoProvider()) {
@@ -57,24 +110,23 @@ export class BoundedResearchService {
     activity.set("searching");
     let results: SearchResult[] = [];
     try {
-      receipt.querySent = query; // confirmed dispatched here
+      receipt.querySent = query;
       const rawResults = await this.provider.search(query, 10);
       results = rankResults(rawResults, query);
       receipt.resultCount = results.length;
       if (results.length === 0) {
         receipt.status = "empty";
-        return { query, results: [], evidence: [], status: "failed", receipt };
+        return { query, results: [], articles: [], evidence: [], status: "failed", receipt };
       }
       receipt.status = "usable";
-    } catch (e) {
+    } catch {
       receipt.status = "error";
       receipt.errorClass = "provider_unavailable";
-      return { query, results: [], evidence: [], status: "failed", receipt };
+      return { query, results: [], articles: [], evidence: [], status: "failed", receipt };
     }
 
-    const evidence = [];
+    const evidence: ResearchResult["evidence"] = [];
     let openedPages = 0;
-    
     const articleLinks: string[] = [];
     const processedUrls = new Set<string>();
 
@@ -93,7 +145,7 @@ export class BoundedResearchService {
         if (extracted && extracted.trim().length > 30) {
           let publisher = "Unknown";
           try {
-            publisher = new URL(result.url).hostname;
+            publisher = new URL(result.url).hostname.replace(/^www\./, "");
           } catch {}
           evidence.push({
             url: result.url,
@@ -101,6 +153,7 @@ export class BoundedResearchService {
             excerpt: extracted,
             status: "page-read-success",
             publisher,
+            publishedDate: result.date,
             retrievedAt: new Date().toISOString(),
           });
         }
@@ -122,18 +175,19 @@ export class BoundedResearchService {
           }
         }
       } else {
-        // Full page read failed — fallback immediately to the search snippet as reliable evidence
+        // Full page read failed — fallback immediately to the search snippet
         if (result.snippet && result.snippet.trim().length > 15) {
           let publisher = "Unknown";
           try {
-            publisher = new URL(result.url).hostname;
+            publisher = new URL(result.url).hostname.replace(/^www\./, "");
           } catch {}
           evidence.push({
             url: result.url,
             title: result.title,
             excerpt: result.snippet,
             status: "snippet-evidence",
-            publisher,
+            publisher: result.source || publisher,
+            publishedDate: result.date,
             retrievedAt: new Date().toISOString(),
           });
         }
@@ -152,7 +206,7 @@ export class BoundedResearchService {
           if (extracted && extracted.trim().length > 30) {
             let publisher = "Unknown";
             try {
-              publisher = new URL(link).hostname;
+              publisher = new URL(link).hostname.replace(/^www\./, "");
             } catch {}
             evidence.push({
               url: link,
@@ -167,30 +221,67 @@ export class BoundedResearchService {
       }
     }
 
-    // Pass 3 (Guarantee): If evidence is still empty, populate from all available search snippets
+    // Pass 3 (Guarantee): If evidence is still empty, populate from search snippets
     if (evidence.length === 0) {
       for (const r of results) {
         if (r.snippet && r.snippet.trim().length > 10) {
           let publisher = "Unknown";
           try {
-            publisher = new URL(r.url).hostname;
+            publisher = new URL(r.url).hostname.replace(/^www\./, "");
           } catch {}
           evidence.push({
             url: r.url,
             title: r.title,
             excerpt: r.snippet,
             status: "snippet-fallback",
-            publisher,
+            publisher: r.source || publisher,
+            publishedDate: r.date,
             retrievedAt: new Date().toISOString(),
           });
         }
       }
     }
+
+    // Extract structured articles as first-class output
+    const articles: NewsArticle[] = [];
+    const seenUrls = new Set<string>();
+
+    for (const ev of evidence) {
+      if (!seenUrls.has(ev.url)) {
+        seenUrls.add(ev.url);
+        articles.push(
+          parseStructuredArticle(
+            ev.title,
+            ev.url,
+            ev.excerpt,
+            ev.publisher,
+            ev.publishedDate,
+          ),
+        );
+      }
+    }
+
+    for (const r of results) {
+      if (!seenUrls.has(r.url)) {
+        seenUrls.add(r.url);
+        articles.push(
+          parseStructuredArticle(
+            r.title,
+            r.url,
+            r.snippet,
+            r.source,
+            r.date,
+          ),
+        );
+      }
+    }
+
     receipt.openedCount = openedPages;
 
     return {
       query,
       results,
+      articles,
       evidence,
       status: evidence.length > 0 || results.length > 0 ? "success" : "insufficient",
       receipt,
