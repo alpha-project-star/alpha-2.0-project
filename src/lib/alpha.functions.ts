@@ -671,7 +671,15 @@ export interface NativeToolExecutionSummary {
   hasMutation: boolean;
   allMutationsSucceeded: boolean;
   hasFailedMutation: boolean;
-  results: Array<{ name: string; success: boolean; isMutation: boolean; error?: any }>;
+  results: Array<{
+    name: string;
+    success: boolean;
+    isMutation: boolean;
+    error?: any;
+    executionKey?: string;
+    logicalKeys?: string[];
+  }>;
+  executedLogicalKeys?: string[];
 }
 
 export async function executeTool(call: any, context: ToolContext) {
@@ -1288,13 +1296,85 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           if (stableCallId) callResults.set(stableCallId, result);
 
           // Track logical mutation outcome to prevent duplicate executions across loop iterations
+          const logicalKeysForTool: string[] = [];
           if (isMutation && result && result.success) {
-            if (logicalKey) executedLogicalMutations.set(logicalKey, result);
+            if (logicalKey) {
+              executedLogicalMutations.set(logicalKey, result);
+              logicalKeysForTool.push(logicalKey);
+            }
             const callName = call.function?.name;
-            if (callName === "createReminder" && result.data?.id) {
-              executedLogicalMutations.set(`createReminder:${result.data.id.toLowerCase()}`, result);
-              if (result.data.title) {
-                executedLogicalMutations.set(`createReminder:${String(result.data.title).trim().toLowerCase()}`, result);
+            if (callName === "createReminder") {
+              if (result.data?.id) {
+                const idKey = `reminder:create:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(idKey, result);
+                logicalKeysForTool.push(idKey, `reminder:id:${result.data.id.toLowerCase()}`);
+              }
+              if (result.data?.title) {
+                const titleStr = String(result.data.title).trim().toLowerCase();
+                executedLogicalMutations.set(`createReminder:${titleStr}`, result);
+                executedLogicalMutations.set(`rem:add:${titleStr}`, result);
+                executedLogicalMutations.set(`reminder:create:${titleStr}`, result);
+                logicalKeysForTool.push(`rem:add:${titleStr}`, `reminder:create:${titleStr}`);
+                if (result.data.dueAt) {
+                  const dueKey = `reminder:create:${titleStr}:${result.data.dueAt}`;
+                  const addKey = `rem:add:${titleStr}:${result.data.dueAt}`;
+                  executedLogicalMutations.set(dueKey, result);
+                  executedLogicalMutations.set(addKey, result);
+                  logicalKeysForTool.push(dueKey, addKey);
+                }
+              }
+            } else if (callName === "updateReminder") {
+              let parsedArgs = call.function?.arguments;
+              if (typeof parsedArgs === "string") {
+                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
+              }
+              const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
+              if (target) {
+                logicalKeysForTool.push(`rem:upd:${target}`, `reminder:update:${target}`);
+                executedLogicalMutations.set(`rem:upd:${target}`, result);
+                executedLogicalMutations.set(`reminder:update:${target}`, result);
+              }
+              if (result.data?.id) {
+                const idKey = `reminder:update:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(idKey, result);
+                logicalKeysForTool.push(idKey);
+              }
+              if (result.data?.title) {
+                const titleKey = `reminder:update:${String(result.data.title).trim().toLowerCase()}`;
+                executedLogicalMutations.set(titleKey, result);
+                logicalKeysForTool.push(titleKey);
+              }
+            } else if (callName === "deleteReminder") {
+              let parsedArgs = call.function?.arguments;
+              if (typeof parsedArgs === "string") {
+                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
+              }
+              const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
+              if (target) {
+                logicalKeysForTool.push(`rem:del:${target}`, `reminder:delete:${target}`);
+                executedLogicalMutations.set(`rem:del:${target}`, result);
+                executedLogicalMutations.set(`reminder:delete:${target}`, result);
+              }
+              if (result.data?.id) {
+                const idKey = `reminder:delete:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(idKey, result);
+                logicalKeysForTool.push(idKey);
+              }
+            } else if (callName === "completeReminder") {
+              let parsedArgs = call.function?.arguments;
+              if (typeof parsedArgs === "string") {
+                try { parsedArgs = JSON.parse(parsedArgs); } catch {}
+              }
+              const target = String(parsedArgs?.id || parsedArgs?.query || parsedArgs?.idOrQuery || "").trim().toLowerCase();
+              if (target) {
+                logicalKeysForTool.push(`rem:complete:${target}`, `reminder:complete:${target}`);
+                executedLogicalMutations.set(`rem:complete:${target}`, result);
+                executedLogicalMutations.set(`reminder:complete:${target}`, result);
+              }
+              if (result.data?.id) {
+                const idKey = `reminder:complete:${result.data.id.toLowerCase()}`;
+                executedLogicalMutations.set(idKey, result);
+                logicalKeysForTool.push(idKey);
               }
             } else if (result.data?.id) {
               executedLogicalMutations.set(`${callName}:${result.data.id.toLowerCase()}`, result);
@@ -1308,6 +1388,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           isMutation,
           error: result?.error,
           executionKey: invocationKey,
+          logicalKeys: logicalKeysForTool,
         });
 
         const toolMsg: ChatMessage = {
@@ -1337,6 +1418,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       allMutationsSucceeded: mutationTools.length > 0 && mutationTools.every((t) => t.success),
       hasFailedMutation: mutationTools.some((t) => !t.success),
       results: executedTools,
+      executedLogicalKeys: Array.from(executedLogicalMutations.keys()),
     };
 
     if (finalResponse) {
@@ -1445,7 +1527,11 @@ export async function finalizeReply(
       activity.set("executing_action");
     }
   }
-  const { text, results } = await executeActionTagsAsync(raw, options);
+  const { text, results } = await executeActionTagsAsync(raw, {
+    ...options,
+    toolSummary,
+    executedLogicalKeys: toolSummary?.executedLogicalKeys,
+  });
   let out = text;
   const report = renderActionReport(results);
   if (report) {

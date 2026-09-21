@@ -44,23 +44,108 @@ export interface ResearchResult {
   receipt: WebToolReceipt;
 }
 
+export function isHomepageOrPortalUrl(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    const path = u.pathname.replace(/\/+$/, "").toLowerCase();
+    if (!path || path === "" || path === "/" || path === "/index.html" || path === "/index.php" || path === "/home" || path === "/homepage") {
+      return true;
+    }
+    const genericSections = new Set([
+      "/news", "/world", "/us", "/uk", "/politics", "/business",
+      "/tech", "/technology", "/sport", "/sports", "/opinion", "/entertainment",
+      "/lifestyle", "/science", "/health", "/culture", "/features", "/markets"
+    ]);
+    if (genericSections.has(path)) {
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
+export function isGenericPortalHeadline(headline: string, publisher?: string): boolean {
+  const normHead = (headline || "").trim().toLowerCase();
+  const normPub = (publisher || "").trim().toLowerCase();
+
+  if (!normHead || normHead.length < 12) {
+    return true;
+  }
+
+  const knownPublishers = [
+    "bbc", "bbc news", "reuters", "cnn", "associated press", "ap news", "ap",
+    "the guardian", "the new york times", "new york times", "nytimes",
+    "the washington post", "washington post", "wall street journal", "wsj",
+    "bloomberg", "fox news", "nbc news", "abc news", "cbs news", "npr",
+    "al jazeera", "usa today", "time", "newsweek", "forbes", "cnbc",
+    "the times", "the telegraph", "the independent", "sky news", "financial times", "ft",
+    "google news", "yahoo news", "msn news", "bing news", "duckduckgo", "web source"
+  ];
+
+  for (const pub of knownPublishers) {
+    if (normHead === pub || normHead === `${pub} - home` || normHead === `${pub} homepage` || normHead === `${pub} online`) {
+      return true;
+    }
+  }
+
+  if (normPub && (normHead === normPub || normHead === `${normPub} - home` || normHead === `${normPub} homepage`)) {
+    return true;
+  }
+
+  const genericHeadlineRegexes = [
+    /^(?:home|homepage|latest\s+news|top\s+stories|breaking\s+news|news\s+headlines|world\s+news|today's\s+news|daily\s+news|international\s+news|front\s+page)$/i,
+    /^(?:bbc\s+news|reuters|cnn|fox\s+news|ap\s+news|the\s+guardian|the\s+new\s+york\s+times|nytimes|the\s+washington\s+post|nbc\s+news|abc\s+news|cbs\s+news)\s*[-|–—:]\s*(?:breaking\s+news|world\s+news|latest\s+news|top\s+stories|news,\s*sport|videos?|home|international\s+news|us\s+news)/i,
+    /breaking\s+news,\s*latest\s+news\s+and\s+videos/i,
+    /breaking\s+international\s+news\s+&\s+views/i,
+    /latest\s+breaking\s+news,\s+headlines\s+&\s+top\s+stories/i,
+    /news,\s*sport\s+and\s+opinion\s+from\s+the\s+guardian/i,
+    /trusted\s+world\s+and\s+financial\s+news/i,
+    /read\s+the\s+latest\s+stories\s+from/i,
+  ];
+
+  for (const rgx of genericHeadlineRegexes) {
+    if (rgx.test(normHead)) return true;
+  }
+
+  return false;
+}
+
+export function isValidArticle(article: NewsArticle): boolean {
+  if (!article || !article.headline || !article.url) return false;
+  if (isHomepageOrPortalUrl(article.url)) return false;
+  if (isGenericPortalHeadline(article.headline, article.publisher)) return false;
+  
+  const words = article.headline.trim().split(/\s+/);
+  if (words.length < 3) return false;
+
+  return true;
+}
+
 export function parseStructuredArticle(
   title: string,
   url: string,
   snippet: string,
   fallbackPublisher?: string,
   fallbackDate?: string,
-): NewsArticle {
+): NewsArticle | null {
   let headline = (title || "").trim();
   let publisher = (fallbackPublisher || "").trim();
 
-  // Extract publisher from "Headline - Publisher" or "Headline | Publisher"
+  // Extract publisher from "Headline - Publisher" or "Headline | Publisher" or "Headline — Publisher"
   const splitMatch = headline.match(/^(.+?)\s+[-|–—]\s+([^-|–—]+)$/);
   if (splitMatch && splitMatch[2].length < 40) {
     headline = splitMatch[1].trim();
-    if (!publisher || publisher === "Unknown") {
+    if (!publisher || publisher === "Unknown" || publisher === "Web Source") {
       publisher = splitMatch[2].trim();
     }
+  }
+
+  // Extract publisher from "Publisher: Headline" prefix
+  const prefixMatch = headline.match(/^([A-Z][A-Za-z0-9\s.&]{2,25}):\s+(.+)$/);
+  if (prefixMatch && prefixMatch[1].length < 25) {
+    if (!publisher || publisher === "Unknown" || publisher === "Web Source") {
+      publisher = prefixMatch[1].trim();
+    }
+    headline = prefixMatch[2].trim();
   }
 
   if (!publisher || publisher === "Unknown") {
@@ -80,13 +165,19 @@ export function parseStructuredArticle(
     summary = dateMatch[2].trim();
   }
 
-  return {
+  const article: NewsArticle = {
     headline,
     publisher,
     url: url.trim(),
     publishedDate: publishedDate?.trim() || undefined,
     summary,
   };
+
+  if (!isValidArticle(article)) {
+    return null;
+  }
+
+  return article;
 }
 
 export class BoundedResearchService {
@@ -249,30 +340,32 @@ export class BoundedResearchService {
     for (const ev of evidence) {
       if (!seenUrls.has(ev.url)) {
         seenUrls.add(ev.url);
-        articles.push(
-          parseStructuredArticle(
-            ev.title,
-            ev.url,
-            ev.excerpt,
-            ev.publisher,
-            ev.publishedDate,
-          ),
+        const art = parseStructuredArticle(
+          ev.title,
+          ev.url,
+          ev.excerpt,
+          ev.publisher,
+          ev.publishedDate,
         );
+        if (art) {
+          articles.push(art);
+        }
       }
     }
 
     for (const r of results) {
       if (!seenUrls.has(r.url)) {
         seenUrls.add(r.url);
-        articles.push(
-          parseStructuredArticle(
-            r.title,
-            r.url,
-            r.snippet,
-            r.source,
-            r.date,
-          ),
+        const art = parseStructuredArticle(
+          r.title,
+          r.url,
+          r.snippet,
+          r.source,
+          r.date,
         );
+        if (art) {
+          articles.push(art);
+        }
       }
     }
 

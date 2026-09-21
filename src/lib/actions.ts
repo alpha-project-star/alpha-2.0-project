@@ -171,13 +171,21 @@ export interface ExecuteActionTagsOptions {
     hasMutation: boolean;
     allMutationsSucceeded: boolean;
     hasFailedMutation: boolean;
-    results: Array<{ name: string; success: boolean; isMutation: boolean; error?: any }>;
+    results: Array<{
+      name: string;
+      success: boolean;
+      isMutation: boolean;
+      error?: any;
+      logicalKeys?: string[];
+    }>;
+    executedLogicalKeys?: string[];
   };
+  executedLogicalKeys?: string[] | Set<string>;
 }
 
 /**
  * Asynchronous action-tag executor that routes all mutations asynchronously,
- * awaits persistence before verification, and deduplicates native tool mutations.
+ * awaits persistence before verification, and deduplicates mutations on a per-operation identity level.
  */
 export async function executeActionTagsAsync(
   input: string,
@@ -187,12 +195,29 @@ export async function executeActionTagsAsync(
   const results: ActionResult[] = [];
   const executedMutations = new Set<string>();
 
+  // Seed successfully executed native logical mutation keys
+  if (options?.executedLogicalKeys) {
+    for (const key of options.executedLogicalKeys) {
+      if (key) executedMutations.add(key.toLowerCase().trim());
+    }
+  }
+  if (options?.toolSummary?.executedLogicalKeys) {
+    for (const key of options.toolSummary.executedLogicalKeys) {
+      if (key) executedMutations.add(key.toLowerCase().trim());
+    }
+  }
+  if (options?.toolSummary?.results) {
+    for (const res of options.toolSummary.results) {
+      if (res.isMutation && res.success && res.logicalKeys) {
+        for (const k of res.logicalKeys) {
+          if (k) executedMutations.add(k.toLowerCase().trim());
+        }
+      }
+    }
+  }
+
   const effectiveUserId = options?.userId ?? (auth.currentUser?.uid || "local-user");
   const repo = options?.repo ?? new LocalReminderRepository();
-
-  const nativeRemindersAlreadyMutated = Boolean(
-    options?.toolSummary?.hasMutation && options?.toolSummary?.allMutationsSucceeded
-  );
 
   async function findReminderHits(query: string): Promise<FirestoreReminder[]> {
     const list = await repo.listReminders(effectiveUserId);
@@ -709,428 +734,533 @@ export async function executeActionTagsAsync(
     setProfileRe.lastIndex = 0;
   }
 
-  // ---------------- REMINDERS (Deduplication or Fallback Execution)
-  if (nativeRemindersAlreadyMutated) {
-    // Native reminder tools already executed authoritatively in this turn!
-    // Strip redundant reminder action tags so they do not execute duplicate mutations.
-    text = text
-      .replace(/\[\[ADD_REMINDER:\s*[^|\]]+?\s*\|\s*[^|\]]+?(?:\s*\|\s*[\s\S]*?)?\s*\]\]/gi, "")
-      .replace(/\[\[UPDATE_REMINDER:\s*[^|\]]+?\s*\|\s*[\s\S]*?\s*\]\]/gi, "")
-      .replace(/\[\[DELETE_REMINDER:\s*[^\]]+?\s*\]\]/gi, "")
-      .replace(/\[\[MARK_REMINDER_DONE:\s*[^\]]+?\s*\]\]/gi, "")
-      .replace(/\[\[DELETE_LAST:\s*reminder\s*\]\]/gi, "")
-      .replace(/\[\[CLEAR_ALL:\s*reminders\s*\]\]/gi, "");
-  } else {
-    // Fallback: Handle ADD_REMINDER asynchronously
-    const addRemRe = /\[\[ADD_REMINDER:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*(?:\|\s*([\s\S]*?)\s*)?\]\]/gi;
-    while ((match = addRemRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      const title = match[1].trim();
-      const rawWhen = match[2].trim();
-      const w = normalizeWhen(rawWhen);
-      const notes = (match[3] || "").trim();
-      activity.set(actionActivity("ADD_REMINDER"));
+  // ---------------- REMINDERS (Individual Logical Operation Deduplication)
+  // Handle ADD_REMINDER asynchronously
+  const addRemRe = /\[\[ADD_REMINDER:\s*([^|\]]+?)\s*\|\s*([^|\]]+?)\s*(?:\|\s*([\s\S]*?)\s*)?\]\]/gi;
+  while ((match = addRemRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const title = match[1].trim();
+    const rawWhen = match[2].trim();
+    const w = normalizeWhen(rawWhen);
+    const notes = (match[3] || "").trim();
+    activity.set(actionActivity("ADD_REMINDER"));
 
-      if (!title) {
-        results.push({
-          tag: "ADD_REMINDER",
-          status: "invalid",
-          message: "An appointment or reminder needs a title — nothing was saved.",
-        });
-        text = text.replace(fullMatch, "");
-        addRemRe.lastIndex = 0;
-        continue;
-      }
-
-      const parsedMs = Date.parse(w.iso);
-      if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
-        activity.set("action_failed");
-        results.push({
-          tag: "ADD_REMINDER",
-          status: "failed",
-          message: `I couldn't understand when to remind you about "${title}" from "${rawWhen}". When would you like to be reminded? (e.g. "in 30 minutes" or "tomorrow at 9am")`,
-        });
-        text = text.replace(fullMatch, "");
-        addRemRe.lastIndex = 0;
-        continue;
-      }
-
-      const id = uid();
-      const dueAt = parsedMs;
-      const opKey = `rem:add:${title.toLowerCase()}:${dueAt}`;
-      if (executedMutations.has(opKey)) {
-        text = text.replace(fullMatch, "");
-        addRemRe.lastIndex = 0;
-        continue;
-      }
-      executedMutations.add(opKey);
-      const now = Date.now();
-      try {
-        await repo.createReminder(effectiveUserId, {
-          id,
-          userId: effectiveUserId,
-          title,
-          notes,
-          dueAt,
-          createdAt: now,
-          updatedAt: now,
-          reminderState: "active",
-          notificationState: "pending",
-        });
-        results.push({
-          tag: "ADD_REMINDER",
-          status: "success",
-          message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
-        });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "ADD_REMINDER",
-          status: "failed",
-          message: `Reminder "${title}" could not be saved: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    if (!title) {
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "invalid",
+        message: "An appointment or reminder needs a title — nothing was saved.",
+      });
       text = text.replace(fullMatch, "");
       addRemRe.lastIndex = 0;
+      continue;
     }
 
-    // Handle UPDATE_REMINDER asynchronously
-    const updRemRe = /\[\[UPDATE_REMINDER:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi;
-    while ((match = updRemRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      const query = match[1].trim();
-      activity.set(actionActivity("UPDATE_REMINDER"));
+    const parsedMs = Date.parse(w.iso);
+    if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
+      activity.set("action_failed");
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "failed",
+        message: `I couldn't understand when to remind you about "${title}" from "${rawWhen}". When would you like to be reminded? (e.g. "in 30 minutes" or "tomorrow at 9am")`,
+      });
+      text = text.replace(fullMatch, "");
+      addRemRe.lastIndex = 0;
+      continue;
+    }
 
-      let hits: FirestoreReminder[];
-      try {
-        hits = await findReminderHits(query);
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "failed",
-          message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        text = text.replace(fullMatch, "");
-        updRemRe.lastIndex = 0;
-        continue;
-      }
+    const id = uid();
+    const dueAt = parsedMs;
+    const lcTitle = title.toLowerCase();
+    const opKey = `rem:add:${lcTitle}:${dueAt}`;
+    if (
+      executedMutations.has(opKey) ||
+      executedMutations.has(`rem:add:${lcTitle}`) ||
+      executedMutations.has(`reminder:create:${lcTitle}`) ||
+      executedMutations.has(`reminder:create:${lcTitle}:${dueAt}`)
+    ) {
+      // Suppress redundant mutation — already executed authoritatively in this turn
+      text = text.replace(fullMatch, "");
+      addRemRe.lastIndex = 0;
+      continue;
+    }
+    executedMutations.add(opKey);
+    executedMutations.add(`rem:add:${lcTitle}`);
+    executedMutations.add(`reminder:create:${lcTitle}`);
+    executedMutations.add(`reminder:create:${lcTitle}:${dueAt}`);
+    const now = Date.now();
+    try {
+      await repo.createReminder(effectiveUserId, {
+        id,
+        userId: effectiveUserId,
+        title,
+        notes,
+        dueAt,
+        createdAt: now,
+        updatedAt: now,
+        reminderState: "active",
+        notificationState: "pending",
+      });
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "success",
+        message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
+      });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "failed",
+        message: `Reminder "${title}" could not be saved: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    addRemRe.lastIndex = 0;
+  }
 
-      if (!hits.length) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "not_found",
-          message: `No reminder matching "${query}" — nothing was changed.`,
-        });
-        text = text.replace(fullMatch, "");
-        updRemRe.lastIndex = 0;
-        continue;
-      }
-      if (hits.length > 1) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "ambiguous",
-          message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}). Nothing was changed — say exactly which one.`,
-        });
-        text = text.replace(fullMatch, "");
-        updRemRe.lastIndex = 0;
-        continue;
-      }
+  // Handle UPDATE_REMINDER asynchronously
+  const updRemRe = /\[\[UPDATE_REMINDER:\s*([^|\]]+?)\s*\|\s*([\s\S]*?)\s*\]\]/gi;
+  while ((match = updRemRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const query = match[1].trim();
+    const lcQuery = query.toLowerCase();
+    activity.set(actionActivity("UPDATE_REMINDER"));
 
-      const target = hits[0];
-      const fields = parseFields(match[2] || "");
-      const allowed = ["title", "when", "notes", "done"];
-      const keys = Object.keys(fields).filter((k) => allowed.includes(k));
-      if (!keys.length) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "invalid",
-          message: `I need fields to change (title, when, notes, done) — nothing was changed on "${target.title}".`,
-        });
-        text = text.replace(fullMatch, "");
-        updRemRe.lastIndex = 0;
-        continue;
-      }
-
-      const patch: Partial<FirestoreReminder> = { updatedAt: Date.now() };
-      let invalidWhen = false;
-      for (const k of keys) {
-        if (k === "when") {
-          const rawWhen = fields[k];
-          const w = normalizeWhen(rawWhen);
-          const parsedMs = Date.parse(w.iso);
-          if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
-            invalidWhen = true;
-          } else {
-            patch.dueAt = parsedMs;
-          }
-        } else if (k === "title") {
-          patch.title = fields[k];
-        } else if (k === "notes") {
-          patch.notes = fields[k];
-        } else if (k === "done") {
-          patch.reminderState = fields[k] === "yes" || fields[k] === "true" ? "completed" : "active";
-          if (patch.reminderState === "completed") patch.notificationState = "accepted";
-        }
-      }
-
-      if (invalidWhen) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "failed",
-          message: `Could not update reminder "${target.title}": I couldn't understand the time "${fields["when"]}". Please specify a clear time (e.g. "tomorrow at 9am").`,
-        });
-        text = text.replace(fullMatch, "");
-        updRemRe.lastIndex = 0;
-        continue;
-      }
-
-      try {
-        await repo.updateReminder(effectiveUserId, target.id, patch);
-        const what = keys
-          .map((k) => `${k} → ${k === "when" && patch.dueAt ? formatWhen(new Date(patch.dueAt).toISOString()) : fields[k]}`)
-          .join(", ");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "success",
-          message: `Updated reminder "${target.title}": ${what}`,
-        });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "UPDATE_REMINDER",
-          status: "failed",
-          message: `Could not update reminder "${target.title}": ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    if (
+      executedMutations.has(`rem:upd:${lcQuery}`) ||
+      executedMutations.has(`reminder:update:${lcQuery}`)
+    ) {
       text = text.replace(fullMatch, "");
       updRemRe.lastIndex = 0;
+      continue;
     }
 
-    // Handle DELETE_REMINDER asynchronously
-    const delRemRe = /\[\[DELETE_REMINDER:\s*([^\]]+?)\s*\]\]/gi;
-    while ((match = delRemRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      const query = match[1].trim();
-      activity.set(actionActivity("DELETE_REMINDER"));
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
 
-      const all = /^all\s+/i.test(query);
-      let hits: FirestoreReminder[];
-      try {
-        hits = await findReminderHits(query);
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_REMINDER",
-          status: "failed",
-          message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        text = text.replace(fullMatch, "");
-        delRemRe.lastIndex = 0;
-        continue;
-      }
+    if (!hits.length) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "not_found",
+        message: `No reminder matching "${query}" — nothing was changed.`,
+      });
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
+    if (hits.length > 1) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "ambiguous",
+        message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}). Nothing was changed — say exactly which one.`,
+      });
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
 
-      if (!hits.length) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_REMINDER",
-          status: "not_found",
-          message: `No reminder matching "${query}" — nothing was deleted.`,
-        });
-        text = text.replace(fullMatch, "");
-        delRemRe.lastIndex = 0;
-        continue;
-      }
-      if (hits.length > 1 && !all) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_REMINDER",
-          status: "ambiguous",
-          message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}). Nothing was deleted.`,
-        });
-        text = text.replace(fullMatch, "");
-        delRemRe.lastIndex = 0;
-        continue;
-      }
+    const target = hits[0];
+    if (
+      executedMutations.has(`reminder:update:${target.id.toLowerCase()}`) ||
+      executedMutations.has(`reminder:update:${target.title.toLowerCase()}`)
+    ) {
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
 
-      try {
-        for (const h of hits) {
-          await repo.deleteReminder(effectiveUserId, h.id);
+    const fields = parseFields(match[2] || "");
+    const allowed = ["title", "when", "notes", "done"];
+    const keys = Object.keys(fields).filter((k) => allowed.includes(k));
+    if (!keys.length) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "invalid",
+        message: `I need fields to change (title, when, notes, done) — nothing was changed on "${target.title}".`,
+      });
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
+
+    const patch: Partial<FirestoreReminder> = { updatedAt: Date.now() };
+    let invalidWhen = false;
+    for (const k of keys) {
+      if (k === "when") {
+        const rawWhen = fields[k];
+        const w = normalizeWhen(rawWhen);
+        const parsedMs = Date.parse(w.iso);
+        if (!w.parsed || Number.isNaN(parsedMs) || !parsedMs) {
+          invalidWhen = true;
+        } else {
+          patch.dueAt = parsedMs;
         }
-        results.push({
-          tag: "DELETE_REMINDER",
-          status: "success",
-          message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
-        });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_REMINDER",
-          status: "failed",
-          message: `Could not delete reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
+      } else if (k === "title") {
+        patch.title = fields[k];
+      } else if (k === "notes") {
+        patch.notes = fields[k];
+      } else if (k === "done") {
+        patch.reminderState = fields[k] === "yes" || fields[k] === "true" ? "completed" : "active";
+        if (patch.reminderState === "completed") patch.notificationState = "accepted";
       }
+    }
+
+    if (invalidWhen) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "failed",
+        message: `Could not update reminder "${target.title}": I couldn't understand the time "${fields["when"]}". Please specify a clear time (e.g. "tomorrow at 9am").`,
+      });
+      text = text.replace(fullMatch, "");
+      updRemRe.lastIndex = 0;
+      continue;
+    }
+
+    executedMutations.add(`rem:upd:${lcQuery}`);
+    executedMutations.add(`reminder:update:${lcQuery}`);
+    executedMutations.add(`reminder:update:${target.id.toLowerCase()}`);
+    executedMutations.add(`reminder:update:${target.title.toLowerCase()}`);
+
+    try {
+      await repo.updateReminder(effectiveUserId, target.id, patch);
+      const what = keys
+        .map((k) => `${k} → ${k === "when" && patch.dueAt ? formatWhen(new Date(patch.dueAt).toISOString()) : fields[k]}`)
+        .join(", ");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "success",
+        message: `Updated reminder "${target.title}": ${what}`,
+      });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_REMINDER",
+        status: "failed",
+        message: `Could not update reminder "${target.title}": ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    updRemRe.lastIndex = 0;
+  }
+
+  // Handle DELETE_REMINDER asynchronously
+  const delRemRe = /\[\[DELETE_REMINDER:\s*([^\]]+?)\s*\]\]/gi;
+  while ((match = delRemRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const query = match[1].trim();
+    const lcQuery = query.toLowerCase();
+    activity.set(actionActivity("DELETE_REMINDER"));
+
+    if (
+      executedMutations.has(`rem:del:${lcQuery}`) ||
+      executedMutations.has(`reminder:delete:${lcQuery}`)
+    ) {
       text = text.replace(fullMatch, "");
       delRemRe.lastIndex = 0;
+      continue;
     }
 
-    // Handle MARK_REMINDER_DONE asynchronously
-    const markDoneRe = /\[\[MARK_REMINDER_DONE:\s*([^\]]+?)\s*\]\]/gi;
-    while ((match = markDoneRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      const query = match[1].trim();
-      activity.set(actionActivity("MARK_REMINDER_DONE"));
+    const all = /^all\s+/i.test(query);
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      delRemRe.lastIndex = 0;
+      continue;
+    }
 
-      let hits: FirestoreReminder[];
-      try {
-        hits = await findReminderHits(query);
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "MARK_REMINDER_DONE",
-          status: "failed",
-          message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        text = text.replace(fullMatch, "");
-        markDoneRe.lastIndex = 0;
-        continue;
-      }
+    if (!hits.length) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "not_found",
+        message: `No reminder matching "${query}" — nothing was deleted.`,
+      });
+      text = text.replace(fullMatch, "");
+      delRemRe.lastIndex = 0;
+      continue;
+    }
+    if (hits.length > 1 && !all) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "ambiguous",
+        message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}). Nothing was deleted.`,
+      });
+      text = text.replace(fullMatch, "");
+      delRemRe.lastIndex = 0;
+      continue;
+    }
 
-      if (!hits.length) {
-        activity.set("action_failed");
-        results.push({
-          tag: "MARK_REMINDER_DONE",
-          status: "not_found",
-          message: `No reminder matching "${query}" — nothing was changed.`,
-        });
-        text = text.replace(fullMatch, "");
-        markDoneRe.lastIndex = 0;
-        continue;
-      }
-      if (hits.length > 1) {
-        activity.set("action_failed");
-        results.push({
-          tag: "MARK_REMINDER_DONE",
-          status: "ambiguous",
-          message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}).`,
-        });
-        text = text.replace(fullMatch, "");
-        markDoneRe.lastIndex = 0;
-        continue;
-      }
+    if (
+      hits.length === 1 &&
+      executedMutations.has(`reminder:delete:${hits[0].id.toLowerCase()}`)
+    ) {
+      text = text.replace(fullMatch, "");
+      delRemRe.lastIndex = 0;
+      continue;
+    }
 
-      const target = hits[0];
-      try {
-        await repo.updateReminder(effectiveUserId, target.id, {
-          reminderState: "completed",
-          notificationState: "accepted",
-          updatedAt: Date.now(),
-        });
-        results.push({
-          tag: "MARK_REMINDER_DONE",
-          status: "success",
-          message: `Marked reminder "${target.title}" as done ✅`,
-        });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "MARK_REMINDER_DONE",
-          status: "failed",
-          message: `Could not mark reminder "${target.title}" as done: ${err instanceof Error ? err.message : String(err)}`,
-        });
+    executedMutations.add(`rem:del:${lcQuery}`);
+    executedMutations.add(`reminder:delete:${lcQuery}`);
+    for (const h of hits) {
+      executedMutations.add(`reminder:delete:${h.id.toLowerCase()}`);
+    }
+
+    try {
+      for (const h of hits) {
+        await repo.deleteReminder(effectiveUserId, h.id);
       }
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "success",
+        message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
+      });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "failed",
+        message: `Could not delete reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    delRemRe.lastIndex = 0;
+  }
+
+  // Handle MARK_REMINDER_DONE asynchronously
+  const markDoneRe = /\[\[MARK_REMINDER_DONE:\s*([^\]]+?)\s*\]\]/gi;
+  while ((match = markDoneRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    const query = match[1].trim();
+    const lcQuery = query.toLowerCase();
+    activity.set(actionActivity("MARK_REMINDER_DONE"));
+
+    if (
+      executedMutations.has(`rem:complete:${lcQuery}`) ||
+      executedMutations.has(`reminder:complete:${lcQuery}`)
+    ) {
       text = text.replace(fullMatch, "");
       markDoneRe.lastIndex = 0;
+      continue;
     }
 
-    // Handle DELETE_LAST: reminder
-    const delLastRemRe = /\[\[DELETE_LAST:\s*(reminder)\s*\]\]/gi;
-    while ((match = delLastRemRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      activity.set(actionActivity("DELETE_LAST"));
-      let list: FirestoreReminder[];
-      try {
-        list = await repo.listReminders(effectiveUserId);
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_LAST",
-          status: "failed",
-          message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        text = text.replace(fullMatch, "");
-        delLastRemRe.lastIndex = 0;
-        continue;
-      }
-      if (!list.length) {
-        activity.set("action_failed");
-        results.push({ tag: "DELETE_LAST", status: "not_found", message: "There are no reminders to delete." });
-        text = text.replace(fullMatch, "");
-        delLastRemRe.lastIndex = 0;
-        continue;
-      }
-      const victim = list[0];
-      try {
-        await repo.deleteReminder(effectiveUserId, victim.id);
-        results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".` });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "DELETE_LAST",
-          status: "failed",
-          message: `Could not delete reminder: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    let hits: FirestoreReminder[];
+    try {
+      hits = await findReminderHits(query);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      markDoneRe.lastIndex = 0;
+      continue;
+    }
+
+    if (!hits.length) {
+      activity.set("action_failed");
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "not_found",
+        message: `No reminder matching "${query}" — nothing was changed.`,
+      });
+      text = text.replace(fullMatch, "");
+      markDoneRe.lastIndex = 0;
+      continue;
+    }
+    if (hits.length > 1) {
+      activity.set("action_failed");
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "ambiguous",
+        message: `${hits.length} reminders match "${query}" (${hits.map((h) => `"${h.title}"`).join(", ")}).`,
+      });
+      text = text.replace(fullMatch, "");
+      markDoneRe.lastIndex = 0;
+      continue;
+    }
+
+    const target = hits[0];
+    if (
+      executedMutations.has(`reminder:complete:${target.id.toLowerCase()}`) ||
+      executedMutations.has(`reminder:complete:${target.title.toLowerCase()}`)
+    ) {
+      text = text.replace(fullMatch, "");
+      markDoneRe.lastIndex = 0;
+      continue;
+    }
+
+    executedMutations.add(`rem:complete:${lcQuery}`);
+    executedMutations.add(`reminder:complete:${lcQuery}`);
+    executedMutations.add(`reminder:complete:${target.id.toLowerCase()}`);
+    executedMutations.add(`reminder:complete:${target.title.toLowerCase()}`);
+
+    try {
+      await repo.updateReminder(effectiveUserId, target.id, {
+        reminderState: "completed",
+        notificationState: "accepted",
+        updatedAt: Date.now(),
+      });
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "success",
+        message: `Marked reminder "${target.title}" as done ✅`,
+      });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "MARK_REMINDER_DONE",
+        status: "failed",
+        message: `Could not mark reminder "${target.title}" as done: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    markDoneRe.lastIndex = 0;
+  }
+
+  // Handle DELETE_LAST: reminder
+  const delLastRemRe = /\[\[DELETE_LAST:\s*(reminder)\s*\]\]/gi;
+  while ((match = delLastRemRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    activity.set(actionActivity("DELETE_LAST"));
+
+    if (
+      executedMutations.has("rem:del:last") ||
+      executedMutations.has("reminder:delete:last")
+    ) {
       text = text.replace(fullMatch, "");
       delLastRemRe.lastIndex = 0;
+      continue;
     }
 
-    // Handle CLEAR_ALL: reminders
-    const clearRemRe = /\[\[CLEAR_ALL:\s*(reminders)\s*\]\]/gi;
-    while ((match = clearRemRe.exec(text)) !== null) {
-      const fullMatch = match[0];
-      activity.set(actionActivity("CLEAR_ALL"));
-      let list: FirestoreReminder[];
-      try {
-        list = await repo.listReminders(effectiveUserId);
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "CLEAR_ALL",
-          status: "failed",
-          message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-        text = text.replace(fullMatch, "");
-        clearRemRe.lastIndex = 0;
-        continue;
-      }
-      if (!list.length) {
-        activity.set("action_failed");
-        results.push({ tag: "CLEAR_ALL", status: "not_found", message: "There are no reminders to clear." });
-        text = text.replace(fullMatch, "");
-        clearRemRe.lastIndex = 0;
-        continue;
-      }
-      try {
-        for (const r of list) {
-          await repo.deleteReminder(effectiveUserId, r.id);
-        }
-        results.push({ tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} reminders.` });
-      } catch (err: unknown) {
-        activity.set("action_failed");
-        results.push({
-          tag: "CLEAR_ALL",
-          status: "failed",
-          message: `Could not clear reminders: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      }
+    let list: FirestoreReminder[];
+    try {
+      list = await repo.listReminders(effectiveUserId);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_LAST",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      delLastRemRe.lastIndex = 0;
+      continue;
+    }
+    if (!list.length) {
+      activity.set("action_failed");
+      results.push({ tag: "DELETE_LAST", status: "not_found", message: "There are no reminders to delete." });
+      text = text.replace(fullMatch, "");
+      delLastRemRe.lastIndex = 0;
+      continue;
+    }
+    const victim = list[0];
+    if (executedMutations.has(`reminder:delete:${victim.id.toLowerCase()}`)) {
+      text = text.replace(fullMatch, "");
+      delLastRemRe.lastIndex = 0;
+      continue;
+    }
+
+    executedMutations.add("rem:del:last");
+    executedMutations.add("reminder:delete:last");
+    executedMutations.add(`reminder:delete:${victim.id.toLowerCase()}`);
+
+    try {
+      await repo.deleteReminder(effectiveUserId, victim.id);
+      results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".` });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_LAST",
+        status: "failed",
+        message: `Could not delete reminder: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    delLastRemRe.lastIndex = 0;
+  }
+
+  // Handle CLEAR_ALL: reminders
+  const clearRemRe = /\[\[CLEAR_ALL:\s*(reminders)\s*\]\]/gi;
+  while ((match = clearRemRe.exec(text)) !== null) {
+    const fullMatch = match[0];
+    activity.set(actionActivity("CLEAR_ALL"));
+
+    if (
+      executedMutations.has("rem:clear_all") ||
+      executedMutations.has("reminder:clear_all")
+    ) {
       text = text.replace(fullMatch, "");
       clearRemRe.lastIndex = 0;
+      continue;
     }
+
+    let list: FirestoreReminder[];
+    try {
+      list = await repo.listReminders(effectiveUserId);
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "failed",
+        message: `Could not access reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      text = text.replace(fullMatch, "");
+      clearRemRe.lastIndex = 0;
+      continue;
+    }
+    if (!list.length) {
+      activity.set("action_failed");
+      results.push({ tag: "CLEAR_ALL", status: "not_found", message: "There are no reminders to clear." });
+      text = text.replace(fullMatch, "");
+      clearRemRe.lastIndex = 0;
+      continue;
+    }
+
+    executedMutations.add("rem:clear_all");
+    executedMutations.add("reminder:clear_all");
+
+    try {
+      for (const r of list) {
+        await repo.deleteReminder(effectiveUserId, r.id);
+      }
+      results.push({ tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} reminders.` });
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "failed",
+        message: `Could not clear reminders: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
+    text = text.replace(fullMatch, "");
+    clearRemRe.lastIndex = 0;
   }
 
   // ---------------- UNSUPPORTED TAG CATCH-ALL

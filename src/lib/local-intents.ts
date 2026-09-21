@@ -418,15 +418,9 @@ async function deleteFuzzy(kind: string, q: string): Promise<string> {
  * Canonical natural-language date parser for reminder shortcuts.
  * Resolves consistently with when.ts and reminder-date-utils.
  */
-function parseNaturalWhen(raw: string): string {
-  const t = parseWhen(raw);
-  if (t !== null) return new Date(t).toISOString();
-
-  // Try native Date.parse as a fallback
-  const fallback = Date.parse(raw);
-  if (!isNaN(fallback)) return new Date(fallback).toISOString();
-
-  return "";
+export function parseNaturalWhen(raw: string, now: Date = new Date()): string {
+  const t = parseWhen(raw, now);
+  return t !== null ? new Date(t).toISOString() : "";
 }
 
 function trim(s: string) {
