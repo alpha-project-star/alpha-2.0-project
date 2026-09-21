@@ -1,0 +1,191 @@
+/**
+ * Canonical mutation operation identity model shared across native tools and action tags.
+ * Ensures that:
+ * 1. Identical logical mutations execute exactly once.
+ * 2. Distinct logical mutations execute independently without false collisions.
+ * 3. Successful native mutations prevent redundant action tag mutations.
+ * 4. Failed native mutations do not block action tags.
+ */
+
+export function normalizeMutationString(val: unknown): string {
+  return String(val ?? "").trim().toLowerCase();
+}
+
+export function getCanonicalReminderCreateKey(params: {
+  title: string;
+  dueAt: string | number;
+  notes?: string;
+}): string {
+  const normTitle = normalizeMutationString(params.title);
+  const normDue =
+    typeof params.dueAt === "number"
+      ? String(params.dueAt)
+      : normalizeMutationString(params.dueAt);
+  const normNotes = (params.notes || "").trim();
+
+  return `mutation:reminder:create:${JSON.stringify({
+    dueAt: normDue,
+    notes: normNotes,
+    title: normTitle,
+  })}`;
+}
+
+export function getCanonicalReminderUpdateKey(params: {
+  targetId: string;
+  patch: Record<string, any>;
+}): string {
+  const normId = normalizeMutationString(params.targetId);
+  const cleanPatch: Record<string, string> = {};
+
+  const forbidden = new Set([
+    "userId",
+    "uid",
+    "ownerId",
+    "user_id",
+    "updatedAt",
+    "createdAt",
+    "id",
+    "idOrQuery",
+    "query",
+  ]);
+
+  for (const [k, v] of Object.entries(params.patch || {})) {
+    if (forbidden.has(k)) continue;
+    if (v === undefined || v === null) continue;
+    cleanPatch[k.toLowerCase()] =
+      typeof v === "string" ? normalizeMutationString(v) : String(v);
+  }
+
+  const sortedEntries = Object.keys(cleanPatch)
+    .sort()
+    .map((k) => `${k}=${cleanPatch[k]}`)
+    .join(";");
+
+  return `mutation:reminder:update:${normId}:${sortedEntries}`;
+}
+
+export function getCanonicalReminderDeleteKey(params: {
+  targetIds: string[];
+}): string {
+  const sortedIds = Array.from(
+    new Set(
+      params.targetIds
+        .map((id) => normalizeMutationString(id))
+        .filter(Boolean),
+    ),
+  ).sort();
+
+  return `mutation:reminder:delete:${sortedIds.join(",")}`;
+}
+
+export function getCanonicalReminderCompleteKey(params: {
+  targetId: string;
+}): string {
+  const normId = normalizeMutationString(params.targetId);
+  return `mutation:reminder:complete:${normId}`;
+}
+
+/**
+ * Derives canonical mutation keys for native tool calls.
+ * When called after successful execution (with resultData), incorporates resolved IDs and timestamps.
+ */
+export function extractNativeReminderMutationKeys(
+  callName: string,
+  args: any,
+  resultData?: any,
+): string[] {
+  const keys: string[] = [];
+  const parsedArgs = typeof args === "string" ? safeJsonParse(args) : (args || {});
+
+  if (callName === "createReminder") {
+    const title = resultData?.title || parsedArgs?.title || "";
+    const notes = resultData?.notes !== undefined ? resultData.notes : (parsedArgs?.notes || "");
+
+    if (resultData?.dueAt !== undefined) {
+      keys.push(
+        getCanonicalReminderCreateKey({
+          title,
+          dueAt: resultData.dueAt,
+          notes,
+        }),
+      );
+    }
+    if (parsedArgs?.dueAt !== undefined && String(parsedArgs.dueAt) !== String(resultData?.dueAt)) {
+      keys.push(
+        getCanonicalReminderCreateKey({
+          title,
+          dueAt: parsedArgs.dueAt,
+          notes,
+        }),
+      );
+    }
+    if (!keys.length && title) {
+      keys.push(
+        getCanonicalReminderCreateKey({
+          title,
+          dueAt: parsedArgs?.dueAt || "",
+          notes,
+        }),
+      );
+    }
+  } else if (callName === "updateReminder") {
+    const targetId = resultData?.id || parsedArgs?.id || "";
+    if (targetId) {
+      const patch = { ...parsedArgs };
+      delete patch.id;
+      delete patch.query;
+      delete patch.idOrQuery;
+
+      if (resultData?.dueAt !== undefined) {
+        keys.push(
+          getCanonicalReminderUpdateKey({
+            targetId,
+            patch: { ...patch, dueAt: resultData.dueAt },
+          }),
+        );
+      }
+      if (parsedArgs?.dueAt !== undefined && String(parsedArgs.dueAt) !== String(resultData?.dueAt)) {
+        keys.push(
+          getCanonicalReminderUpdateKey({
+            targetId,
+            patch: { ...patch, dueAt: parsedArgs.dueAt },
+          }),
+        );
+      }
+      if (!keys.length) {
+        keys.push(
+          getCanonicalReminderUpdateKey({
+            targetId,
+            patch,
+          }),
+        );
+      }
+    }
+  } else if (callName === "deleteReminder") {
+    const targetId = resultData?.id || parsedArgs?.id || "";
+    if (targetId) {
+      keys.push(getCanonicalReminderDeleteKey({ targetIds: [targetId] }));
+    }
+  } else if (callName === "completeReminder") {
+    const targetId = resultData?.id || parsedArgs?.id || "";
+    if (targetId) {
+      keys.push(getCanonicalReminderCompleteKey({ targetId }));
+      keys.push(
+        getCanonicalReminderUpdateKey({
+          targetId,
+          patch: { reminderState: "completed" },
+        }),
+      );
+    }
+  }
+
+  return keys;
+}
+
+function safeJsonParse(val: string): any {
+  try {
+    return JSON.parse(val);
+  } catch {
+    return {};
+  }
+}

@@ -39,6 +39,12 @@ import {
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
+import {
+  getCanonicalReminderCreateKey,
+  getCanonicalReminderUpdateKey,
+  getCanonicalReminderDeleteKey,
+  getCanonicalReminderCompleteKey,
+} from "./mutation-identity";
 
 export type ActionStatus = "success" | "failed" | "ambiguous" | "not_found" | "invalid";
 
@@ -771,26 +777,20 @@ export async function executeActionTagsAsync(
 
     const id = uid();
     const dueAt = parsedMs;
-    const lcTitle = title.toLowerCase();
-    const canonicalRawDue = rawWhen.trim().toLowerCase();
-    const opKeyResolved = `rem:add:${lcTitle}:${dueAt}`;
-    const opKeyRaw = `rem:add:${lcTitle}:${canonicalRawDue}`;
-    const nativeToolKeyResolved = `createReminder:${JSON.stringify({ dueAt, title: title.trim() })}`;
-    const nativeToolKeyRaw = `createReminder:${JSON.stringify({ dueAt: canonicalRawDue, title: title.trim() })}`;
+    const keyWithParsedDue = getCanonicalReminderCreateKey({ title, dueAt, notes });
+    const keyWithRawDue = getCanonicalReminderCreateKey({ title, dueAt: rawWhen, notes });
 
     if (
-      executedMutations.has(opKeyResolved) ||
-      executedMutations.has(opKeyRaw) ||
-      executedMutations.has(nativeToolKeyResolved) ||
-      executedMutations.has(nativeToolKeyRaw)
+      executedMutations.has(keyWithParsedDue) ||
+      executedMutations.has(keyWithRawDue)
     ) {
       // Suppress redundant mutation — already executed authoritatively in this turn
       text = text.replace(fullMatch, "");
       addRemRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(opKeyResolved);
-    executedMutations.add(opKeyRaw);
+    executedMutations.add(keyWithParsedDue);
+    executedMutations.add(keyWithRawDue);
     const now = Date.now();
     try {
       await repo.createReminder(effectiveUserId, {
@@ -916,40 +916,22 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    const patchEntries = Object.entries(patch)
-      .filter(([k]) => k !== "updatedAt")
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`)
-      .join(";");
+    const canonicalUpdateKey = getCanonicalReminderUpdateKey({ targetId: target.id, patch });
+    const canonicalUpdateKeyRaw = fields.when
+      ? getCanonicalReminderUpdateKey({ targetId: target.id, patch: { ...patch, dueAt: fields.when } })
+      : null;
 
-    const patchEntriesWithRaw = Object.entries(fields)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([k, v]) => `${k.toLowerCase()}=${String(v).trim().toLowerCase()}`)
-      .join(";");
-
-    const isDuplicate =
-      (patchEntries && (
-        executedMutations.has(`rem:upd:${lcQuery}:${patchEntries}`) ||
-        executedMutations.has(`rem:upd:${target.id.toLowerCase()}:${patchEntries}`) ||
-        executedMutations.has(`rem:upd:${target.title.toLowerCase()}:${patchEntries}`)
-      )) ||
-      (patchEntriesWithRaw && (
-        executedMutations.has(`rem:upd:${lcQuery}:${patchEntriesWithRaw}`) ||
-        executedMutations.has(`rem:upd:${target.id.toLowerCase()}:${patchEntriesWithRaw}`) ||
-        executedMutations.has(`rem:upd:${target.title.toLowerCase()}:${patchEntriesWithRaw}`)
-      ));
-
-    if (isDuplicate) {
+    if (
+      executedMutations.has(canonicalUpdateKey) ||
+      (canonicalUpdateKeyRaw && executedMutations.has(canonicalUpdateKeyRaw))
+    ) {
       text = text.replace(fullMatch, "");
       updRemRe.lastIndex = 0;
       continue;
     }
 
-    if (patchEntries) {
-      executedMutations.add(`rem:upd:${lcQuery}:${patchEntries}`);
-      executedMutations.add(`rem:upd:${target.id.toLowerCase()}:${patchEntries}`);
-      executedMutations.add(`rem:upd:${target.title.toLowerCase()}:${patchEntries}`);
-    }
+    executedMutations.add(canonicalUpdateKey);
+    if (canonicalUpdateKeyRaw) executedMutations.add(canonicalUpdateKeyRaw);
 
     try {
       await repo.updateReminder(effectiveUserId, target.id, patch);
@@ -978,17 +960,7 @@ export async function executeActionTagsAsync(
   while ((match = delRemRe.exec(text)) !== null) {
     const fullMatch = match[0];
     const query = match[1].trim();
-    const lcQuery = query.toLowerCase();
     activity.set(actionActivity("DELETE_REMINDER"));
-
-    if (
-      executedMutations.has(`rem:del:${lcQuery}`) ||
-      executedMutations.has(`reminder:delete:${lcQuery}`)
-    ) {
-      text = text.replace(fullMatch, "");
-      delRemRe.lastIndex = 0;
-      continue;
-    }
 
     const all = /^all\s+/i.test(query);
     let hits: FirestoreReminder[];
@@ -1029,20 +1001,21 @@ export async function executeActionTagsAsync(
       continue;
     }
 
+    const targetIds = hits.map((h) => h.id);
+    const setKey = getCanonicalReminderDeleteKey({ targetIds });
+    const singleKeys = targetIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
+
     if (
-      hits.length === 1 &&
-      executedMutations.has(`reminder:delete:${hits[0].id.toLowerCase()}`)
+      executedMutations.has(setKey) ||
+      (targetIds.length === 1 && executedMutations.has(singleKeys[0]))
     ) {
       text = text.replace(fullMatch, "");
       delRemRe.lastIndex = 0;
       continue;
     }
 
-    executedMutations.add(`rem:del:${lcQuery}`);
-    executedMutations.add(`reminder:delete:${lcQuery}`);
-    for (const h of hits) {
-      executedMutations.add(`reminder:delete:${h.id.toLowerCase()}`);
-    }
+    executedMutations.add(setKey);
+    for (const k of singleKeys) executedMutations.add(k);
 
     try {
       for (const h of hits) {
@@ -1070,17 +1043,7 @@ export async function executeActionTagsAsync(
   while ((match = markDoneRe.exec(text)) !== null) {
     const fullMatch = match[0];
     const query = match[1].trim();
-    const lcQuery = query.toLowerCase();
     activity.set(actionActivity("MARK_REMINDER_DONE"));
-
-    if (
-      executedMutations.has(`rem:complete:${lcQuery}`) ||
-      executedMutations.has(`reminder:complete:${lcQuery}`)
-    ) {
-      text = text.replace(fullMatch, "");
-      markDoneRe.lastIndex = 0;
-      continue;
-    }
 
     let hits: FirestoreReminder[];
     try {
@@ -1121,19 +1084,20 @@ export async function executeActionTagsAsync(
     }
 
     const target = hits[0];
-    if (
-      executedMutations.has(`reminder:complete:${target.id.toLowerCase()}`) ||
-      executedMutations.has(`reminder:complete:${target.title.toLowerCase()}`)
-    ) {
+    const compKey = getCanonicalReminderCompleteKey({ targetId: target.id });
+    const updKey = getCanonicalReminderUpdateKey({
+      targetId: target.id,
+      patch: { reminderState: "completed" },
+    });
+
+    if (executedMutations.has(compKey) || executedMutations.has(updKey)) {
       text = text.replace(fullMatch, "");
       markDoneRe.lastIndex = 0;
       continue;
     }
 
-    executedMutations.add(`rem:complete:${lcQuery}`);
-    executedMutations.add(`reminder:complete:${lcQuery}`);
-    executedMutations.add(`reminder:complete:${target.id.toLowerCase()}`);
-    executedMutations.add(`reminder:complete:${target.title.toLowerCase()}`);
+    executedMutations.add(compKey);
+    executedMutations.add(updKey);
 
     try {
       await repo.updateReminder(effectiveUserId, target.id, {
@@ -1164,15 +1128,6 @@ export async function executeActionTagsAsync(
     const fullMatch = match[0];
     activity.set(actionActivity("DELETE_LAST"));
 
-    if (
-      executedMutations.has("rem:del:last") ||
-      executedMutations.has("reminder:delete:last")
-    ) {
-      text = text.replace(fullMatch, "");
-      delLastRemRe.lastIndex = 0;
-      continue;
-    }
-
     let list: FirestoreReminder[];
     try {
       list = await repo.listReminders(effectiveUserId);
@@ -1195,15 +1150,14 @@ export async function executeActionTagsAsync(
       continue;
     }
     const victim = list[0];
-    if (executedMutations.has(`reminder:delete:${victim.id.toLowerCase()}`)) {
+    const victimKey = getCanonicalReminderDeleteKey({ targetIds: [victim.id] });
+    if (executedMutations.has(victimKey)) {
       text = text.replace(fullMatch, "");
       delLastRemRe.lastIndex = 0;
       continue;
     }
 
-    executedMutations.add("rem:del:last");
-    executedMutations.add("reminder:delete:last");
-    executedMutations.add(`reminder:delete:${victim.id.toLowerCase()}`);
+    executedMutations.add(victimKey);
 
     try {
       await repo.deleteReminder(effectiveUserId, victim.id);

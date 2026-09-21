@@ -79,7 +79,7 @@ export function isGenericPortalHeadline(headline: string, publisher?: string): b
   const normHead = (headline || "").trim().toLowerCase();
   const normPub = (publisher || "").trim().toLowerCase();
 
-  if (!normHead || normHead.length < 12) {
+  if (!normHead || normHead.length < 15) {
     return true;
   }
 
@@ -121,13 +121,42 @@ export function isGenericPortalHeadline(headline: string, publisher?: string): b
   return false;
 }
 
+export function hasArticleUrlStructure(urlStr: string): boolean {
+  try {
+    const u = new URL(urlStr);
+    const path = u.pathname.replace(/\/+$/, "");
+    if (!path || path === "" || isHomepageOrPortalUrl(urlStr)) return false;
+
+    // Date-based article path (e.g. /2026/03/21/..., /2026-03-21-...)
+    if (/\/(?:19|20)\d{2}[/-]\d{1,2}[/-]\d{1,2}/.test(path)) return true;
+
+    // Check path segments
+    const segments = path.split("/").filter(Boolean);
+    if (segments.length >= 1) {
+      const last = segments[segments.length - 1];
+      // Long slug with hyphens, numbers, or specific file extensions
+      if (last.length >= 15 && (last.includes("-") || last.includes("_") || /\d+/.test(last) || last.endsWith(".html") || last.endsWith(".story") || last.endsWith(".stm"))) {
+        return true;
+      }
+      if (segments.length >= 2 && last.length >= 8 && (last.includes("-") || last.includes("_") || /\d+/.test(last))) {
+        return true;
+      }
+      if (segments.length >= 3) {
+        return true;
+      }
+    }
+  } catch {}
+  return false;
+}
+
 export function isValidArticle(article: NewsArticle): boolean {
   if (!article || !article.headline || !article.url) return false;
   if (isHomepageOrPortalUrl(article.url)) return false;
   if (isGenericPortalHeadline(article.headline, article.publisher)) return false;
   
   const words = article.headline.trim().split(/\s+/);
-  if (words.length < 3) return false;
+  if (words.length < 4) return false;
+  if (article.headline.trim().length < 18) return false;
 
   return true;
 }
@@ -223,6 +252,7 @@ export function parseStructuredArticle(
   let publisher = fallbackPublisher || "";
   let publishedDate = fallbackDate;
   let summary = snippet || "";
+  let provenArticle = false;
 
   if (pageContent) {
     const jsonLd = extractJsonLdArticle(pageContent, url);
@@ -231,6 +261,7 @@ export function parseStructuredArticle(
       if (jsonLd.publisher) publisher = jsonLd.publisher;
       if (jsonLd.publishedDate) publishedDate = jsonLd.publishedDate;
       if (jsonLd.summary) summary = jsonLd.summary;
+      provenArticle = true;
     } else {
       const og = extractOpenGraphArticle(pageContent, url);
       if (og && og.headline) {
@@ -238,7 +269,20 @@ export function parseStructuredArticle(
         if (og.publisher) publisher = og.publisher;
         if (og.publishedDate) publishedDate = og.publishedDate;
         if (og.summary && og.summary.length > summary.length) summary = og.summary;
+        provenArticle = true;
       }
+    }
+
+    // If page content was fetched but failed to provide article metadata,
+    // require verifiable article URL structure before accepting
+    if (!provenArticle && !hasArticleUrlStructure(url)) {
+      return null;
+    }
+  } else {
+    // Search result fallback (no page content was fetched)
+    // Strictly require that the URL structure proves an individual article page
+    if (!hasArticleUrlStructure(url)) {
+      return null;
     }
   }
 
