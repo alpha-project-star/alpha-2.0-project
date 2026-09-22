@@ -159,20 +159,28 @@ export class ProactiveTrigger {
       }
 
       // 5. Chat Store Idempotency Check
-      const alreadyInStore = alphaStore
+      const existingMessage = alphaStore
         .get()
-        .chat.some((m) => m.proactiveEventId === event.eventId);
-      if (alreadyInStore) {
+        .chat.find((m) => m.proactiveEventId === event.eventId);
+      if (existingMessage) {
         if (this.options.repo) {
           try {
             await this.options.repo.updateReminder(authUser, event.reminderId, {
               proactiveState: 'generated',
               proactiveEventId: event.eventId,
               proactiveHandledAt: Date.now(),
+              ...(existingMessage.id ? { proactiveMessageId: existingMessage.id } : {}),
               updatedAt: Date.now(),
             });
-          } catch {
-            // Ignore repository update failure on reconciliation attempt
+          } catch (err: any) {
+            return {
+              success: false,
+              eventId: event.eventId,
+              error: {
+                code: 'REPOSITORY_ERROR',
+                message: err?.message || `Failed to reconcile repository state for event ${event.eventId}`,
+              },
+            };
           }
         }
         return {
