@@ -37,7 +37,6 @@ import {
 } from "./web-search";
 import { getReminderTool } from "./tool-registry";
 import { auth } from "./firebase";
-import { ensureAuthenticatedUser } from "./auth";
 import type { FirestoreReminder } from "./reminder-repo";
 import { REMINDER_TOOLS } from "./reminder-tool-definitions";
 import { reminderContextManager } from "./reminder-context";
