@@ -213,13 +213,6 @@ export async function sendChatOpenAICompat(
     const msg = j?.choices?.[0]?.message;
     const tool_calls = msg?.tool_calls;
     let content = (typeof msg?.content === "string" ? msg.content : "").trim();
-    if (!content && !tool_calls) {
-      // Some reasoning models return the answer in reasoning fields.
-      const reasoning =
-        (typeof msg?.reasoning === "string" ? msg.reasoning : "") ||
-        (typeof msg?.reasoning_content === "string" ? msg.reasoning_content : "");
-      content = reasoning.trim();
-    }
     content = stripLeakedThinking(content);
     if (!content && !tool_calls) {
       const err: any = new Error(`${opts.model} returned an empty response.`);

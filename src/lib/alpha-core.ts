@@ -18,16 +18,6 @@ import { learningEngine, LearningRecord } from "./learning-engine";
  * ============================================================================
  */
 
-const RUNTIME_SESSION_ADMIN_KEY = (typeof crypto !== "undefined" && crypto.randomUUID) 
-  ? crypto.randomUUID() 
-  : `alpha-admin-${Math.random().toString(36).substring(2)}-${Date.now()}`;
-
-function verifyAdminKey(key: string): boolean {
-  if (!key) return false;
-  const envKey = typeof process !== "undefined" && process.env?.ALPHA_CORE_ADMIN_KEY;
-  if (envKey && key === envKey) return true;
-  return key === RUNTIME_SESSION_ADMIN_KEY;
-}
 
 export const CoreConfidenceSchema = z.enum([
   "VERIFIED",
@@ -786,38 +776,6 @@ export class AlphaCoreAuthority {
     return { success: true, reason: "Recovered successfully via initial core regeneration.", record: this.currentRecord };
   }
 
-  /**
-   * Secure import / export boundaries.
-   */
-  public exportCore(adminKey: string): { success: boolean; data?: AlphaCoreRecord; reason?: string } {
-    if (!verifyAdminKey(adminKey)) {
-      return { success: false, reason: "Unauthorized Core export attempt." };
-    }
-    return { success: true, data: JSON.parse(JSON.stringify(this.currentRecord)) };
-  }
-
-  public importCore(raw: unknown, adminKey: string): { success: boolean; reason?: string } {
-    if (!verifyAdminKey(adminKey)) {
-      return { success: false, reason: "Unauthorized Core import attempt." };
-    }
-
-    const parsed = AlphaCoreRecordSchema.safeParse(raw);
-    if (!parsed.success) {
-      return { success: false, reason: `Imported Core failed Zod validation: ${parsed.error.message}` };
-    }
-
-    // Verify security constraints on imported data
-    for (const sk of parsed.data.selfKnowledge) {
-      const sec = this.sanitizeAndValidateText(sk.statement);
-      if (!sec.safe) {
-        return { success: false, reason: `Import rejected: ${sec.reason}` };
-      }
-    }
-
-    this.previousVersionRecord = JSON.parse(JSON.stringify(this.currentRecord));
-    this.currentRecord = parsed.data;
-    return { success: true };
-  }
 
 }
 
