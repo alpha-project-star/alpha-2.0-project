@@ -308,18 +308,7 @@ export class ProactiveTrigger {
         const trimmed = text.trim();
         const messageId = uid();
 
-        // 10. Update reminder repository state to 'generated'
-        if (this.options.repo) {
-          await this.options.repo.updateReminder(authUser, event.reminderId, {
-            proactiveState: 'generated',
-            proactiveEventId: event.eventId,
-            proactiveHandledAt: Date.now(),
-            proactiveMessageId: messageId,
-            updatedAt: Date.now(),
-          });
-        }
-
-        // 11. Create ProactiveResponseRecord & Deliver via NotificationDelivery Foundation
+        // 10. Create ProactiveResponseRecord & Deliver via NotificationDelivery Foundation
         const record: ProactiveResponseRecord = {
           eventId: event.eventId,
           reminderId: event.reminderId,
@@ -341,6 +330,18 @@ export class ProactiveTrigger {
 
         if (!deliveryResult.success) {
           this.inFlightEvents.delete(event.eventId);
+
+          if (this.options.repo) {
+            try {
+              await this.options.repo.updateReminder(authUser, event.reminderId, {
+                proactiveState: 'failed',
+                updatedAt: Date.now(),
+              });
+            } catch {
+              // Ignore repository update error on failure cleanup
+            }
+          }
+
           return {
             success: false,
             eventId: event.eventId,
@@ -349,6 +350,17 @@ export class ProactiveTrigger {
               message: deliveryResult.error.message,
             },
           };
+        }
+
+        // 11. Update reminder repository state to 'generated' upon successful delivery
+        if (this.options.repo) {
+          await this.options.repo.updateReminder(authUser, event.reminderId, {
+            proactiveState: 'generated',
+            proactiveEventId: event.eventId,
+            proactiveHandledAt: Date.now(),
+            proactiveMessageId: messageId,
+            updatedAt: Date.now(),
+          });
         }
 
         this.inFlightEvents.delete(event.eventId);
