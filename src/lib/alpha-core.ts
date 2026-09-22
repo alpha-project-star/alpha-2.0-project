@@ -776,11 +776,13 @@ export class AlphaCoreAuthority {
       const prevCheck = AlphaCoreRecordSchema.safeParse(this.previousVersionRecord);
       if (prevCheck.success) {
         this.currentRecord = prevCheck.data;
+        this.previousVersionRecord = null;
         return { success: true, reason: "Recovered successfully from previous valid version snapshot.", record: this.currentRecord };
       }
     }
 
     this.currentRecord = this.createInitialCore();
+    this.previousVersionRecord = null;
     return { success: true, reason: "Recovered successfully via initial core regeneration.", record: this.currentRecord };
   }
 
