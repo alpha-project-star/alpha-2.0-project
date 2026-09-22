@@ -92,4 +92,19 @@ export const REMINDER_TOOLS = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "inspectGitHubRepo",
+      description: "Inspect a GitHub repository or URL (e.g. https://github.com/owner/repo), view metadata, enumerate files/directories, inspect commits, or fetch source file content.",
+      parameters: {
+        type: "object",
+        properties: {
+          urlOrSlug: { type: "string", description: "GitHub repository URL or owner/repo slug (e.g., 'facebook/react' or 'https://github.com/owner/repo.git')." },
+          subpath: { type: "string", description: "Optional file or directory path within the repository to inspect (e.g., 'src/index.ts' or 'README.md')." },
+        },
+        required: ["urlOrSlug"],
+      },
+    },
+  },
 ];

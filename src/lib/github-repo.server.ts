@@ -1,12 +1,6 @@
 /**
- * GitHub Repository Inspection Tool for Alpha
- * Supports:
- * - URL normalization (stripping trailing .git, extracting owner/repo from github.com URLs)
- * - Public repository metadata retrieval
- * - Directory / file enumeration
- * - Fetching source file content
- * - Commit history inspection
- * - Robust error handling (not-found, rate-limit, network failure)
+ * Server-only GitHub Repository Inspection Module (.server.ts)
+ * GITHUB_TOKEN is accessed strictly server-side and never reaches the browser.
  */
 
 export interface GitHubRepoInfo {
@@ -48,12 +42,8 @@ export interface GitHubInspectionResult {
   commits?: GitHubCommitItem[];
 }
 
-/**
- * Normalize a GitHub URL or owner/repo string into { owner, repo }
- */
 export function parseGitHubRepoInput(input: string): { owner: string; repo: string } | null {
-  const cleaned = input.trim().replace(/\.git\/?$/, "");
-  // Matches github.com/owner/repo or owner/repo
+  const cleaned = (input || "").trim().replace(/\.git\/?$/, "");
   const matchUrl = cleaned.match(/(?:https?:\/\/)?(?:www\.)?github\.com\/([^/]+)\/([^/#?]+)/i);
   if (matchUrl) {
     return { owner: matchUrl[1], repo: matchUrl[2] };
@@ -72,7 +62,6 @@ function getHeaders(): Record<string, string> {
     "Accept": "application/vnd.github.v3+json",
     "User-Agent": "Alpha-AI-Agent",
   };
-  // If a server-side or public token is available in env (without exposing client secrets), use it
   const token = typeof process !== "undefined" && process.env?.GITHUB_TOKEN;
   if (token) {
     headers["Authorization"] = `token ${token}`;
@@ -89,7 +78,6 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
   const { owner, repo } = parsed;
 
   try {
-    // 1. Fetch repository metadata
     const repoRes = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}`, {
       headers: getHeaders(),
     });
@@ -101,7 +89,7 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
       return { success: false, errorType: "rate_limited", errorReason: `GitHub API rate limit exceeded or access forbidden (HTTP ${repoRes.status}).` };
     }
     if (!repoRes.ok) {
-      return { success: false, errorType: "inaccessible", errorReason: `GitHub repository inaccessible (HTTP ${repoRes.status}).` };
+      return { success: false, errorType: "inaccessible", errorReason: `GitHub repository inaccessible or private (HTTP ${repoRes.status}).` };
     }
 
     const repoJson = await repoRes.json();
@@ -117,8 +105,7 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
       htmlUrl: repoJson.html_url || `https://github.com/${owner}/${repo}`,
     };
 
-    // 2. If subpath points to a file or directory, fetch contents
-    const cleanPath = subpath.replace(/^\/+/, "");
+    const cleanPath = (subpath || "").replace(/^\/+/, "");
     const contentsUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${cleanPath}`;
     const contentsRes = await fetch(contentsUrl, { headers: getHeaders() });
 
@@ -137,7 +124,6 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
           htmlUrl: item.html_url,
         }));
       } else if (contentsJson && contentsJson.type === "file") {
-        // It's a file
         if (contentsJson.download_url) {
           const fileRes = await fetch(contentsJson.download_url);
           if (fileRes.ok) {
@@ -153,7 +139,6 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
       }
     }
 
-    // 3. Fetch recent commits
     const commitsRes = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=5`, { headers: getHeaders() });
     let commits: GitHubCommitItem[] = [];
     if (commitsRes.ok) {

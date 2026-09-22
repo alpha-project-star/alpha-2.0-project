@@ -1,4 +1,5 @@
 import { alphaStore, conversationSummary, type ChatMessage } from "./alpha-store";
+import { stripLeakedThinking } from "./openai-compat";
 
 /** Normalise the endpoint the user typed. */
 function base(): string {
@@ -79,7 +80,8 @@ export async function sendChatOllama(
     throw new Error(`Ollama ${res.status}: ${t.slice(0, 300) || "no body"}`);
   }
   const j: any = await res.json();
-  const text: string = j?.message?.content?.trim() || "";
+  let text: string = (typeof j?.message?.content === "string" ? j.message.content : "").trim();
+  text = stripLeakedThinking(text);
   if (!text) throw new Error("Ollama returned an empty response.");
 
   // Fire-and-forget rolling summary using the same local model.
