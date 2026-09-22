@@ -94,7 +94,9 @@ const RELEVANT_EXTENSIONS = new Set([
 const RELEVANT_EXACT_NAMES = new Set([
   "dockerfile", "makefile", "readme", "readme.md", "package.json",
   "tsconfig.json", "vite.config.ts", "vite.config.js",
-  "next.config.js", "next.config.mjs", "cargo.toml"
+  "next.config.js", "next.config.mjs", "cargo.toml",
+  ".env", ".env.example", ".env.local", ".env.template",
+  ".gitignore", ".editorconfig", ".eslintrc", ".prettierrc"
 ]);
 
 const BINARY_EXTENSIONS = new Set([
@@ -121,9 +123,17 @@ function isRelevantSourceFile(filePath: string): boolean {
   if (isIgnoredPath(filePath)) return false;
   const fileName = filePath.split("/").pop()?.toLowerCase() || "";
   if (RELEVANT_EXACT_NAMES.has(fileName)) return true;
-  const ext = fileName.includes(".") ? "." + fileName.split(".").pop() : "";
-  if (BINARY_EXTENSIONS.has(ext)) return false;
-  return RELEVANT_EXTENSIONS.has(ext);
+  if (fileName.startsWith(".env")) return true;
+
+  for (const binExt of BINARY_EXTENSIONS) {
+    if (fileName.endsWith(binExt)) return false;
+  }
+
+  for (const relExt of RELEVANT_EXTENSIONS) {
+    if (fileName.endsWith(relExt)) return true;
+  }
+
+  return false;
 }
 
 async function fetchSingleFileText(owner: string, repo: string, filePath: string, maxBytes: number = 20000): Promise<{ text: string; truncated: boolean } | null> {
