@@ -1,5 +1,6 @@
 import { expressSignatureTrait } from "./signature-trait";
 import { alphaStore, conversationSummary, uid, type ChatMessage } from "./alpha-store";
+import { ensureAuthenticatedUser } from "./auth";
 import { tryLocalIntent } from "./local-intents";
 import { handleEyeCommand } from "./vision-command";
 import { sendChatOllama } from "./ollama";
@@ -741,10 +742,27 @@ export async function executeTool(call: any, context: ToolContext) {
         activity.set("writing_reminder");
         res = await tool.completeReminder(args.idOrQuery || args.id || args.query);
         break;
-      case 'inspectGitHubRepo':
+      case 'inspectGitHubRepo': {
         activity.set("calling_tool");
-        res = await inspectGitHubRepo({ data: { urlOrSlug: args.urlOrSlug || args.url || args.slug, subpath: args.subpath } });
+        const authUser = await ensureAuthenticatedUser();
+        if (!authUser) {
+          return {
+            success: false,
+            errorType: "inaccessible",
+            errorReason: "Authentication failure: User is not authenticated in Firebase Auth.",
+          };
+        }
+        const idToken = await authUser.getIdToken();
+        if (!idToken) {
+          return {
+            success: false,
+            errorType: "inaccessible",
+            errorReason: "Authentication failure: Failed to acquire Firebase ID token.",
+          };
+        }
+        res = await inspectGitHubRepo({ data: { urlOrSlug: args.urlOrSlug || args.url || args.slug, subpath: args.subpath, idToken } });
         break;
+      }
       default:
         activity.set("calling_tool");
         return { 

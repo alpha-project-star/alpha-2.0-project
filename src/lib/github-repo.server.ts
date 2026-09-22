@@ -3,6 +3,102 @@
  * GITHUB_TOKEN is accessed strictly server-side and never reaches the browser.
  */
 
+import firebaseConfig from "../../firebase-applet-config.json";
+
+export interface FirebaseTokenVerificationResult {
+  valid: boolean;
+  uid?: string;
+  reason?: string;
+}
+
+function parseJwtPayload(token: string): any {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3) return null;
+    const base64Url = parts[1];
+    const base64 = base64Url.replace(/-/g, "+").replace(/_/g, "/");
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split("")
+        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
+        .join("")
+    );
+    return JSON.parse(jsonPayload);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Cryptographically verifies a Firebase ID Token with Google Firebase Identity Toolkit API server-side.
+ * Does NOT trust any unverified client claims (UID, email, or authenticated flags).
+ */
+export async function verifyFirebaseIdToken(idToken?: string): Promise<FirebaseTokenVerificationResult> {
+  if (!idToken || typeof idToken !== "string" || !idToken.trim()) {
+    return { valid: false, reason: "Missing or empty Firebase ID token in server request." };
+  }
+
+  const apiKey = (firebaseConfig as any)?.apiKey;
+  const projectId = (firebaseConfig as any)?.projectId;
+  if (!apiKey || !projectId) {
+    return { valid: false, reason: "Server configuration missing Firebase API key or Project ID." };
+  }
+
+  // 1. JWT Structure & Project Claim Validation
+  const payload = parseJwtPayload(idToken);
+  if (!payload || typeof payload !== "object") {
+    return { valid: false, reason: "Malformed Firebase ID token: invalid JWT payload structure." };
+  }
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  if (typeof payload.exp === "number" && payload.exp <= nowSec) {
+    return { valid: false, reason: "Expired Firebase ID token." };
+  }
+
+  if (payload.aud !== projectId) {
+    return { valid: false, reason: `Firebase ID token issued for wrong project (expected '${projectId}', got '${payload.aud}').` };
+  }
+
+  const expectedIssuer = `https://securetoken.google.com/${projectId}`;
+  if (payload.iss !== expectedIssuer) {
+    return { valid: false, reason: `Firebase ID token has invalid issuer (expected '${expectedIssuer}', got '${payload.iss}').` };
+  }
+
+  if (!payload.sub || typeof payload.sub !== "string") {
+    return { valid: false, reason: "Firebase ID token missing subject claim." };
+  }
+
+  // 2. Cryptographic RSA signature and revocation verification with Google Firebase server
+  try {
+    const verifyUrl = `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${apiKey}`;
+    const res = await fetch(verifyUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idToken }),
+    });
+
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      const msg = errJson?.error?.message || `HTTP ${res.status}`;
+      return { valid: false, reason: `Firebase server verification rejected token (${msg}).` };
+    }
+
+    const data = await res.json();
+    const user = data?.users?.[0];
+    if (!user || !user.localId) {
+      return { valid: false, reason: "Firebase ID token verification failed: no user returned by Google." };
+    }
+
+    if (user.localId !== payload.sub) {
+      return { valid: false, reason: "Firebase ID token mismatch between token sub and verified user." };
+    }
+
+    return { valid: true, uid: user.localId };
+  } catch (err: any) {
+    return { valid: false, reason: `Server network error during Firebase ID token verification: ${err?.message || String(err)}` };
+  }
+}
+
 export interface GitHubRepoInfo {
   owner: string;
   repo: string;
