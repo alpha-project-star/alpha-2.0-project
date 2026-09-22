@@ -354,13 +354,19 @@ export class ProactiveTrigger {
 
         // 11. Update reminder repository state to 'generated' upon successful delivery
         if (this.options.repo) {
-          await this.options.repo.updateReminder(authUser, event.reminderId, {
-            proactiveState: 'generated',
-            proactiveEventId: event.eventId,
-            proactiveHandledAt: Date.now(),
-            proactiveMessageId: messageId,
-            updatedAt: Date.now(),
-          });
+          try {
+            await this.options.repo.updateReminder(authUser, event.reminderId, {
+              proactiveState: 'generated',
+              proactiveEventId: event.eventId,
+              proactiveHandledAt: Date.now(),
+              proactiveMessageId: messageId,
+              updatedAt: Date.now(),
+            });
+          } catch {
+            // Bookkeeping update failed AFTER delivery succeeded.
+            // Delivery to the user succeeded (deliveryResult.success is true), so DO NOT mark proactiveState as 'failed'.
+            // Preserving the delivered response in chat and returning success: true ensures consistency with notification delivery and chat store.
+          }
         }
 
         this.inFlightEvents.delete(event.eventId);
