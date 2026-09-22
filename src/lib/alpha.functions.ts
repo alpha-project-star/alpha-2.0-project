@@ -874,13 +874,19 @@ async function reconcileAmbiguousMutation(call: any, context: ToolContext, origi
 // ---------------------------------------------------------------------------
 
 let inFlight: { key: string; promise: Promise<string> } | null = null;
+let lastLogicalKey = "";
+let lastLogicalTime = 0;
 
 /** Which model actually produced the last reply (developer record). */
 export let lastAnsweredBy = "";
 
 function requestKey(history: ChatMessage[], task: TaskType): string {
   const last = [...history].reverse().find((m) => m.role === "user");
-  return `${task}|${last?.id || ""}|${(last?.text || "").slice(0, 200)}|${last?.images?.length || 0}`;
+  const normalizedText = (last?.text || "").trim().toLowerCase();
+  const imageCount = last?.images?.length || 0;
+  // Exclude volatile generated message ID (last?.id) so duplicate message objects
+  // representing the same logical user turn map to the exact same request key.
+  return `${task}|${normalizedText}|${imageCount}`;
 }
 
 export function isChatGenerating(): boolean {
@@ -1030,8 +1036,15 @@ export async function sendChat(
 ): Promise<string> {
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
-  // Duplicate submissions (double tap, re-render, voice + button) share one request.
+  const now = Date.now();
+  // Duplicate submissions (double tap, re-render, voice + button, duplicate message objects) share one request.
   if (inFlight && inFlight.key === key) return inFlight.promise;
+  if (lastLogicalKey === key && now - lastLogicalTime < 3500 && inFlight) {
+    return inFlight.promise;
+  }
+  lastLogicalKey = key;
+  lastLogicalTime = now;
+
   const promise = runChat(history, task, opts.signal, opts.disableTools).finally(() => {
     if (inFlight?.key === key) inFlight = null;
   });

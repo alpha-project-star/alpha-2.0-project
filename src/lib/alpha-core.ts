@@ -583,16 +583,22 @@ export class AlphaCoreAuthority {
 
     // Record mutation log & advance version
     const prevVersion = newRecord.coreVersion;
-    let nextVersionNum = parseInt(newRecord.coreVersion, 10);
-    if (isNaN(nextVersionNum)) {
-      const parts = newRecord.coreVersion.split(".");
-      const last = parseInt(parts[parts.length - 1], 10);
-      nextVersionNum = isNaN(last) ? 1 : last + 1;
-      parts[parts.length - 1] = String(nextVersionNum);
+    const parts = newRecord.coreVersion.split(".");
+    if (parts.length === 3) {
+      const patch = parseInt(parts[2], 10);
+      parts[2] = String(isNaN(patch) ? 1 : patch + 1);
+      newRecord.coreVersion = parts.join(".");
+    } else if (parts.length === 2) {
+      const minor = parseInt(parts[1], 10);
+      parts[1] = String(isNaN(minor) ? 1 : minor + 1);
       newRecord.coreVersion = parts.join(".");
     } else {
-      nextVersionNum += 1;
-      newRecord.coreVersion = String(nextVersionNum);
+      const nextVersionNum = parseInt(newRecord.coreVersion, 10);
+      if (isNaN(nextVersionNum)) {
+        newRecord.coreVersion = `${newRecord.coreVersion}.1`;
+      } else {
+        newRecord.coreVersion = String(nextVersionNum + 1);
+      }
     }
     const resultingVersion = newRecord.coreVersion;
 
