@@ -1195,6 +1195,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       isMutation: boolean;
       error?: any;
       executionKey?: string;
+      logicalKeys: string[];
     }> = [];
 
     const MUTATION_TOOLS = new Set([
