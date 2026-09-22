@@ -420,9 +420,7 @@ export class AlphaCoreAuthority {
       }
     }
 
-    // 2. Snapshot previous version for rollback / recovery
-    this.previousVersionRecord = JSON.parse(JSON.stringify(this.currentRecord));
-
+    // 2. Build candidate record locally without touching authoritative state
     const now = Date.now();
     const mutationId = `mut-${now}-${Math.random().toString(36).substring(2, 8)}`;
     const newRecord: AlphaCoreRecord = JSON.parse(JSON.stringify(this.currentRecord));
@@ -627,7 +625,8 @@ export class AlphaCoreAuthority {
       };
     }
 
-    // In-memory state update
+    // Atomic commit: snapshot previous version and update current record only after all validation succeeds
+    this.previousVersionRecord = JSON.parse(JSON.stringify(this.currentRecord));
     this.currentRecord = parsed.data;
     return { success: true, mutationId, record: this.currentRecord };
   }
