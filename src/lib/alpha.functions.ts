@@ -898,6 +898,7 @@ async function reconcileAmbiguousMutation(call: any, context: ToolContext, origi
 let inFlight: { key: string; promise: Promise<string> } | null = null;
 let lastLogicalKey = "";
 let lastLogicalTime = 0;
+let lastLogicalPromise: Promise<string> | null = null;
 
 /** Which model actually produced the last reply (developer record). */
 export let lastAnsweredBy = "";
@@ -1061,8 +1062,8 @@ export async function sendChat(
   const now = Date.now();
   // Duplicate submissions (double tap, re-render, voice + button, duplicate message objects) share one request.
   if (inFlight && inFlight.key === key) return inFlight.promise;
-  if (lastLogicalKey === key && now - lastLogicalTime < 3500 && inFlight) {
-    return inFlight.promise;
+  if (lastLogicalKey === key && now - lastLogicalTime < 3500 && lastLogicalPromise) {
+    return lastLogicalPromise;
   }
   lastLogicalKey = key;
   lastLogicalTime = now;
@@ -1071,6 +1072,7 @@ export async function sendChat(
     if (inFlight?.key === key) inFlight = null;
   });
   inFlight = { key, promise };
+  lastLogicalPromise = promise;
   return promise;
 }
 
