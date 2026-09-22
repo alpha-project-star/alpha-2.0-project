@@ -163,6 +163,18 @@ export class ProactiveTrigger {
         .get()
         .chat.some((m) => m.proactiveEventId === event.eventId);
       if (alreadyInStore) {
+        if (this.options.repo) {
+          try {
+            await this.options.repo.updateReminder(authUser, event.reminderId, {
+              proactiveState: 'generated',
+              proactiveEventId: event.eventId,
+              proactiveHandledAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          } catch {
+            // Ignore repository update failure on reconciliation attempt
+          }
+        }
         return {
           success: false,
           eventId: event.eventId,
@@ -362,10 +374,16 @@ export class ProactiveTrigger {
               proactiveMessageId: messageId,
               updatedAt: Date.now(),
             });
-          } catch {
-            // Bookkeeping update failed AFTER delivery succeeded.
-            // Delivery to the user succeeded (deliveryResult.success is true), so DO NOT mark proactiveState as 'failed'.
-            // Preserving the delivered response in chat and returning success: true ensures consistency with notification delivery and chat store.
+          } catch (repoErr: any) {
+            this.inFlightEvents.delete(event.eventId);
+            return {
+              success: false,
+              eventId: event.eventId,
+              error: {
+                code: 'REPOSITORY_ERROR',
+                message: repoErr?.message || 'Failed to update reminder proactiveState to generated',
+              },
+            };
           }
         }
 
