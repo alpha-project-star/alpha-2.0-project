@@ -69,6 +69,43 @@ function getHeaders(): Record<string, string> {
   return headers;
 }
 
+async function recursiveEnumerateFiles(
+  owner: string,
+  repo: string,
+  currentPath: string = "",
+  depth: number = 0,
+  maxDepth: number = 2,
+  collected: GitHubFileItem[] = []
+): Promise<GitHubFileItem[]> {
+  if (depth > maxDepth || collected.length > 150) return collected;
+  try {
+    const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${currentPath}`;
+    const res = await fetch(url, { headers: getHeaders() });
+    if (!res.ok) return collected;
+    const json = await res.json();
+    if (!Array.isArray(json)) return collected;
+
+    for (const item of json) {
+      if (item.name === ".git" || item.name === "node_modules" || item.name === "dist" || item.name === "build" || item.name === ".next") {
+        continue;
+      }
+      const fileItem: GitHubFileItem = {
+        name: item.name,
+        path: item.path,
+        type: item.type,
+        size: item.size,
+        downloadUrl: item.download_url,
+        htmlUrl: item.html_url,
+      };
+      collected.push(fileItem);
+      if (item.type === "dir" && depth < maxDepth) {
+        await recursiveEnumerateFiles(owner, repo, item.path, depth + 1, maxDepth, collected);
+      }
+    }
+  } catch {}
+  return collected;
+}
+
 export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: string = ""): Promise<GitHubInspectionResult> {
   const parsed = parseGitHubRepoInput(inputUrlOrSlug);
   if (!parsed) {
@@ -106,37 +143,43 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
     };
 
     const cleanPath = (subpath || "").replace(/^\/+/, "");
-    const contentsUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${cleanPath}`;
-    const contentsRes = await fetch(contentsUrl, { headers: getHeaders() });
-
     let files: GitHubFileItem[] | undefined;
     let fileContent: string | undefined;
 
-    if (contentsRes.ok) {
-      const contentsJson = await contentsRes.json();
-      if (Array.isArray(contentsJson)) {
-        files = contentsJson.map((item: any) => ({
-          name: item.name,
-          path: item.path,
-          type: item.type,
-          size: item.size,
-          downloadUrl: item.download_url,
-          htmlUrl: item.html_url,
-        }));
-      } else if (contentsJson && contentsJson.type === "file") {
-        if (contentsJson.download_url) {
-          const fileRes = await fetch(contentsJson.download_url);
-          if (fileRes.ok) {
-            fileContent = await fileRes.text();
-          }
-        } else if (contentsJson.content && contentsJson.encoding === "base64") {
-          try {
-            fileContent = atob(contentsJson.content.replace(/\n/g, ""));
-          } catch {
-            fileContent = contentsJson.content;
+    if (cleanPath) {
+      // Fetch specific subpath (file or directory)
+      const contentsUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${cleanPath}`;
+      const contentsRes = await fetch(contentsUrl, { headers: getHeaders() });
+
+      if (contentsRes.ok) {
+        const contentsJson = await contentsRes.json();
+        if (Array.isArray(contentsJson)) {
+          files = contentsJson.map((item: any) => ({
+            name: item.name,
+            path: item.path,
+            type: item.type,
+            size: item.size,
+            downloadUrl: item.download_url,
+            htmlUrl: item.html_url,
+          }));
+        } else if (contentsJson && contentsJson.type === "file") {
+          if (contentsJson.download_url) {
+            const fileRes = await fetch(contentsJson.download_url);
+            if (fileRes.ok) {
+              fileContent = await fileRes.text();
+            }
+          } else if (contentsJson.content && contentsJson.encoding === "base64") {
+            try {
+              fileContent = atob(contentsJson.content.replace(/\n/g, ""));
+            } catch {
+              fileContent = contentsJson.content;
+            }
           }
         }
       }
+    } else {
+      // Systematic recursive repository traversal (depth up to 2)
+      files = await recursiveEnumerateFiles(owner, repo, "", 0, 2, []);
     }
 
     const commitsRes = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/commits?per_page=5`, { headers: getHeaders() });

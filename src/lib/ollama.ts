@@ -131,7 +131,8 @@ ${lastAssistant.slice(0, 500)}`;
     });
     if (!res.ok) return;
     const j: any = await res.json();
-    const out = j?.message?.content?.trim() || "";
+    let out = (typeof j?.message?.content === "string" ? j.message.content : "").trim();
+    out = stripLeakedThinking(out);
     if (out) conversationSummary.set(out);
   } catch {
     /* background */
