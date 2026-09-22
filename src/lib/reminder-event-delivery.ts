@@ -33,6 +33,10 @@ export class ReminderEventDelivery {
     }
   }
 
+  public setRepo(repo?: ReminderRepository): void {
+    this.repo = repo;
+  }
+
   /**
    * Registers an event subscriber to receive due reminder events.
    * Returns an unsubscribe callback.

@@ -4,9 +4,10 @@ import { FirestoreReminder, ReminderRepository, InMemoryReminderRepository } fro
 import { temporal } from './temporal';
 import { alphaStore } from './alpha-store';
 import { ReminderDueEvent, generateReminderEventId } from './reminder-events';
-import { ReminderEventDelivery } from './reminder-event-delivery';
+import { ReminderEventDelivery, reminderEventDelivery } from './reminder-event-delivery';
 import { fireAlarm } from './alarm-engine';
 import { withCrossContextLock } from './cross-context-lock';
+import { handleReminderDue } from './proactive-trigger';
 
 export { InMemoryReminderRepository };
 export type { ReminderDueEvent };
@@ -15,8 +16,9 @@ export interface SchedulerOptions {
   pollingIntervalMs?: number;
   repo?: ReminderRepository;
   eventDelivery?: ReminderEventDelivery;
-  onReminderDue?: (event: ReminderDueEvent) => void;
+  onReminderDue?: (event: ReminderDueEvent) => Promise<void> | void;
   onError?: (error: Error) => void;
+  enableProactive?: boolean;
 }
 
 export class ReminderScheduler {
@@ -41,6 +43,7 @@ export class ReminderScheduler {
         pollingIntervalMs: 5000,
         ...options,
       };
+      this.eventDelivery = options.eventDelivery;
     } else if (typeof userIdOrOptions === 'object' && userIdOrOptions !== null) {
       this.options = {
         pollingIntervalMs: 5000,
@@ -54,6 +57,7 @@ export class ReminderScheduler {
         ...options,
       };
       this.repo = repo;
+      this.eventDelivery = options.eventDelivery;
     }
   }
 
@@ -61,7 +65,19 @@ export class ReminderScheduler {
     this.userId = userId;
     if (repo) {
       this.repo = repo;
+      if (this.eventDelivery) {
+        this.eventDelivery.setRepo(repo);
+      }
     }
+  }
+
+  public getEventDelivery(): ReminderEventDelivery {
+    if (!this.eventDelivery) {
+      this.eventDelivery = new ReminderEventDelivery(this.repo);
+    } else if (this.repo) {
+      this.eventDelivery.setRepo(this.repo);
+    }
+    return this.eventDelivery;
   }
 
   public getUserId(): string | undefined {
@@ -197,13 +213,6 @@ export class ReminderScheduler {
               return;
             }
 
-            // Claim the reminder under cross-context lock
-            await this.repo!.updateReminder(activeUser, reminder.id, {
-              notificationState: 'claimed',
-              legacyFiredAt: now,
-              updatedAt: Date.now(),
-            });
-
             const event: ReminderDueEvent = {
               type: 'reminder_due',
               eventId: generateReminderEventId(reminder.id, reminder.dueAt),
@@ -214,16 +223,31 @@ export class ReminderScheduler {
               title: reminder.title,
             };
 
-            events.push(event);
+            const consumerFn = async (evt: ReminderDueEvent): Promise<void> => {
+              if (this.options.onReminderDue) {
+                await this.options.onReminderDue(evt);
+              } else if (this.options.enableProactive !== false) {
+                const proactiveRes = await handleReminderDue(evt, activeUser, { repo: this.repo });
+                if (!proactiveRes.success) {
+                  if (proactiveRes.error.code === 'ALREADY_HANDLED') {
+                    return;
+                  }
+                  throw new Error(`Proactive handling failed: ${proactiveRes.error.message}`);
+                }
+              } else {
+                fireAlarm(evt.title, reminder.notes || "");
+              }
+            };
 
-            if (this.eventDelivery) {
-              await this.eventDelivery.consumeEvent(event).catch(() => {});
-            }
+            const delivery = this.getEventDelivery();
+            const deliveryResult = await delivery.consumeEvent(event, consumerFn);
 
-            if (this.options.onReminderDue) {
-              this.options.onReminderDue(event);
-            } else {
-              fireAlarm(event.title, reminder.notes || "");
+            if (deliveryResult.success) {
+              events.push(event);
+            } else if (deliveryResult.status === 'failed') {
+              if (this.options.onError) {
+                this.options.onError(new Error(`Reminder event consumption failed: ${deliveryResult.error}`));
+              }
             }
           });
         } catch (claimErr: any) {
