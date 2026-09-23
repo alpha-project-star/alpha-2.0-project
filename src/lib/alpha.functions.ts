@@ -28,6 +28,7 @@ import {
   parseRouteSpec,
   routeLabel,
   getAuthoritativeModelSummary,
+  hasProviderKey,
   type ProviderId,
 } from "./models";
 import {
@@ -255,7 +256,7 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
   const cleansedBuild = rawBuild
     .replace(/Chat routes across[\s\S]*?(?=— every|\. Images|\. STT|$)/gi, "")
     .trim();
-  const modelSummary = getAuthoritativeModelSummary(s.settings.taskModels);
+  const modelSummary = getAuthoritativeModelSummary(s.settings);
   const fullBuildRecord = [cleansedBuild, modelSummary].filter(Boolean).join("\n\n");
 
   let activeReminderText = "";
@@ -553,10 +554,7 @@ function cleanApiKey(key: string): string {
 }
 
 function providerHasKey(prov: ProviderId) {
-  const s = alphaStore.get().settings;
-  if (prov === "groq") return !!cleanApiKey(s.groqApiKey);
-  if (prov === "openai") return !!cleanApiKey(s.openaiCompatKey);
-  return !!cleanApiKey(s.openRouterKey);
+  return hasProviderKey(prov, alphaStore.get().settings);
 }
 
 /** Ordered candidate routes for this turn: preferred first, fallbacks after. */

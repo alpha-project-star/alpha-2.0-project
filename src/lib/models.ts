@@ -137,17 +137,62 @@ export function routeLabel(prov: ProviderId, model: string): string {
   return `${short} (${provName})`;
 }
 
+export function cleanApiKey(k?: string): string {
+  return (k || "")
+    .replace(/^Bearer\s+/i, "")
+    .replace(/^['"]|['"]$/g, "")
+    .trim();
+}
+
+export function hasProviderKey(
+  prov: ProviderId,
+  settings?: { groqApiKey?: string; openaiCompatKey?: string; openRouterKey?: string }
+): boolean {
+  if (!settings) return false;
+  if (prov === "groq") return !!cleanApiKey(settings.groqApiKey);
+  if (prov === "openai") return !!cleanApiKey(settings.openaiCompatKey);
+  return !!cleanApiKey(settings.openRouterKey);
+}
+
 /** Dynamically constructs the authoritative runtime model routing specification for self-description. */
-export function getAuthoritativeModelSummary(taskModels?: { fast?: string; thinking?: string; coding?: string }): string {
-  const fast = taskModels?.fast || MODEL_TRIO.fast;
-  const thinking = taskModels?.thinking || MODEL_TRIO.capable;
-  const coding = taskModels?.coding || MODEL_TRIO.coding;
+export function getAuthoritativeModelSummary(settings?: {
+  taskModels?: { fast?: string; thinking?: string; coding?: string };
+  groqApiKey?: string;
+  openaiCompatKey?: string;
+  openRouterKey?: string;
+}): string {
+  const fast = settings?.taskModels?.fast || MODEL_TRIO.fast;
+  const thinking = settings?.taskModels?.thinking || MODEL_TRIO.capable;
+  const coding = settings?.taskModels?.coding || MODEL_TRIO.coding;
   const primary = MODEL_TRIO.primary;
-  return `MODEL ROUTING (Authoritative Runtime Config):\n` +
+
+  const hasOpenRouter = hasProviderKey("openrouter", settings);
+  const hasGroq = hasProviderKey("groq", settings);
+  const hasOpenAI = hasProviderKey("openai", settings);
+
+  const activeProviders: string[] = [];
+  if (hasOpenRouter) activeProviders.push("OpenRouter");
+  if (hasGroq) activeProviders.push("Groq");
+  if (hasOpenAI) activeProviders.push("OpenAI-compatible");
+
+  const sessionStatus = activeProviders.length > 0
+    ? `Active credentials configured for: ${activeProviders.join(", ")}`
+    : `No online API keys configured in Settings (offline / local fallback mode active)`;
+
+  const groqStatus = hasGroq
+    ? `Groq (${GROQ_EMERGENCY_MODEL}) [AVAILABLE for emergency fallback]`
+    : `Groq (${GROQ_EMERGENCY_MODEL}) [UNAVAILABLE — API key not configured in Settings]`;
+
+  const fallbackChainStatus = hasOpenRouter
+    ? `${TEXT_FALLBACKS.join(", ")} [AVAILABLE via OpenRouter]`
+    : `${TEXT_FALLBACKS.join(", ")} [UNAVAILABLE — OpenRouter API key not configured in Settings]`;
+
+  return `MODEL ROUTING (Configured Architecture & Session Availability):\n` +
+    `• Session Provider Credential Status: ${sessionStatus}\n` +
     `• Primary General Lane: ${primary}\n` +
     `• Fast / Voice Lane: ${fast}\n` +
     `• Thinking / Capable Lane: ${thinking}\n` +
     `• Coding Lane: ${coding}\n` +
-    `• Emergency Fallback: Groq (${GROQ_EMERGENCY_MODEL})\n` +
-    `• Fallback Chain: ${TEXT_FALLBACKS.join(", ")}`;
+    `• Emergency Fallback: ${groqStatus}\n` +
+    `• Fallback Chain: ${fallbackChainStatus}`;
 }
