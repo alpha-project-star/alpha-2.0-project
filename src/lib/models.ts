@@ -204,15 +204,5 @@ export function getAuthoritativeSystemArchitecture(settings?: {
   openaiCompatKey?: string;
   openRouterKey?: string;
 }): string {
-  const modelRouting = getAuthoritativeModelSummary(settings);
-  return `# ALPHA AUTHORITATIVE SYSTEM SPECIFICATION
-
-Identity: Voice-first, futuristic AI companion created with Alex. Recognises the user as Alex.
-Core UI Modules: Cosmic Orb home, split-column desktop HUD, chat with MiniOrb sticky header, and dedicated tools for Notes, Bills, Reminders, Plans, Memories, and Image generation.
-Persistence & Storage: Persistent client storage (localStorage + IndexedDB) with optional Firestore synchronization.
-Search & Grounding Engine: Integrated multi-source live web search (DuckDuckGo, Jina reader web scraper, Wikipedia). Web search is executed conditionally when queries require real-time news, live facts, weather, or online verification.
-Media & Speech Capabilities: Speech-to-Text via Browser Web Speech API or local Whisper; Text-to-Speech via Kokoro endpoint or Browser Speech Synthesis; Image generation via Pollinations.
-Alarms & Reminders: On-device background alarm engine with WebAudio chime, system notifications, voice announcements, and native Firestore reminder repository integration.
-
-${modelRouting}`;
+  return getAuthoritativeModelSummary(settings);
 }
