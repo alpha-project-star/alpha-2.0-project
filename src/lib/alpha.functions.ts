@@ -17,7 +17,12 @@ import {
 import { formatReminderDate } from "./reminder-date-utils";
 import { activity, actionActivity, type ActivityKind } from "./activity";
 import { extractNativeReminderMutationKeys } from "./mutation-identity";
-import { BoundedResearchService } from "./research";
+import {
+  BoundedResearchService,
+  CanonicalWebSource,
+  buildCanonicalSources,
+  normalizeSourceUrl,
+} from "./research";
 import {
   MODEL_TRIO,
   TEXT_FALLBACKS,
@@ -650,7 +655,12 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
   const researchService = new BoundedResearchService();
   const research = await researchService.research(query);
 
-  if (research.status === "failed" || (research.results.length === 0 && research.evidence.length === 0)) {
+  const sources: CanonicalWebSource[] =
+    research.sources && research.sources.length > 0
+      ? research.sources
+      : buildCanonicalSources(research.results, research.articles, research.evidence);
+
+  if (research.status === "failed" || sources.length === 0) {
     return `LIVE WEB SEARCH RESULTS: the search ran for "${query}" at ${new Date().toLocaleString()}, but returned no usable public results. Tell the user plainly that the search returned no usable results; do not guess, do not fabricate headlines, and do not output a Sources section.`;
   }
 
@@ -661,38 +671,44 @@ export async function fetchLiveWebContext(query: string): Promise<string> {
     `---`,
   ];
 
-  if (isHeadlineQuery && research.articles && research.articles.length > 0) {
+  const structuredArticles = sources.filter((s) => s.isStructuredArticle);
+
+  if (isHeadlineQuery && structuredArticles.length > 0) {
     lines.push(`STRUCTURED NEWS ARTICLES & HEADLINES (Primary Results):`);
-    research.articles.slice(0, 6).forEach((a, i) => {
+    structuredArticles.slice(0, 6).forEach((s) => {
       lines.push(
-        `[${i + 1}] Headline: "${a.headline}"\n    Publisher: ${a.publisher}\n    URL: ${a.url}${a.publishedDate ? `\n    Date: ${a.publishedDate}` : ""}\n    Summary: ${a.summary}`
+        `[${s.id}] Headline: "${s.title}"\n    Publisher: ${s.publisher || "Unknown"}\n    URL: ${s.url}${s.publishedDate ? `\n    Date: ${s.publishedDate}` : ""}${s.summary ? `\n    Summary: ${s.summary}` : ""}`
       );
     });
     lines.push(`---`);
   }
 
   lines.push(`Sources:`);
-  research.results.forEach((r, i) => {
-    lines.push(`[${i + 1}] ${r.title}${r.source ? ` (${r.source})` : ""} - ${r.url}`);
-    if (r.snippet) {
-      lines.push(`    Summary: ${r.snippet}`);
+  sources.forEach((s) => {
+    lines.push(`[${s.id}] ${s.title}${s.publisher ? ` (${s.publisher})` : ""} - ${s.url}`);
+    lines.push(`    URL: ${s.url}`);
+    if (s.summary) {
+      lines.push(`    Summary: ${s.summary}`);
     }
   });
 
-  if (!isHeadlineQuery && research.articles && research.articles.length > 0) {
-    lines.push(`---`, `STRUCTURED NEWS ARTICLES & HEADLINES:`);
-    research.articles.slice(0, 6).forEach((a, i) => {
+  if (!isHeadlineQuery && structuredArticles.length > 0) {
+    lines.push(`---`, `STRUCTURED ARTICLES & HEADLINES:`);
+    structuredArticles.slice(0, 6).forEach((s) => {
       lines.push(
-        `[${i + 1}] Headline: "${a.headline}"\n    Publisher: ${a.publisher}\n    URL: ${a.url}${a.publishedDate ? `\n    Date: ${a.publishedDate}` : ""}\n    Summary: ${a.summary}`
+        `[${s.id}] Headline: "${s.title}"\n    Publisher: ${s.publisher || "Unknown"}\n    URL: ${s.url}${s.publishedDate ? `\n    Date: ${s.publishedDate}` : ""}${s.summary ? `\n    Summary: ${s.summary}` : ""}`
       );
     });
   }
 
-  if (research.evidence.length > 0) {
+  if (research.evidence && research.evidence.length > 0) {
     lines.push(`---`, `Verified content details:`);
-    research.evidence.forEach((e, i) => {
+    const urlMap = new Map(sources.map((s) => [normalizeSourceUrl(s.url), s.id]));
+    research.evidence.forEach((e) => {
+      const canonicalId = urlMap.get(normalizeSourceUrl(e.url));
+      const prefix = canonicalId ? `[${canonicalId}] ` : "";
       lines.push(
-        `[${i + 1}] ${e.title} (URL: ${e.url}, Publisher: ${e.publisher || "Unknown"}, Retrieved: ${e.retrievedAt}):\n${e.excerpt}`,
+        `${prefix}${e.title} (URL: ${e.url}, Publisher: ${e.publisher || "Unknown"}, Retrieved: ${e.retrievedAt}):\n${e.excerpt}`,
       );
     });
   }
@@ -1543,6 +1559,73 @@ export async function finalizeReply(
 }
 
 /**
+ * Parses canonical web sources from webContext using the single authoritative citation numbering scheme.
+ * Guarantees every citation marker [N] maps to exactly one source URL and title.
+ */
+export function parseSourcesFromWebContext(
+  webContext: string,
+): Map<number, { n: number; title: string; url: string }> {
+  const sourcesMap = new Map<number, { n: number; title: string; url: string }>();
+  if (!webContext) return sourcesMap;
+
+  const lines = webContext.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const m = line.match(/^\[(\d+)\]\s+(.+)$/);
+    if (!m) continue;
+
+    const n = Number(m[1]);
+    let title = m[2].trim();
+
+    // Check if title is formatted as: Headline: "..."
+    const headlineMatch = title.match(/^Headline:\s*["“](.+?)["”]$/);
+    if (headlineMatch) {
+      title = headlineMatch[1].trim();
+    }
+
+    // Check if URL is inline on the same line:
+    // e.g. "[1] Some Title (Publisher) - https://..."
+    // or "[1] Title (URL: https://..., ...)"
+    let url = "";
+    const inlineDashUrl = title.match(/^(.+?)\s+-\s+(https?:\/\/\S+)$/);
+    if (inlineDashUrl) {
+      title = inlineDashUrl[1].trim();
+      url = inlineDashUrl[2].trim();
+    } else {
+      const inlineParenUrl = title.match(/\(URL:\s*(https?:\/\/[^,)\s]+)/i);
+      if (inlineParenUrl) {
+        url = inlineParenUrl[1].trim();
+        title = title.replace(/\s*\(URL:\s*https?:\/\/[^)]+\)/i, "").trim();
+      }
+    }
+
+    // If no inline URL was found, look ahead for a "URL: <url>" line
+    if (!url) {
+      const urlLine = lines.slice(i + 1, i + 6).find((l) => /^\s*URL:\s*/i.test(l));
+      if (urlLine) {
+        url = urlLine.replace(/^\s*URL:\s*/i, "").trim();
+      }
+    }
+
+    if (url) {
+      // Remove any trailing publisher or URL fragments from title
+      title = title.replace(/\s+-\s+https?:\/\/\S+$/, "").trim();
+      if (!sourcesMap.has(n)) {
+        sourcesMap.set(n, { n, title, url });
+      } else {
+        // If already present, keep the highest-quality title without changing the canonical mapping
+        const existing = sourcesMap.get(n)!;
+        if ((!existing.title || existing.title.startsWith("Headline:")) && title && !title.startsWith("Headline:")) {
+          sourcesMap.set(n, { n, title, url: existing.url || url });
+        }
+      }
+    }
+  }
+
+  return sourcesMap;
+}
+
+/**
  * Strict Citation & Evidence Discipline:
  * 1. Every displayed citation in the Sources footer MUST be traceable to a specific retrieved result.
  * 2. NO Sources section should appear unless there are actual retrieved sources supporting specific claims.
@@ -1564,30 +1647,23 @@ export function appendSourcesIfWeb(text: string, webContext: string): string {
   }
 
   // Parse retrieved items from webContext into map
-  const sourcesMap = new Map<number, { n: number; title: string; url: string }>();
-  if (webContext) {
-    const lines = webContext.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const m = lines[i].match(/^\[(\d+)\]\s+(.+)$/);
-      if (m) {
-        const n = Number(m[1]);
-        const title = m[2].trim();
-        const urlLine = lines.slice(i + 1, i + 5).find((l) => /^URL:\s*/i.test(l));
-        const url = urlLine ? urlLine.replace(/^URL:\s*/i, "").trim() : "";
-        if (url) sourcesMap.set(n, { n, title, url });
-      }
-    }
-  }
+  const sourcesMap = parseSourcesFromWebContext(webContext);
 
   if (sourcesMap.size === 0) {
     return bodyText;
   }
 
-  // Find all citation markers [N] in the body text
-  const citationMatches = [...bodyText.matchAll(/\[(\d+)\]/g)];
+  // Find all citation markers [N] or [N, M] in the body text
+  const citationMatches = [...bodyText.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)];
   const citedNumbers = new Set<number>();
   for (const m of citationMatches) {
-    citedNumbers.add(Number(m[1]));
+    const parts = m[1].split(",");
+    for (const p of parts) {
+      const num = Number(p.trim());
+      if (!isNaN(num) && num > 0) {
+        citedNumbers.add(num);
+      }
+    }
   }
 
   // RULE: No Sources section should appear unless there are actual sources supporting specific claims

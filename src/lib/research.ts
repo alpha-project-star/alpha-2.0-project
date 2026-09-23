@@ -27,6 +27,16 @@ export interface NewsArticle {
   summary: string;
 }
 
+export interface CanonicalWebSource {
+  id: number;
+  url: string;
+  title: string;
+  publisher?: string;
+  publishedDate?: string;
+  summary?: string;
+  isStructuredArticle?: boolean;
+}
+
 export interface ResearchResult {
   query: string;
   results: SearchResult[];
@@ -41,8 +51,136 @@ export interface ResearchResult {
     retrievedAt: string;
     rawContent?: string;
   }[];
+  sources: CanonicalWebSource[];
   status: "success" | "insufficient" | "failed";
   receipt: WebToolReceipt;
+}
+
+export function normalizeSourceUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  try {
+    const u = new URL(rawUrl.trim());
+    const trackingParams = new Set([
+      "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+      "fbclid", "gclid", "ref", "ref_src", "source"
+    ]);
+    const searchParams = new URLSearchParams(u.search);
+    for (const p of [...searchParams.keys()]) {
+      if (trackingParams.has(p.toLowerCase()) || p.toLowerCase().startsWith("utm_")) {
+        searchParams.delete(p);
+      }
+    }
+    const cleanSearch = searchParams.toString() ? `?${searchParams.toString()}` : "";
+    let pathname = u.pathname.replace(/\/+$/, "");
+    if (!pathname) pathname = "/";
+    return `${u.protocol}//${u.host.toLowerCase()}${pathname}${cleanSearch}`;
+  } catch {
+    return rawUrl.trim().toLowerCase().replace(/\/+$/, "");
+  }
+}
+
+export function buildCanonicalSources(
+  results: SearchResult[] = [],
+  articles: NewsArticle[] = [],
+  evidence: ResearchResult["evidence"] = [],
+): CanonicalWebSource[] {
+  const urlMap = new Map<string, CanonicalWebSource>();
+  const canonicalSources: CanonicalWebSource[] = [];
+
+  const registerOrUpdate = (
+    url: string,
+    title: string,
+    publisher?: string,
+    publishedDate?: string,
+    summary?: string,
+    isStructuredArticle?: boolean,
+  ): CanonicalWebSource => {
+    const cleanUrl = (url || "").trim();
+    if (!cleanUrl) {
+      const fallback: CanonicalWebSource = {
+        id: canonicalSources.length + 1,
+        url: cleanUrl,
+        title: title || "Web Source",
+        publisher,
+        publishedDate,
+        summary,
+        isStructuredArticle: Boolean(isStructuredArticle),
+      };
+      canonicalSources.push(fallback);
+      return fallback;
+    }
+
+    const norm = normalizeSourceUrl(cleanUrl);
+    const existing = urlMap.get(norm);
+    if (existing) {
+      if (!existing.publisher && publisher) existing.publisher = publisher;
+      if (!existing.publishedDate && publishedDate) existing.publishedDate = publishedDate;
+      if (!existing.summary && summary) existing.summary = summary;
+      if (isStructuredArticle) {
+        existing.isStructuredArticle = true;
+        if (title && title.length > 5) existing.title = title;
+      }
+      return existing;
+    }
+
+    const newSource: CanonicalWebSource = {
+      id: canonicalSources.length + 1,
+      url: cleanUrl,
+      title: (title || "").trim() || "Web Source",
+      publisher: publisher?.trim(),
+      publishedDate: publishedDate?.trim(),
+      summary: summary?.trim(),
+      isStructuredArticle: Boolean(isStructuredArticle),
+    };
+
+    urlMap.set(norm, newSource);
+    canonicalSources.push(newSource);
+    return newSource;
+  };
+
+  // 1. Structured articles (high-fidelity extracted articles/headlines)
+  for (const a of articles) {
+    if (a && a.url) {
+      registerOrUpdate(
+        a.url,
+        a.headline,
+        a.publisher,
+        a.publishedDate,
+        a.summary,
+        true,
+      );
+    }
+  }
+
+  // 2. Ranked search engine results
+  for (const r of results) {
+    if (r && r.url) {
+      registerOrUpdate(
+        r.url,
+        r.title,
+        r.source,
+        r.date,
+        r.snippet,
+        false,
+      );
+    }
+  }
+
+  // 3. Deep-read page evidence
+  for (const e of evidence) {
+    if (e && e.url) {
+      registerOrUpdate(
+        e.url,
+        e.title,
+        e.publisher,
+        e.publishedDate,
+        e.excerpt,
+        false,
+      );
+    }
+  }
+
+  return canonicalSources;
 }
 
 export function isHomepageOrPortalUrl(urlStr: string): boolean {
@@ -365,13 +503,13 @@ export class BoundedResearchService {
       receipt.resultCount = results.length;
       if (results.length === 0) {
         receipt.status = "empty";
-        return { query, results: [], articles: [], evidence: [], status: "failed", receipt };
+        return { query, results: [], articles: [], evidence: [], sources: [], status: "failed", receipt };
       }
       receipt.status = "usable";
     } catch {
       receipt.status = "error";
       receipt.errorClass = "provider_unavailable";
-      return { query, results: [], articles: [], evidence: [], status: "failed", receipt };
+      return { query, results: [], articles: [], evidence: [], sources: [], status: "failed", receipt };
     }
 
     const evidence: ResearchResult["evidence"] = [];
@@ -532,11 +670,14 @@ export class BoundedResearchService {
 
     receipt.openedCount = openedPages;
 
+    const sources = buildCanonicalSources(results, articles, evidence);
+
     return {
       query,
       results,
       articles,
       evidence,
+      sources,
       status: evidence.length > 0 || results.length > 0 ? "success" : "insufficient",
       receipt,
     };
