@@ -76,8 +76,12 @@ export function getHourlyState(): { count: number; resetAt: number } {
   try {
     const storage = getStorage();
     if (!storage) return { count: 0, resetAt: 0 };
-    const count = Number(storage.getItem(getAmbientKey(AMBIENT_COUNTER_KEY)) || "0");
-    const resetAt = Number(storage.getItem(getAmbientKey(AMBIENT_RESET_KEY)) || "0");
+    const rawCount = storage.getItem(getAmbientKey(AMBIENT_COUNTER_KEY));
+    const rawResetAt = storage.getItem(getAmbientKey(AMBIENT_RESET_KEY));
+    const count = Number(rawCount || "0");
+    const resetAt = Number(rawResetAt || "0");
+    if (isNaN(count) || count < 0) return { count: 0, resetAt: isNaN(resetAt) ? 0 : resetAt };
+    if (isNaN(resetAt) || resetAt < 0) return { count, resetAt: 0 };
     return { count, resetAt };
   } catch {
     return { count: 0, resetAt: 0 };
@@ -88,8 +92,8 @@ export function updateHourlyState(count: number, resetAt: number) {
   try {
     const storage = getStorage();
     if (!storage) return;
-    storage.setItem(getAmbientKey(AMBIENT_COUNTER_KEY), String(count));
-    storage.setItem(getAmbientKey(AMBIENT_RESET_KEY), String(resetAt));
+    storage.setItem(getAmbientKey(AMBIENT_COUNTER_KEY), String(Math.max(0, count)));
+    storage.setItem(getAmbientKey(AMBIENT_RESET_KEY), String(Math.max(0, resetAt)));
   } catch {}
 }
 
@@ -239,10 +243,6 @@ async function executeAmbientScan(): Promise<void> {
     return;
   }
 
-  // Increment and persist counter BEFORE we make the request
-  count++;
-  updateHourlyState(count, resetAt);
-
   lastFireAt = now;
   const executionId = ++currentAmbientExecutionId;
   momentum = 0;
@@ -265,6 +265,16 @@ async function executeAmbientScan(): Promise<void> {
     if (executionId !== currentAmbientExecutionId || !running || !isLeader || !revalidateLeadership()) {
       return;
     }
+
+    // Record quota usage ONLY after successful capture and model completion
+    const completionNow = Date.now();
+    let { count: currentCount, resetAt: currentResetAt } = getHourlyState();
+    if (completionNow - currentResetAt > 3600000) {
+      currentResetAt = completionNow;
+      currentCount = 0;
+    }
+    currentCount++;
+    updateHourlyState(currentCount, currentResetAt);
 
     let trimmed = (reply || "").trim();
     if (!trimmed) return;
