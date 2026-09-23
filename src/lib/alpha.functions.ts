@@ -27,6 +27,7 @@ import {
   HISTORY_TURNS,
   parseRouteSpec,
   routeLabel,
+  getAuthoritativeModelSummary,
   type ProviderId,
 } from "./models";
 import {
@@ -250,7 +251,12 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
     .sort((a, b) => a.dueAt - b.dueAt)[0];
 
   const userName = s.profile.name || "Alex";
-  const build = (s.settings.buildRecord || "").slice(0, 1200);
+  const rawBuild = (s.settings.buildRecord || "").slice(0, 1200);
+  const cleansedBuild = rawBuild
+    .replace(/Chat routes across[\s\S]*?(?=— every|\. Images|\. STT|$)/gi, "")
+    .trim();
+  const modelSummary = getAuthoritativeModelSummary(s.settings.taskModels);
+  const fullBuildRecord = [cleansedBuild, modelSummary].filter(Boolean).join("\n\n");
 
   let activeReminderText = "";
   try {
@@ -278,7 +284,7 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
   return [
     `USER: You are talking to ${safeUserName}. Recognise them by name — they are one of your creators.${safeBio ? " Bio: " + safeBio : ""}`,
     temporalBlock(),
-    build ? `BUILD RECORD (your own spec — read & use when asked about yourself):\n${build}` : "",
+    fullBuildRecord ? `BUILD RECORD (your own spec — read & use when asked about yourself):\n${fullBuildRecord}` : "",
     activeReminderText,
     `Notes (${s.notes.length}): ${briefList(s.notes, (n) => safeContent(n.title || (n.body || "").slice(0, 40)))}`,
     `Bills (${s.bills.length}): ${briefList(s.bills, (b) => `${safeContent(b.name)} $${b.balance} (${b.status})`)}`,

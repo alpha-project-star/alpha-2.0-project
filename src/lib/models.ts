@@ -136,3 +136,18 @@ export function routeLabel(prov: ProviderId, model: string): string {
     prov === "openrouter" ? "OpenRouter" : prov === "groq" ? "Groq" : "OpenAI-compatible";
   return `${short} (${provName})`;
 }
+
+/** Dynamically constructs the authoritative runtime model routing specification for self-description. */
+export function getAuthoritativeModelSummary(taskModels?: { fast?: string; thinking?: string; coding?: string }): string {
+  const fast = taskModels?.fast || MODEL_TRIO.fast;
+  const thinking = taskModels?.thinking || MODEL_TRIO.capable;
+  const coding = taskModels?.coding || MODEL_TRIO.coding;
+  const primary = MODEL_TRIO.primary;
+  return `MODEL ROUTING (Authoritative Runtime Config):\n` +
+    `• Primary General Lane: ${primary}\n` +
+    `• Fast / Voice Lane: ${fast}\n` +
+    `• Thinking / Capable Lane: ${thinking}\n` +
+    `• Coding Lane: ${coding}\n` +
+    `• Emergency Fallback: Groq (${GROQ_EMERGENCY_MODEL})\n` +
+    `• Fallback Chain: ${TEXT_FALLBACKS.join(", ")}`;
+}
