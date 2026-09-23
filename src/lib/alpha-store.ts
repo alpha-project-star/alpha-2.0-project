@@ -299,14 +299,31 @@ import { auth } from "./firebase";
 
 let currentStoreUid: string | null = null;
 
+export const ALPHA_USER_KEY_PREFIXES: readonly string[] = [
+  ...Object.values(K),
+  "alpha.reminders.v1",
+  "alpha.deliveries.v1",
+  "alpha.reminder_context.v1",
+  "alpha.proactive.lastBrief",
+  "alpha.proactive.lastBillsNudge",
+  "alpha.proactive.lastPlansNudge",
+  "alpha_ambient_hourly_counter",
+  "alpha_ambient_hourly_reset_at",
+];
+
 /**
- * Checks if a key belongs to the given UID as its exact final namespace component.
+ * Checks if a localStorage key belongs to Alpha's canonical user-scoped storage namespace
+ * AND the UID is the exact authenticated UID occupying the canonical UID namespace position.
  */
 export function isKeyForUid(key: string, uid: string): boolean {
   if (!key || !uid) return false;
-  const lastDot = key.lastIndexOf(".");
-  if (lastDot === -1) return false;
-  return key.slice(lastDot + 1) === uid;
+
+  for (let i = 0; i < ALPHA_USER_KEY_PREFIXES.length; i++) {
+    if (key === `${ALPHA_USER_KEY_PREFIXES[i]}.${uid}`) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
