@@ -28,6 +28,7 @@ import {
   parseRouteSpec,
   routeLabel,
   getAuthoritativeModelSummary,
+  getAuthoritativeSystemArchitecture,
   hasProviderKey,
   type ProviderId,
 } from "./models";
@@ -252,12 +253,21 @@ export function ctxSummary(authoritativeReminders?: FirestoreReminder[]) {
     .sort((a, b) => a.dueAt - b.dueAt)[0];
 
   const userName = s.profile.name || "Alex";
+  const systemArchitecture = getAuthoritativeSystemArchitecture(s.settings);
   const rawBuild = (s.settings.buildRecord || "").slice(0, 1200);
-  const cleansedBuild = rawBuild
+  const cleansedUserNotes = rawBuild
+    .replace(/# Alpha — Build Record[\s\S]*?(?=\n\n|\n[A-Z]|$)/gi, "")
+    .replace(/Alpha is a voice-first[\s\S]*?recognises the user as Alex\./gi, "")
     .replace(/Chat routes across[\s\S]*?(?=— every|\. Images|\. STT|$)/gi, "")
+    .replace(/every online turn is grounded[\s\S]*?before the model call\./gi, "")
     .trim();
-  const modelSummary = getAuthoritativeModelSummary(s.settings);
-  const fullBuildRecord = [cleansedBuild, modelSummary].filter(Boolean).join("\n\n");
+
+  const fullBuildRecord = [
+    systemArchitecture,
+    cleansedUserNotes ? `USER CUSTOM DIRECTIVES & NOTES:\n${cleansedUserNotes}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 
   let activeReminderText = "";
   try {

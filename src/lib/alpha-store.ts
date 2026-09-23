@@ -175,16 +175,7 @@ const DEFAULT_SETTINGS: Settings = {
   openRouterKey: "",
   backgroundData: "",
   backgroundEnabled: true,
-  buildRecord: `# Alpha — Build Record
-
-Alpha is a voice-first, futuristic AI companion built with Alex as one of its
-creators. Core layout: cosmic Orb home, split-column desktop HUD, chat with
-MiniOrb sticky header, and dedicated Notes / Bills / Reminders / Plans /
-Memories / Image tools. State lives in localStorage. Every online turn is
-grounded with a live DuckDuckGo/Jina web-search block before the model call.
-Images use Pollinations (no key). STT: browser Web Speech or local Whisper.
-TTS: Kokoro or browser. Alarms fire from an on-device engine with WebAudio
-chime, system notification, and voice announcement. Alpha recognises the user as Alex.`,
+  buildRecord: "",
   visionAmbientEnabled: false,
   visionAmbientIntervalSec: 30,
   taskModels: {
@@ -433,12 +424,14 @@ let state: AlphaState = {
   }
   if (
     state.settings.buildRecord &&
-    (/DeepSeek R1/i.test(state.settings.buildRecord) ||
+    (/Alpha is a voice-first/i.test(state.settings.buildRecord) ||
+     /DeepSeek R1/i.test(state.settings.buildRecord) ||
      /Poolside/i.test(state.settings.buildRecord) ||
      /Groq \(fast Llama\)/i.test(state.settings.buildRecord) ||
-     /Chat routes across/i.test(state.settings.buildRecord))
+     /Chat routes across/i.test(state.settings.buildRecord) ||
+     /every online turn is grounded/i.test(state.settings.buildRecord))
   ) {
-    state = { ...state, settings: { ...state.settings, buildRecord: DEFAULT_SETTINGS.buildRecord } };
+    state = { ...state, settings: { ...state.settings, buildRecord: "" } };
     settingsChanged = true;
   }
   if (settingsChanged) {

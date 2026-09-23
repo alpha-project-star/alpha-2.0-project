@@ -863,13 +863,14 @@ function SettingsRoute() {
           </Section>
 
           <Section
-            title="Alpha Build Record"
-            hint="Alpha's own spec sheet — he reads this so he knows himself. Edit to update his self-knowledge."
+            title="Alpha Custom Directives & Notes"
+            hint="Add custom persona preferences or notes for Alpha. System architecture and capabilities are dynamically managed by the runtime engine."
           >
             <textarea
               value={s.buildRecord}
               onChange={(e) => updateSetting({ buildRecord: e.target.value })}
-              className="w-full bg-input rounded-md px-3 py-2 border border-border min-h-[160px] font-mono text-xs"
+              placeholder="e.g., Preferred communication tone, custom domain knowledge notes, or specific response style guidelines..."
+              className="w-full bg-input rounded-md px-3 py-2 border border-border min-h-[120px] font-mono text-xs"
             />
           </Section>
         </Group>
