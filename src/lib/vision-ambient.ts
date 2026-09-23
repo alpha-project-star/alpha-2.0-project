@@ -252,6 +252,9 @@ async function executeAmbientScan(): Promise<void> {
 
   // 1. Establish the authenticated user identity that owns that execution at the beginning
   const executionOwnerUid = getCurrentStoreUser();
+  if (!executionOwnerUid) {
+    return;
+  }
 
   const now = Date.now();
   const interval = Math.max(15, alphaStore.get().settings.visionAmbientIntervalSec || 30) * 1000;
@@ -260,7 +263,7 @@ async function executeAmbientScan(): Promise<void> {
 
   // Load and check hourly limit from persistent storage for this execution's owner
   let { count, resetAt } = getHourlyState(executionOwnerUid);
-  if (executionOwnerUid && (now - resetAt > 3600000 || resetAt === 0)) {
+  if (now - resetAt > 3600000 || resetAt === 0) {
     resetAt = now;
     count = 0;
     updateHourlyState(count, resetAt, executionOwnerUid);
