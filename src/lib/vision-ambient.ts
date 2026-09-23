@@ -15,8 +15,7 @@
  *      ambient multi-tab execution is explicitly disabled (graceful unsupported state)
  *      to prevent dangerous duplicate execution and API quota exhaustion.
  */
-import { alphaStore, uid, getStorage } from "./alpha-store";
-import { auth } from "./firebase";
+import { alphaStore, uid, getStorage, getKey } from "./alpha-store";
 import { captureFrame, isActive as eyeActive, subscribeBrightness } from "./vision-stream";
 import { sendChat } from "./alpha.functions";
 import { speakWith } from "./voice";
@@ -67,17 +66,15 @@ export function isVisionAmbient(): boolean {
   return running;
 }
 
-function getAmbientKey(base: string): string {
-  const currentUid = auth.currentUser?.uid || "local-user";
-  return `${base}.${currentUid}`;
-}
-
 export function getHourlyState(): { count: number; resetAt: number } {
   try {
     const storage = getStorage();
     if (!storage) return { count: 0, resetAt: 0 };
-    const rawCount = storage.getItem(getAmbientKey(AMBIENT_COUNTER_KEY));
-    const rawResetAt = storage.getItem(getAmbientKey(AMBIENT_RESET_KEY));
+    const counterKey = getKey(AMBIENT_COUNTER_KEY);
+    const resetKey = getKey(AMBIENT_RESET_KEY);
+    if (counterKey.endsWith(".unauthenticated")) return { count: 0, resetAt: 0 };
+    const rawCount = storage.getItem(counterKey);
+    const rawResetAt = storage.getItem(resetKey);
     const count = Number(rawCount || "0");
     const resetAt = Number(rawResetAt || "0");
     if (isNaN(count) || count < 0) return { count: 0, resetAt: isNaN(resetAt) ? 0 : resetAt };
@@ -92,8 +89,11 @@ export function updateHourlyState(count: number, resetAt: number) {
   try {
     const storage = getStorage();
     if (!storage) return;
-    storage.setItem(getAmbientKey(AMBIENT_COUNTER_KEY), String(Math.max(0, count)));
-    storage.setItem(getAmbientKey(AMBIENT_RESET_KEY), String(Math.max(0, resetAt)));
+    const counterKey = getKey(AMBIENT_COUNTER_KEY);
+    const resetKey = getKey(AMBIENT_RESET_KEY);
+    if (counterKey.endsWith(".unauthenticated") || resetKey.endsWith(".unauthenticated")) return;
+    storage.setItem(counterKey, String(Math.max(0, count)));
+    storage.setItem(resetKey, String(Math.max(0, resetAt)));
   } catch {}
 }
 
@@ -250,6 +250,10 @@ async function executeAmbientScan(): Promise<void> {
   const frame = captureFrame(512, 0.68);
   if (!frame) return;
 
+  // Record quota usage ONCE at successful frame capture boundary
+  count++;
+  updateHourlyState(count, resetAt);
+
   try {
     const reply = await sendChat([
       {
@@ -265,16 +269,6 @@ async function executeAmbientScan(): Promise<void> {
     if (executionId !== currentAmbientExecutionId || !running || !isLeader || !revalidateLeadership()) {
       return;
     }
-
-    // Record quota usage ONLY after successful capture and model completion
-    const completionNow = Date.now();
-    let { count: currentCount, resetAt: currentResetAt } = getHourlyState();
-    if (completionNow - currentResetAt > 3600000) {
-      currentResetAt = completionNow;
-      currentCount = 0;
-    }
-    currentCount++;
-    updateHourlyState(currentCount, currentResetAt);
 
     let trimmed = (reply || "").trim();
     if (!trimmed) return;

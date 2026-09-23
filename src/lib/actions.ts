@@ -867,6 +867,7 @@ export async function executeActionTagsAsync(
       continue;
     }
 
+    const target = hits[0];
     const fields = parseFields(match[2] || "");
     const allowed = ["title", "when", "notes", "done"];
     const keys = Object.keys(fields).filter((k) => allowed.includes(k));

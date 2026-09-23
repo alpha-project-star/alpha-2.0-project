@@ -326,15 +326,22 @@ export function isKeyForUid(key: string, uid: string): boolean {
   return false;
 }
 
+export function isAlphaKeyPrefix(key: string): boolean {
+  return ALPHA_USER_KEY_PREFIXES.some((prefix) => key === prefix || key.startsWith(prefix));
+}
+
 /**
  * Returns the key scoped by the currently authenticated Firebase UID.
  */
 export function getKey(baseKey: string): string {
+  if (!isAlphaKeyPrefix(baseKey)) {
+    return baseKey;
+  }
   if (currentStoreUid) {
     if (isKeyForUid(baseKey, currentStoreUid)) return baseKey;
     return `${baseKey}.${currentStoreUid}`;
   }
-  return `${baseKey}.unauthenticated`;
+  return baseKey;
 }
 
 export function getCurrentStoreUser(): string | null {
@@ -349,7 +356,30 @@ export function setStoreUser(uid: string | null) {
   const safeUid = uid ? uid.trim() : null;
   if (currentStoreUid === safeUid) return;
 
+  const previousUid = currentStoreUid;
   currentStoreUid = safeUid;
+
+  // If moving from unauthenticated to an authenticated user and the user has no settings yet,
+  // carry over the device's configured settings / API keys so user doesn't lose their configured keys!
+  if (safeUid && (!previousUid || previousUid === "unauthenticated")) {
+    const userSettingsKey = `${K.settings}.${safeUid}`;
+    const storage = getStorage();
+    if (storage && !storage.getItem(userSettingsKey)) {
+      const unauthKey = `${K.settings}.unauthenticated`;
+      const unauthRaw = storage.getItem(unauthKey) || storage.getItem(K.settings);
+      if (unauthRaw) {
+        try {
+          const parsed = JSON.parse(unauthRaw);
+          if (parsed && (parsed.groqApiKey || parsed.openaiCompatKey || parsed.openRouterKey)) {
+            storage.setItem(userSettingsKey, unauthRaw);
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
   reloadState();
   emit();
 }
@@ -373,17 +403,27 @@ function parseLS<T>(key: string, schema: z.ZodType<T>, fallback: T): T {
   const storage = getStorage();
   if (!storage) return fallback;
   const targetKey = getKey(key);
-  const v = storage.getItem(targetKey);
+  let v = storage.getItem(targetKey);
+  if ((v === null || v === undefined || typeof v !== "string" || v.trim() === "") && key === K.settings) {
+    const unauthKey = `${K.settings}.unauthenticated`;
+    v = storage.getItem(unauthKey) || storage.getItem(K.settings);
+  }
   if (v === null || v === undefined || typeof v !== "string" || v.trim() === "") return fallback;
   let parsed: unknown;
   try {
     parsed = JSON.parse(v);
-  } catch (err: unknown) {
-    throw new PersistenceError(targetKey, new Error(`Corrupted JSON in storage: ${err instanceof Error ? err.message : String(err)}`));
+  } catch {
+    return fallback;
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
-    throw new PersistenceError(targetKey, new Error(`Schema validation failed for "${targetKey}": ${result.error.message}`));
+    if (typeof parsed === "object" && parsed !== null) {
+      const merged = { ...(fallback as any), ...parsed };
+      const retry = schema.safeParse(merged);
+      if (retry.success) return retry.data;
+      return merged as T;
+    }
+    return fallback;
   }
   return result.data;
 }
@@ -424,18 +464,18 @@ if (typeof window !== "undefined" && auth.currentUser) {
 }
 
 let state: AlphaState = {
-  chat: currentStoreUid ? parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []) : [],
-  notes: currentStoreUid ? parseLS<Note[]>(K.notes, z.array(NoteSchema), []) : [],
-  bills: currentStoreUid ? parseLS<Bill[]>(K.bills, z.array(BillSchema), []) : [],
-  tasks: currentStoreUid ? parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []) : [],
-  goals: currentStoreUid ? parseLS<Goal[]>(K.goals, z.array(GoalSchema) as any, []) : [],
-  runs: currentStoreUid ? parseLS<Run[]>(K.runs, z.array(RunSchema) as any, []) : [],
-  steps: currentStoreUid ? parseLS<Step[]>(K.steps, z.array(StepSchema) as any, []) : [],
-  observations: currentStoreUid ? parseLS<Observation[]>(K.observations, z.array(ObservationSchema) as any, []) : [],
-  results: currentStoreUid ? parseLS<Result[]>(K.results, z.array(ResultSchema) as any, []) : [],
-  memories: currentStoreUid ? parseLS<Memory[]>(K.memories, z.array(MemorySchema), []) : [],
-  profile: currentStoreUid ? parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }) : { name: "", bio: "" },
-  settings: currentStoreUid ? parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS) : DEFAULT_SETTINGS,
+  chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
+  notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
+  bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
+  tasks: parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []),
+  goals: parseLS<Goal[]>(K.goals, z.array(GoalSchema) as any, []),
+  runs: parseLS<Run[]>(K.runs, z.array(RunSchema) as any, []),
+  steps: parseLS<Step[]>(K.steps, z.array(StepSchema) as any, []),
+  observations: parseLS<Observation[]>(K.observations, z.array(ObservationSchema) as any, []),
+  results: parseLS<Result[]>(K.results, z.array(ResultSchema) as any, []),
+  memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
+  profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
+  settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
 };
 
 // One-shot migration: users still on the old task-model defaults get moved to
@@ -536,23 +576,6 @@ export function useAlpha<T>(selector: (s: AlphaState) => T): T {
 }
 
 function reloadState() {
-  if (!currentStoreUid) {
-    state = {
-      chat: [],
-      notes: [],
-      bills: [],
-      tasks: [],
-      goals: [],
-      runs: [],
-      steps: [],
-      observations: [],
-      results: [],
-      memories: [],
-      profile: { name: "", bio: "" },
-      settings: DEFAULT_SETTINGS,
-    };
-    return;
-  }
   state = {
     chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
     notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
@@ -583,12 +606,19 @@ export const alphaStore = {
       reloadState();
       const next = { ...state.settings, ...patch };
       const result = SettingsSchema.safeParse(next);
+      let finalSettings: Settings;
       if (!result.success) {
-        console.error("Invalid settings patch:", result.error);
-        return;
+        console.warn("Settings patch safeParse warning, merging safely:", result.error);
+        finalSettings = {
+          ...DEFAULT_SETTINGS,
+          ...state.settings,
+          ...patch,
+        };
+      } else {
+        finalSettings = result.data;
       }
-      writeLS(K.settings, result.data);
-      state = { ...state, settings: result.data };
+      writeLS(K.settings, finalSettings);
+      state = { ...state, settings: finalSettings };
       emit();
     });
   },

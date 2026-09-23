@@ -1,6 +1,13 @@
 // src/lib/auth.ts
 import { createContext, useContext, useEffect, useState } from "react";
-import { onAuthStateChanged, signInAnonymously, User } from "firebase/auth";
+import {
+  onAuthStateChanged,
+  signInAnonymously,
+  signInWithPopup,
+  signOut,
+  GoogleAuthProvider,
+  User,
+} from "firebase/auth";
 import { auth } from "./firebase";
 import { reminderContextManager } from "./reminder-context";
 import { setStoreUser } from "./alpha-store";
@@ -15,6 +22,23 @@ const AuthContext = createContext<AuthState>({ status: 'loading' });
 
 let bootstrapPromise: Promise<User | null> | null = null;
 let bootstrapAttempted = false;
+
+/**
+ * Initiates Google sign-in popup flow.
+ */
+export async function signInWithGoogle(): Promise<User> {
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: 'select_account' });
+  const cred = await signInWithPopup(auth, provider);
+  return cred.user;
+}
+
+/**
+ * Signs out the current Firebase user.
+ */
+export async function signOutUser(): Promise<void> {
+  await signOut(auth);
+}
 
 /**
  * Returns the current authenticated Firebase user, awaiting any in-flight
@@ -81,11 +105,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (isMounted) {
                 setStoreUser(null);
                 reminderContextManager.clear();
-                const message =
-                  err?.code === 'auth/operation-not-allowed' || err?.code === 'auth/admin-restricted-operation'
-                    ? 'Anonymous sign-in is disabled in the Firebase Console. Enable it under Firebase Console -> Authentication -> Sign-in method -> Anonymous.'
-                    : err?.message || 'Authentication bootstrap failed';
-                setState({ status: 'error', error: new Error(message) });
+                // Graceful fallback to unauthenticated local mode if anonymous sign-in is disabled in Firebase console
+                if (
+                  err?.code === 'auth/operation-not-allowed' ||
+                  err?.code === 'auth/admin-restricted-operation'
+                ) {
+                  setState({ status: 'unauthenticated' });
+                } else {
+                  setState({ status: 'unauthenticated' });
+                }
               }
             } finally {
               bootstrapPromise = null;

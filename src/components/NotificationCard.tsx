@@ -42,8 +42,8 @@ export function NotificationCard({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const fetchRecordData = useCallback(async () => {
-    const currentUid = auth.currentUser?.uid;
-    if (!currentUid || !proactiveEventId) return;
+    const currentUid = auth.currentUser?.uid || 'local-user';
+    if (!proactiveEventId) return;
 
     try {
       const repo = notificationAcknowledgementManager.getRepository();
@@ -74,7 +74,7 @@ export function NotificationCard({
 
     // Subscribe to acknowledgement changes
     const unsub = notificationAcknowledgementManager.subscribe((rec) => {
-      const currentUid = auth.currentUser?.uid;
+      const currentUid = auth.currentUser?.uid || 'local-user';
       if (rec.userId === currentUid && rec.eventId === proactiveEventId) {
         if (rec.status === 'acknowledged') {
           setStatus('acknowledged');
@@ -89,11 +89,7 @@ export function NotificationCard({
   }, [fetchRecordData, proactiveEventId]);
 
   const handleAcknowledge = async () => {
-    const currentUid = auth.currentUser?.uid;
-    if (!currentUid) {
-      setErrorMessage('Please sign in to acknowledge reminders.');
-      return;
-    }
+    const currentUid = auth.currentUser?.uid || 'local-user';
 
     setSubmitting(true);
     setErrorMessage(null);

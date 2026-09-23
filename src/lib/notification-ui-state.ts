@@ -134,7 +134,7 @@ export async function acknowledgeNotificationFromUI(
  * Respects strict user isolation and deterministic ordering.
  */
 export function useNotificationUIState() {
-  const [currentUserId, setCurrentUserId] = useState<string | null>(() => auth.currentUser?.uid || null);
+  const [currentUserId, setCurrentUserId] = useState<string>(() => auth.currentUser?.uid || 'local-user');
   const [outstandingRecords, setOutstandingRecords] = useState<OutstandingAcknowledgementRecord[]>([]);
   const [completedReminderIds, setCompletedReminderIds] = useState<Set<string>>(new Set());
   const [ackMap, setAckMap] = useState<Record<string, AcknowledgementStatus>>({});
@@ -144,7 +144,7 @@ export function useNotificationUIState() {
   // Re-sync when auth state changes
   useEffect(() => {
     const unsub = auth.onAuthStateChanged((user) => {
-      const newUid = user?.uid || null;
+      const newUid = user?.uid || 'local-user';
       setCurrentUserId((prevUid) => {
         if (prevUid !== newUid) {
           setOutstandingRecords([]);
@@ -156,11 +156,6 @@ export function useNotificationUIState() {
         }
         return newUid;
       });
-      if (!newUid) {
-        setOutstandingRecords([]);
-        setCompletedReminderIds(new Set());
-        setAckMap({});
-      }
     });
     return unsub;
   }, []);

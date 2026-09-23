@@ -593,6 +593,12 @@ function planRoutes(
     push(s.taskModels.fast);
     push(s.taskModels.coding);
 
+    // OpenAI vision models if openai key configured
+    if (providerHasKey("openai")) {
+      push("openai:gpt-4o");
+      push("openai:gpt-4o-mini");
+    }
+
     // Fallback to verified vision models
     if (providerHasKey("openrouter")) {
       for (const m of VISION_FALLBACKS) push(`openrouter:${m}`);
@@ -619,8 +625,18 @@ function planRoutes(
   // 4. Whatever other lanes the user configured.
   push(s.taskModels.thinking);
   push(s.taskModels.coding);
-  // 5. Emergency Groq lane.
-  if (providerHasKey("groq")) push(`groq:${GROQ_EMERGENCY_MODEL}`);
+  // 5. OpenAI-compatible routes if provider has key (e.g. OpenAI, xAI Grok, Together, DeepSeek)
+  if (providerHasKey("openai")) {
+    push("openai:gpt-4o-mini");
+    push("openai:gpt-4o");
+    push("openai:grok-2");
+    push("openai:grok-beta");
+  }
+  // 6. Groq lane if provider has key.
+  if (providerHasKey("groq")) {
+    push("groq:llama-3.3-70b-versatile");
+    push(`groq:${GROQ_EMERGENCY_MODEL}`);
+  }
   return out;
 }
 

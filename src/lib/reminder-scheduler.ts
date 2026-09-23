@@ -226,7 +226,7 @@ export class ReminderScheduler {
             const consumerFn = async (evt: ReminderDueEvent): Promise<void> => {
               if (this.options.onReminderDue) {
                 await this.options.onReminderDue(evt);
-              } else if (this.options.enableProactive !== false) {
+              } else if (this.options.enableProactive) {
                 const proactiveRes = await handleReminderDue(evt, activeUser, { repo: this.repo });
                 if (!proactiveRes.success) {
                   if (proactiveRes.error.code === 'ALREADY_HANDLED') {
