@@ -33,16 +33,18 @@ function todayKey(): string {
 async function tryClaimOnce(key: string): Promise<boolean> {
   const storage = getStorage();
   if (!storage) return false;
-  return await withCrossContextLock(`alpha_lock_proactive_${key}`, async () => {
+  const currentUid = auth.currentUser?.uid || "local-user";
+  const userKey = `${key}.${currentUid}`;
+  return await withCrossContextLock(`alpha_lock_proactive_${userKey}`, async () => {
     try {
-      if (storage.getItem(key) === todayKey()) return false;
-      storage.setItem(key, todayKey());
+      if (storage.getItem(userKey) === todayKey()) return false;
+      storage.setItem(userKey, todayKey());
       return true;
     } catch (err) {
       if (err && typeof err === "object" && (err as any).name === "PersistenceError") {
         throw err;
       }
-      throw new PersistenceError(key, err);
+      throw new PersistenceError(userKey, err);
     }
   });
 }

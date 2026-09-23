@@ -3,6 +3,7 @@ import { z } from "zod";
 import { auth } from "./firebase";
 import {
   K,
+  getKey,
   ChatMessageSchema,
   NoteSchema,
   BillSchema,
@@ -96,7 +97,8 @@ export async function exportAlphaData(): Promise<AlphaDataExport> {
   const localStorage: Record<string, string | null> = {};
   for (const key of Object.values(K)) {
     try {
-      let val = window.localStorage.getItem(key);
+      const storageKey = getKey(key);
+      let val = window.localStorage.getItem(storageKey);
       if (val && key === K.settings) {
         // Scrub secrets
         const settings = JSON.parse(val);
@@ -225,9 +227,9 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
             updatedAt: m.updatedAt || Date.now(),
           }));
         }
-        stagedLocalStorage[key] = JSON.stringify(sanitizedData);
+        stagedLocalStorage[getKey(key)] = JSON.stringify(sanitizedData);
       } else {
-        stagedLocalStorage[key] = value;
+        stagedLocalStorage[getKey(key)] = value;
       }
       restored.push(key);
     }
@@ -435,7 +437,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       if (typeof window !== "undefined" && window.localStorage) {
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
-          if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+          if (key && (key.endsWith(`.${currentUid}`) || key.includes(`.${currentUid}`))) {
             window.localStorage.removeItem(key);
             i--;
           }
@@ -476,7 +478,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         if (typeof window !== "undefined" && window.localStorage) {
           for (let i = 0; i < window.localStorage.length; i++) {
             const key = window.localStorage.key(i);
-            if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+            if (key && (key.endsWith(`.${currentUid}`) || key.includes(`.${currentUid}`))) {
               window.localStorage.removeItem(key);
               i--;
             }

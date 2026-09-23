@@ -57,11 +57,17 @@ class ReminderContextManager {
     this.reload();
   }
 
-  private reload() {
+  private getStorageKey(userId: string | null): string {
+    const safeUid = userId ? userId.trim() : 'local-user';
+    return `${LS_KEY}.${safeUid}`;
+  }
+
+  private reload(userId?: string) {
     const storage = getStorage();
     if (!storage) return;
+    const key = this.getStorageKey(userId || this.currentUserId);
     try {
-      const v = storage.getItem(LS_KEY);
+      const v = storage.getItem(key);
       if (v) {
         const parsed = JSON.parse(v);
         this.activeContext = parsed.context;
@@ -75,14 +81,15 @@ class ReminderContextManager {
   private save() {
     const storage = getStorage();
     if (!storage) return;
+    const key = this.getStorageKey(this.currentUserId);
     try {
-      if (this.activeContext) {
-        storage.setItem(LS_KEY, JSON.stringify({
+      if (this.activeContext && this.currentUserId) {
+        storage.setItem(key, JSON.stringify({
           context: this.activeContext,
           userId: this.currentUserId
         }));
       } else {
-        storage.removeItem(LS_KEY);
+        storage.removeItem(key);
       }
     } catch {}
   }

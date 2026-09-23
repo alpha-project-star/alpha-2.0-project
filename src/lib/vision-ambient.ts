@@ -16,6 +16,7 @@
  *      to prevent dangerous duplicate execution and API quota exhaustion.
  */
 import { alphaStore, uid, getStorage } from "./alpha-store";
+import { auth } from "./firebase";
 import { captureFrame, isActive as eyeActive, subscribeBrightness } from "./vision-stream";
 import { sendChat } from "./alpha.functions";
 import { speakWith } from "./voice";
@@ -66,12 +67,17 @@ export function isVisionAmbient(): boolean {
   return running;
 }
 
+function getAmbientKey(base: string): string {
+  const currentUid = auth.currentUser?.uid || "local-user";
+  return `${base}.${currentUid}`;
+}
+
 export function getHourlyState(): { count: number; resetAt: number } {
   try {
     const storage = getStorage();
     if (!storage) return { count: 0, resetAt: 0 };
-    const count = Number(storage.getItem(AMBIENT_COUNTER_KEY) || "0");
-    const resetAt = Number(storage.getItem(AMBIENT_RESET_KEY) || "0");
+    const count = Number(storage.getItem(getAmbientKey(AMBIENT_COUNTER_KEY)) || "0");
+    const resetAt = Number(storage.getItem(getAmbientKey(AMBIENT_RESET_KEY)) || "0");
     return { count, resetAt };
   } catch {
     return { count: 0, resetAt: 0 };
@@ -82,8 +88,8 @@ export function updateHourlyState(count: number, resetAt: number) {
   try {
     const storage = getStorage();
     if (!storage) return;
-    storage.setItem(AMBIENT_COUNTER_KEY, String(count));
-    storage.setItem(AMBIENT_RESET_KEY, String(resetAt));
+    storage.setItem(getAmbientKey(AMBIENT_COUNTER_KEY), String(count));
+    storage.setItem(getAmbientKey(AMBIENT_RESET_KEY), String(resetAt));
   } catch {}
 }
 

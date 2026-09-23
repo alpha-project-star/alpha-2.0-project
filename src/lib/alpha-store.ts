@@ -295,6 +295,68 @@ export class PersistenceError extends Error {
   }
 }
 
+import { auth } from "./firebase";
+
+let currentStoreUid: string | null = null;
+
+/**
+ * Returns the key scoped by the currently authenticated Firebase UID.
+ */
+export function getKey(baseKey: string): string {
+  if (currentStoreUid) {
+    if (baseKey.endsWith(`.${currentStoreUid}`)) return baseKey;
+    return `${baseKey}.${currentStoreUid}`;
+  }
+  return `${baseKey}.unauthenticated`;
+}
+
+export function getCurrentStoreUser(): string | null {
+  return currentStoreUid;
+}
+
+/**
+ * Migrates legacy un-scoped local storage keys to the authenticated user's namespace.
+ * Only runs once for a user if their user-scoped keys do not yet exist and legacy keys exist.
+ * Clears the legacy un-scoped keys afterwards to prevent cross-account leakage.
+ */
+function migrateLegacyUserKeys(uid: string) {
+  const storage = getStorage();
+  if (!storage) return;
+
+  for (const baseKey of Object.values(K)) {
+    const userKey = `${baseKey}.${uid}`;
+    try {
+      const existingUserVal = storage.getItem(userKey);
+      const legacyVal = storage.getItem(baseKey);
+
+      if (existingUserVal === null && legacyVal !== null && legacyVal.trim() !== "") {
+        storage.setItem(userKey, legacyVal);
+        storage.removeItem(baseKey);
+      } else if (legacyVal !== null) {
+        storage.removeItem(baseKey);
+      }
+    } catch (err) {
+      console.error(`Failed to migrate legacy key ${baseKey}:`, err);
+    }
+  }
+}
+
+/**
+ * Sets the active storage scope to the authenticated Firebase UID, reloading state from
+ * that user's isolated local namespace.
+ */
+export function setStoreUser(uid: string | null) {
+  const safeUid = uid ? uid.trim() : null;
+  if (currentStoreUid === safeUid) return;
+
+  currentStoreUid = safeUid;
+  if (currentStoreUid) {
+    migrateLegacyUserKeys(currentStoreUid);
+  }
+  reloadState();
+  emit();
+}
+
 /**
  * Retrieves the browser-local storage instance.
  * Note: localStorage provides browser-origin/profile-local storage, not server-side
@@ -313,17 +375,18 @@ export function getStorage(): Storage | undefined {
 function parseLS<T>(key: string, schema: z.ZodType<T>, fallback: T): T {
   const storage = getStorage();
   if (!storage) return fallback;
-  const v = storage.getItem(key);
+  const targetKey = getKey(key);
+  const v = storage.getItem(targetKey);
   if (v === null || v === undefined || typeof v !== "string" || v.trim() === "") return fallback;
   let parsed: unknown;
   try {
     parsed = JSON.parse(v);
   } catch (err: unknown) {
-    throw new PersistenceError(key, new Error(`Corrupted JSON in storage: ${err instanceof Error ? err.message : String(err)}`));
+    throw new PersistenceError(targetKey, new Error(`Corrupted JSON in storage: ${err instanceof Error ? err.message : String(err)}`));
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
-    throw new PersistenceError(key, new Error(`Schema validation failed for "${key}": ${result.error.message}`));
+    throw new PersistenceError(targetKey, new Error(`Schema validation failed for "${targetKey}": ${result.error.message}`));
   }
   return result.data;
 }
@@ -333,9 +396,10 @@ export function writeLS<T>(key: string, v: T): { status: "success" | "unavailabl
   if (!storage) {
     return { status: "unavailable" };
   }
+  const targetKey = getKey(key);
   try {
     let serialized = "";
-    if (key === K.chat) {
+    if (key === K.chat || targetKey.startsWith(K.chat)) {
       // Clean/strip/replace giant base64 images from ChatMessages to prevent QuotaExceededError
       const cleaned = (v as any).map((m: any) => {
         if (m.images && m.images.length > 0) {
@@ -350,26 +414,32 @@ export function writeLS<T>(key: string, v: T): { status: "success" | "unavailabl
     } else {
       serialized = JSON.stringify(v);
     }
-    storage.setItem(key, serialized);
+    storage.setItem(targetKey, serialized);
     return { status: "success" };
   } catch (err) {
-    throw new PersistenceError(key, err);
+    throw new PersistenceError(targetKey, err);
   }
 }
 
+// Initial bootstrap check
+if (typeof window !== "undefined" && auth.currentUser) {
+  currentStoreUid = auth.currentUser.uid;
+  migrateLegacyUserKeys(currentStoreUid);
+}
+
 let state: AlphaState = {
-  chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
-  notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
-  bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
-  tasks: parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []),
-  goals: parseLS<Goal[]>(K.goals, z.array(GoalSchema) as any, []),
-  runs: parseLS<Run[]>(K.runs, z.array(RunSchema) as any, []),
-  steps: parseLS<Step[]>(K.steps, z.array(StepSchema) as any, []),
-  observations: parseLS<Observation[]>(K.observations, z.array(ObservationSchema) as any, []),
-  results: parseLS<Result[]>(K.results, z.array(ResultSchema) as any, []),
-  memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
-  profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
-  settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
+  chat: currentStoreUid ? parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []) : [],
+  notes: currentStoreUid ? parseLS<Note[]>(K.notes, z.array(NoteSchema), []) : [],
+  bills: currentStoreUid ? parseLS<Bill[]>(K.bills, z.array(BillSchema), []) : [],
+  tasks: currentStoreUid ? parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []) : [],
+  goals: currentStoreUid ? parseLS<Goal[]>(K.goals, z.array(GoalSchema) as any, []) : [],
+  runs: currentStoreUid ? parseLS<Run[]>(K.runs, z.array(RunSchema) as any, []) : [],
+  steps: currentStoreUid ? parseLS<Step[]>(K.steps, z.array(StepSchema) as any, []) : [],
+  observations: currentStoreUid ? parseLS<Observation[]>(K.observations, z.array(ObservationSchema) as any, []) : [],
+  results: currentStoreUid ? parseLS<Result[]>(K.results, z.array(ResultSchema) as any, []) : [],
+  memories: currentStoreUid ? parseLS<Memory[]>(K.memories, z.array(MemorySchema), []) : [],
+  profile: currentStoreUid ? parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }) : { name: "", bio: "" },
+  settings: currentStoreUid ? parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS) : DEFAULT_SETTINGS,
 };
 
 // One-shot migration: users still on the old task-model defaults get moved to
@@ -451,22 +521,10 @@ function subscribe(l: () => void) {
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
     if (!e.key?.startsWith("alpha.")) return;
-    
-    // Refresh the whole state on any alpha.* key change from another tab
-    state = {
-      chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
-      notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
-      bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
-      tasks: parseLS<Task[]>(K.tasks, z.array(z.any()), []),
-      goals: parseLS<Goal[]>(K.goals, z.array(z.any()), []),
-      runs: parseLS<Run[]>(K.runs, z.array(z.any()), []),
-      steps: parseLS<Step[]>(K.steps, z.array(z.any()), []),
-      observations: parseLS<Observation[]>(K.observations, z.array(z.any()), []),
-      results: parseLS<Result[]>(K.results, z.array(z.any()), []),
-      memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
-      profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
-      settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
-    };
+    if (currentStoreUid && !e.key.endsWith(`.${currentStoreUid}`)) {
+      return;
+    }
+    reloadState();
     emit();
   });
 }
@@ -482,6 +540,23 @@ export function useAlpha<T>(selector: (s: AlphaState) => T): T {
 }
 
 function reloadState() {
+  if (!currentStoreUid) {
+    state = {
+      chat: [],
+      notes: [],
+      bills: [],
+      tasks: [],
+      goals: [],
+      runs: [],
+      steps: [],
+      observations: [],
+      results: [],
+      memories: [],
+      profile: { name: "", bio: "" },
+      settings: DEFAULT_SETTINGS,
+    };
+    return;
+  }
   state = {
     chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
     notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
@@ -822,7 +897,8 @@ export const conversationSummary = {
     const storage = getStorage();
     if (!storage) return "";
     try {
-      return storage.getItem(K.summary) || "";
+      const key = getKey(K.summary);
+      return storage.getItem(key) || "";
     } catch {
       return "";
     }
@@ -831,18 +907,20 @@ export const conversationSummary = {
     const storage = getStorage();
     if (!storage) return;
     try {
-      storage.setItem(K.summary, s.slice(0, 4000));
+      const key = getKey(K.summary);
+      storage.setItem(key, s.slice(0, 4000));
     } catch (err) {
-      throw new PersistenceError(K.summary, err);
+      throw new PersistenceError(getKey(K.summary), err);
     }
   },
   clear() {
     const storage = getStorage();
     if (!storage) return;
     try {
-      storage.removeItem(K.summary);
+      const key = getKey(K.summary);
+      storage.removeItem(key);
     } catch (err) {
-      throw new PersistenceError(K.summary, err);
+      throw new PersistenceError(getKey(K.summary), err);
     }
   },
 };

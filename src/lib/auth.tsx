@@ -3,6 +3,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { onAuthStateChanged, signInAnonymously, User } from "firebase/auth";
 import { auth } from "./firebase";
 import { reminderContextManager } from "./reminder-context";
+import { setStoreUser } from "./alpha-store";
 
 export type AuthState = 
   | { status: 'loading' }
@@ -49,6 +50,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
         if (user) {
           bootstrapAttempted = true;
+          setStoreUser(user.uid);
           if (reminderContextManager.getContext(user.uid) === null) {
             reminderContextManager.clear();
           }
@@ -64,17 +66,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               const anonUser = await bootstrapPromise;
               if (isMounted) {
                 if (anonUser) {
+                  setStoreUser(anonUser.uid);
                   if (reminderContextManager.getContext(anonUser.uid) === null) {
                     reminderContextManager.clear();
                   }
                   setState({ status: 'authenticated', user: anonUser });
                 } else {
+                  setStoreUser(null);
                   reminderContextManager.clear();
                   setState({ status: 'unauthenticated' });
                 }
               }
             } catch (err: any) {
               if (isMounted) {
+                setStoreUser(null);
                 reminderContextManager.clear();
                 const message =
                   err?.code === 'auth/operation-not-allowed' || err?.code === 'auth/admin-restricted-operation'
@@ -87,6 +92,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             }
           } else {
             // Already bootstrapped and user is legitimately null (e.g. sign out)
+            setStoreUser(null);
             reminderContextManager.clear();
             setState({ status: 'unauthenticated' });
           }
