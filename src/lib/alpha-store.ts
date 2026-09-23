@@ -181,8 +181,7 @@ Alpha is a voice-first, futuristic AI companion built with Alex as one of its
 creators. Core layout: cosmic Orb home, split-column desktop HUD, chat with
 MiniOrb sticky header, and dedicated Notes / Bills / Reminders / Plans /
 Memories / Image tools. State lives in localStorage. Chat routes across
-Groq (fast Llama), OpenRouter DeepSeek R1 (deep thinking), OpenRouter Qwen /
-Poolside (coding) — every online turn is grounded with a live DuckDuckGo/Jina
+OpenRouter (MiniMax M3 primary, Nemotron-3 Nano fast, Nemotron-3 Super thinking, Cohere North Mini Code) with Groq emergency fallback — every online turn is grounded with a live DuckDuckGo/Jina
 web-search block before the model call. Images use Pollinations (no key).
 STT: browser Web Speech or local Whisper. TTS: Kokoro or browser. Alarms
 fire from an on-device engine with WebAudio chime, system notification, and
@@ -424,12 +423,25 @@ let state: AlphaState = {
         ? DEFAULT_SETTINGS.taskModels.coding
         : t.coding,
   };
+  let settingsChanged = false;
   if (
     migrated.fast !== t.fast ||
     migrated.thinking !== t.thinking ||
     migrated.coding !== t.coding
   ) {
     state = { ...state, settings: { ...state.settings, taskModels: migrated } };
+    settingsChanged = true;
+  }
+  if (
+    state.settings.buildRecord &&
+    (/DeepSeek R1/i.test(state.settings.buildRecord) ||
+     /Poolside/i.test(state.settings.buildRecord) ||
+     /Groq \(fast Llama\)/i.test(state.settings.buildRecord))
+  ) {
+    state = { ...state, settings: { ...state.settings, buildRecord: DEFAULT_SETTINGS.buildRecord } };
+    settingsChanged = true;
+  }
+  if (settingsChanged) {
     writeLS(K.settings, state.settings);
   }
 })();
