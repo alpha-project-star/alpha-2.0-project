@@ -181,7 +181,7 @@ const RELEVANT_EXTENSIONS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
   ".json", ".css", ".scss", ".less", ".html",
   ".md", ".mdx", ".yaml", ".yml", ".toml",
-  ".env.example", ".gitignore", ".editorconfig",
+  ".gitignore", ".editorconfig",
   ".py", ".go", ".rs", ".java", ".c", ".cpp", ".h",
   ".cs", ".php", ".rb", ".swift", ".kt", ".sh",
   ".sql", ".graphql", ".gql", ".prisma"
@@ -191,9 +191,69 @@ const RELEVANT_EXACT_NAMES = new Set([
   "dockerfile", "makefile", "readme", "readme.md", "package.json",
   "tsconfig.json", "vite.config.ts", "vite.config.js",
   "next.config.js", "next.config.mjs", "cargo.toml",
-  ".env", ".env.example", ".env.local", ".env.template",
   ".gitignore", ".editorconfig", ".eslintrc", ".prettierrc"
 ]);
+
+/**
+ * Server-side sensitive file boundary.
+ * Prevents fetching or returning environment files, secret files, private keys,
+ * certificates, or credentials as source content.
+ */
+export function isSensitiveFile(filePath: string): boolean {
+  if (!filePath) return true;
+  const fileName = filePath.split("/").pop()?.toLowerCase() || "";
+
+  // 1. Environment files (.env, .env.*, *.env, etc.)
+  if (
+    fileName === ".env" ||
+    fileName.startsWith(".env.") ||
+    fileName.endsWith(".env") ||
+    fileName.includes(".env.")
+  ) {
+    return true;
+  }
+
+  // 2. Secret & credential configuration files
+  if (
+    fileName.startsWith("credentials") ||
+    fileName.startsWith("credential") ||
+    fileName.startsWith("secrets") ||
+    fileName.startsWith("secret") ||
+    fileName.includes("client_secret") ||
+    fileName.includes("service_account") ||
+    fileName.includes("service-account") ||
+    fileName.startsWith(".htpasswd") ||
+    fileName.startsWith(".netrc") ||
+    fileName === "id_rsa" ||
+    fileName === "id_ed25519" ||
+    fileName === "id_dsa"
+  ) {
+    return true;
+  }
+
+  // 3. Private keys, certificates, bundles
+  const sensitiveExtensions = [
+    ".pem", ".key", ".p12", ".pfx", ".asc", ".cer", ".crt", ".der",
+    ".p8", ".kdb", ".jks", ".keystore", ".ovpn", ".gpg"
+  ];
+  for (const ext of sensitiveExtensions) {
+    if (fileName.endsWith(ext)) return true;
+  }
+
+  // 4. Sensitive token and auth files
+  if (
+    fileName === "token.json" ||
+    fileName === "tokens.json" ||
+    fileName === "auth.json" ||
+    fileName === "passwd" ||
+    fileName === "shadow" ||
+    fileName === "htpasswd"
+  ) {
+    return true;
+  }
+
+  return false;
+}
 
 const BINARY_EXTENSIONS = new Set([
   ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".svg",
@@ -216,10 +276,9 @@ function isIgnoredPath(filePath: string): boolean {
 }
 
 function isRelevantSourceFile(filePath: string): boolean {
-  if (isIgnoredPath(filePath)) return false;
+  if (isIgnoredPath(filePath) || isSensitiveFile(filePath)) return false;
   const fileName = filePath.split("/").pop()?.toLowerCase() || "";
   if (RELEVANT_EXACT_NAMES.has(fileName)) return true;
-  if (fileName.startsWith(".env")) return true;
 
   for (const binExt of BINARY_EXTENSIONS) {
     if (fileName.endsWith(binExt)) return false;
@@ -233,6 +292,7 @@ function isRelevantSourceFile(filePath: string): boolean {
 }
 
 async function fetchSingleFileText(owner: string, repo: string, filePath: string, maxBytes: number = 20000): Promise<{ text: string; truncated: boolean } | null> {
+  if (isSensitiveFile(filePath)) return null;
   try {
     const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${filePath}`;
     const res = await fetch(url, { headers: getHeaders() });
@@ -282,7 +342,7 @@ async function recursiveEnumerateFiles(
     if (!Array.isArray(json)) return collected;
 
     for (const item of json) {
-      if (isIgnoredPath(item.path || item.name)) continue;
+      if (isIgnoredPath(item.path || item.name) || isSensitiveFile(item.path || item.name)) continue;
       const fileItem: GitHubFileItem = {
         name: item.name,
         path: item.path,
@@ -324,6 +384,17 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
     }
 
     const repoJson = await repoRes.json();
+
+    // SERVER-SIDE PRIVATE REPOSITORY AUTHORIZATION BOUNDARY
+    // Reject private/internal repositories to prevent privileged token access elevation.
+    if (repoJson.private === true || repoJson.visibility === "private" || repoJson.visibility === "internal") {
+      return {
+        success: false,
+        errorType: "inaccessible",
+        errorReason: `Private GitHub repository inspection is forbidden. Alpha server-side inspection only permits public repositories.`,
+      };
+    }
+
     const repoInfo: GitHubRepoInfo = {
       owner,
       repo,
@@ -346,6 +417,14 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
     let totalFilesDiscovered = 0;
 
     if (cleanPath) {
+      if (isSensitiveFile(cleanPath)) {
+        return {
+          success: false,
+          errorType: "inaccessible",
+          errorReason: `Inspection of sensitive file '${cleanPath}' is forbidden for security reasons.`,
+        };
+      }
+
       // Subpath-specific inspection
       inspectionScope = "subpath";
       const contentsUrl = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${cleanPath}`;
@@ -354,14 +433,16 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
       if (contentsRes.ok) {
         const contentsJson = await contentsRes.json();
         if (Array.isArray(contentsJson)) {
-          files = contentsJson.map((item: any) => ({
-            name: item.name,
-            path: item.path,
-            type: item.type,
-            size: item.size,
-            downloadUrl: item.download_url,
-            htmlUrl: item.html_url,
-          }));
+          files = contentsJson
+            .filter((item: any) => !isIgnoredPath(item.path || item.name) && !isSensitiveFile(item.path || item.name))
+            .map((item: any) => ({
+              name: item.name,
+              path: item.path,
+              type: item.type,
+              size: item.size,
+              downloadUrl: item.download_url,
+              htmlUrl: item.html_url,
+            }));
           totalFilesDiscovered = files.length;
           // Fetch top source files in subpath
           const candidateSourcePaths = files.filter(f => f.type === "file" && isRelevantSourceFile(f.path)).slice(0, 5);
@@ -400,8 +481,8 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
         const rawTree: any[] = Array.isArray(treeJson.tree) ? treeJson.tree : [];
         const isTreeTruncated = Boolean(treeJson.truncated);
 
-        // Filter ignored paths
-        const validItems = rawTree.filter((item) => !isIgnoredPath(item.path));
+        // Filter ignored paths and sensitive files
+        const validItems = rawTree.filter((item) => !isIgnoredPath(item.path) && !isSensitiveFile(item.path));
         totalFilesDiscovered = validItems.length;
 
         files = validItems.slice(0, 150).map((item) => ({
