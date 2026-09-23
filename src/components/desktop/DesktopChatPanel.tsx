@@ -5,7 +5,6 @@ import { sendChat, type TaskType } from "../../lib/alpha.functions";
 import { MessageContent } from "../MessageContent";
 import { MessageActions } from "../MessageActions";
 import { prepareUtterance, speakWith } from "../../lib/voice";
-import { tryLocalIntent } from "../../lib/local-intents";
 import { fileToShrunkDataUrl } from "../../lib/image-utils";
 import { captureLiveFrame, handleEyeCommand, isVisionCommand, shouldCaptureFrame } from "../../lib/vision-command";
 import { isActive as eyeIsActive } from "../../lib/vision-stream";
@@ -100,9 +99,7 @@ export function DesktopChatPanel() {
         images: outImages.length ? outImages : undefined,
         ts: Date.now(),
       });
-      const eyeRes = t ? await handleEyeCommand(t) : null;
-      const local = eyeRes ?? (t && !isVisionCommand(t) ? await tryLocalIntent(t) : null);
-      const reply = local ?? (await sendChat(alphaStore.get().chat, { task }));
+      const reply = await sendChat(alphaStore.get().chat, { task });
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {

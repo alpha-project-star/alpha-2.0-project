@@ -77,6 +77,18 @@ const LABELS: Record<ActivityKind, string> = {
 
 export const DEFAULT_ERROR_AUTOCLEAR_MS = 2500;
 
+export const ACTION_ACTIVITY_KINDS: ReadonlySet<ActivityKind> = new Set<ActivityKind>([
+  "writing_note",
+  "writing_reminder",
+  "writing_bill",
+  "writing_memory",
+  "updating_plan",
+  "editing_settings",
+  "calling_tool",
+  "executing_action",
+  "action_failed",
+]);
+
 export interface Activity {
   kind: ActivityKind;
   /** Optional override text — still user-facing wording, never API details. */
@@ -155,16 +167,28 @@ export const activity = {
   /**
    * Update the activity status.
    * If a token/generation is provided, updates from stale generations are rejected.
+   * Active operation states (e.g. writing_reminder, calling_tool) are protected from being
+   * downgraded to generic thinking unless force is specified.
    */
   set(
     kind: ActivityKind,
     detail?: string,
     token?: number,
     autoClearMs = DEFAULT_ERROR_AUTOCLEAR_MS,
+    options?: { force?: boolean },
   ): boolean {
     if (token !== undefined && token !== currentGeneration) {
       // Stale update rejected
       return false;
+    }
+
+    // Protect active operation states from generic thinking / initial activity resets
+    if (
+      !options?.force &&
+      (kind === "thinking" || kind === "reading_image" || kind === "calculating" || kind === "writing_code") &&
+      ACTION_ACTIVITY_KINDS.has(current.kind)
+    ) {
+      return true;
     }
 
     if (current.kind === kind && current.detail === detail) {
@@ -193,6 +217,14 @@ export const activity = {
     }
 
     return true;
+  },
+
+  forceSet(kind: ActivityKind, detail?: string, token?: number): boolean {
+    return this.set(kind, detail, token, DEFAULT_ERROR_AUTOCLEAR_MS, { force: true });
+  },
+
+  isActionActive(): boolean {
+    return ACTION_ACTIVITY_KINDS.has(current.kind);
   },
 
   /**

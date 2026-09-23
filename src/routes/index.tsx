@@ -5,7 +5,6 @@ import { LiveTranscript } from "../components/LiveTranscript";
 import { recognizer, prepareUtterance, speakWith, stopSpeaking, speakingState } from "../lib/voice";
 import { parseIntent } from "../lib/voice-router";
 import { sendChat } from "../lib/alpha.functions";
-import { tryLocalIntent } from "../lib/local-intents";
 import { alphaStore, uid, useAlpha } from "../lib/alpha-store";
 import {
   Settings as SettingsIcon,
@@ -119,24 +118,6 @@ function OrbHome() {
     if (wasListening) recognizer.suspend();
 
     try {
-      // Local CRUD intents — skip when the user is asking Alpha to LOOK.
-      const eyeRes = await handleEyeCommand(trimmed);
-      const local = eyeRes ?? (!isVisionCommand(trimmed) ? await tryLocalIntent(trimmed) : null);
-      if (local) {
-        await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
-        await alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
-        setStatus("Speaking…");
-        await speakWith(local);
-        setStatus(recognizer.isWanted ? "Listening…" : "Tap the orb to begin");
-        return;
-      }
-
-      if (!hasUsableBrain) {
-        setStatus("No model key — opening settings");
-        router.navigate({ to: "/settings" });
-        return;
-      }
-
       setStatus("Thinking…");
       let outImages: string[] | undefined;
       if (isVisionCommand(trimmed)) {
@@ -144,6 +125,13 @@ function OrbHome() {
         if (frame) outImages = [frame];
       }
       await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, images: outImages, ts: Date.now() });
+
+      if (!hasUsableBrain && outImages) {
+        setStatus("No model key — opening settings");
+        router.navigate({ to: "/settings" });
+        return;
+      }
+
       const reply = await sendChat(alphaStore.get().chat, { task: outImages ? "auto" : "fast" });
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       setStatus("Speaking…");

@@ -6,8 +6,6 @@ import { alphaStore, uid } from "../lib/alpha-store";
 import { sendChat } from "../lib/alpha.functions";
 import { speakWith } from "../lib/voice";
 import { parseIntent } from "../lib/voice-router";
-import { tryLocalIntent } from "../lib/local-intents";
-import { handleEyeCommand } from "../lib/vision-command";
 import { CyberEye } from "./CyberEye";
 
 /**
@@ -52,14 +50,6 @@ export function MiniOrb({ size = 56 }: { size?: number }) {
 
     busyRef.current = true;
     try {
-      const eyeRes = await handleEyeCommand(trimmed);
-      const local = eyeRes ?? (await tryLocalIntent(trimmed));
-      if (local) {
-        await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
-        await alphaStore.appendChat({ id: uid(), role: "model", text: local, ts: Date.now() });
-        speakWith(local, { auto: true });
-        return;
-      }
       await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
       const reply = await sendChat(alphaStore.get().chat);
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });

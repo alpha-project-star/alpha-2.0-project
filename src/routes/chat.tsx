@@ -33,7 +33,6 @@ import { sendChat, type TaskType } from "../lib/alpha.functions";
 import { MessageContent } from "../components/MessageContent";
 import { recognizer, prepareUtterance, speakWith, stopSpeaking } from "../lib/voice";
 import { MiniOrb } from "../components/MiniOrb";
-import { tryLocalIntent } from "../lib/local-intents";
 import { DesktopShell } from "../components/desktop/DesktopShell";
 import { DesktopChatPanel } from "../components/desktop/DesktopChatPanel";
 import { KittScanner } from "../components/KittScanner";
@@ -179,9 +178,7 @@ function ChatRoute() {
           ts: Date.now(),
         });
       }
-      const eyeRes = t ? await handleEyeCommand(t) : null;
-      const local = eyeRes ?? (t && !isVisionCommand(t) ? await tryLocalIntent(t) : null);
-      const reply = local ?? (await sendChat(alphaStore.get().chat, { task }));
+      const reply = await sendChat(alphaStore.get().chat, { task });
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {

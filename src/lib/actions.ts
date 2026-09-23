@@ -45,6 +45,7 @@ import {
   getCanonicalReminderDeleteKey,
   getCanonicalReminderCompleteKey,
 } from "./mutation-identity";
+import type { RequestActionLifecycle } from "./request-lifecycle";
 
 export type ActionStatus = "success" | "failed" | "ambiguous" | "not_found" | "invalid";
 
@@ -187,6 +188,7 @@ export interface ExecuteActionTagsOptions {
     executedLogicalKeys?: string[];
   };
   executedLogicalKeys?: string[] | Set<string>;
+  lifecycle?: RequestActionLifecycle;
 }
 
 /**
@@ -219,6 +221,11 @@ export async function executeActionTagsAsync(
           if (k) executedMutations.add(k.toLowerCase().trim());
         }
       }
+    }
+  }
+  if (options?.lifecycle) {
+    for (const key of options.lifecycle.getCompletedMutations().keys()) {
+      if (key) executedMutations.add(key.toLowerCase().trim());
     }
   }
 
@@ -1243,6 +1250,26 @@ export async function executeActionTagsAsync(
     });
     text = text.replace(fullMatch, "");
     unknownTagRe.lastIndex = 0;
+  }
+
+  if (options?.lifecycle) {
+    for (const res of results) {
+      if (res.status === "success") {
+        options.lifecycle.recordSuccess({
+          name: res.tag,
+          isMutation: true,
+          result: res.message,
+        });
+      } else if (res.status === "failed") {
+        options.lifecycle.recordFailure({
+          name: res.tag,
+          isMutation: true,
+          error: res.message,
+        });
+      } else if (res.status === "ambiguous") {
+        options.lifecycle.recordClarification(res.message, res.tag);
+      }
+    }
   }
 
   return { text: text.replace(/\n{3,}/g, "\n\n").trim(), results };

@@ -48,6 +48,7 @@ import { auth } from "./firebase";
 import type { FirestoreReminder } from "./reminder-repo";
 import { REMINDER_TOOLS } from "./reminder-tool-definitions";
 import { reminderContextManager } from "./reminder-context";
+import { RequestActionLifecycle } from "./request-lifecycle";
 import { notificationAcknowledgementManager } from "./notification-acknowledgement";
 import { notificationRecoveryManager } from "./notification-recovery";
 import {
@@ -1123,6 +1124,7 @@ export async function sendChat(
 }
 
 async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSignal, disableTools?: boolean): Promise<string> {
+  const lifecycle = new RequestActionLifecycle();
   const s = alphaStore.get().settings;
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
   const currentUid = auth.currentUser?.uid || null;
@@ -1131,20 +1133,33 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   const hasImages = !!lastUserMsg?.images?.length;
   const userText = lastUserMsg?.text || "";
 
+  // Detect whether user is answering a prior assistant clarification/question
+  const priorAssistantMsg = [...history].reverse().find((m) => m.role === "model" && m.text);
+  const priorAssistantText = (priorAssistantMsg?.text || "").trim();
+  const isAnsweringClarification =
+    priorAssistantText.endsWith("?") ||
+    /\b(?:what|when|which|clarify|specify|details|who|where)\b/i.test(priorAssistantText);
+  if (isAnsweringClarification && userText) {
+    lifecycle.setClarificationSupplied(true);
+  }
+
   // Local intents answer instantly with no model request at all.
   if (userText && !hasImages) {
     const eyeRes = await handleEyeCommand(userText);
     if (eyeRes) {
+      lifecycle.recordSuccess({ name: "handleEyeCommand", isMutation: false, result: eyeRes });
       activity.clear();
       return eyeRes;
     }
     try {
       const local = await tryLocalIntent(userText);
       if (local) {
+        lifecycle.recordSuccess({ name: "tryLocalIntent", isMutation: true, result: local });
         activity.clear();
         return local;
       }
     } catch (err) {
+      lifecycle.recordFailure({ name: "tryLocalIntent", isMutation: true, error: err });
       activity.clear();
       throw err;
     }
@@ -1202,7 +1217,9 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (decision.search) {
       activity.set("searching");
       webContext = await fetchLiveWebContext(decision.query || "");
-      activity.set(determineInitialActivity(hasImages, task, userText));
+      if (!activity.isActionActive()) {
+        activity.set(determineInitialActivity(hasImages, task, userText));
+      }
     } else if ("capabilityInquiry" in decision && decision.capabilityInquiry) {
       searchHint = SEARCH_CAPABILITY_HINT;
     } else if ("offer" in decision && decision.offer) {
@@ -1213,6 +1230,10 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   }
   
   const hasEvidence = /^\[1\]/m.test(webContext);
+  const clarificationGuidance = lifecycle.getClarificationState().suppliedInTurn
+    ? `\n\nCONVERSATION CONTEXT: The user has answered your prior question ("${safeContent(priorAssistantText.slice(0, 140))}"). Do NOT repeat your clarification question. Proceed directly to fulfill the requested action using available tools.`
+    : "";
+
   const buildSys = (offline: boolean) =>
     DEFAULT_SYSTEM(s.personaExtra || "", recall, rolling, {
       offline,
@@ -1221,6 +1242,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       channel: hasImages ? "vision" : "text",
     }) +
     REMINDER_INSTRUCTIONS +
+    clarificationGuidance +
     `\n\nEVIDENCE: ${hasEvidence ? "live-search" : "none"}\n${searchHint}` +
     (webContext ? `\n\n${webContext}` : "");
 
@@ -1318,6 +1340,11 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);
 
+      let hasNewMutation = false;
+      let hasNewRead = false;
+      let hasFailure = false;
+      let allToolsAlreadyCompleted = true;
+
       for (const call of response.tool_calls) {
         const invocationKey = getCanonicalExecutionKey(call);
         const stableCallId = call.id;
@@ -1327,15 +1354,38 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         let result: any;
         const logicalKeysForTool: string[] = [];
 
-        // Check if already executed in this run (by call ID, exact canonical invocation key, or logical mutation deduplication)
+        // Check if already completed in lifecycle or earlier execution in this run
+        const alreadyCompletedMutationResult =
+          (logicalKey && lifecycle.hasCompletedMutation(logicalKey))
+            ? lifecycle.getCompletedMutationResult(logicalKey)
+            : null;
+
         const existingResult =
+          alreadyCompletedMutationResult ||
           (stableCallId && callResults.get(stableCallId)) ||
           callResults.get(invocationKey) ||
           (logicalKey && executedLogicalMutations.get(logicalKey));
 
         if (existingResult) {
           result = existingResult;
+          if (isMutation) {
+            // Provide structured state indicating completion and directing the model to conclude
+            result = {
+              ...existingResult,
+              _lifecycleStatus: "ALREADY_COMPLETED",
+              _directive: "This operation was ALREADY successfully completed and persisted. Do NOT call this tool again. Present your confirmation to the user.",
+            };
+          }
         } else {
+          allToolsAlreadyCompleted = false;
+          const op = lifecycle.startOperation({
+            name: call.function?.name,
+            isMutation,
+            logicalKey,
+            executionKey: invocationKey,
+            args: call.function?.arguments,
+          });
+
           const authUser = await ensureAuthenticatedUser();
           const context: ToolContext = {
             userId: authUser?.uid || auth.currentUser?.uid || null,
@@ -1357,21 +1407,54 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
           if (invocationKey) callResults.set(invocationKey, result);
           if (stableCallId) callResults.set(stableCallId, result);
-        }
 
-        // Track canonical mutation outcome to prevent duplicate executions across loop iterations
-        if (isMutation && result && result.success) {
-          const canonicalKeys = extractNativeReminderMutationKeys(
-            call.function?.name,
-            call.function?.arguments,
-            result.data,
-          );
-          for (const k of canonicalKeys) {
-            executedLogicalMutations.set(k, result);
-            logicalKeysForTool.push(k);
-          }
-          if (invocationKey) {
-            executedLogicalMutations.set(invocationKey, result);
+          if (result && result.success) {
+            if (isMutation) {
+              hasNewMutation = true;
+              const canonicalKeys = extractNativeReminderMutationKeys(
+                call.function?.name,
+                call.function?.arguments,
+                result.data,
+              );
+              for (const k of canonicalKeys) {
+                executedLogicalMutations.set(k, result);
+                logicalKeysForTool.push(k);
+              }
+              if (invocationKey) {
+                executedLogicalMutations.set(invocationKey, result);
+              }
+              lifecycle.recordSuccess({
+                opId: op.id,
+                name: call.function?.name,
+                isMutation: true,
+                result,
+                logicalKeys: canonicalKeys.length > 0 ? canonicalKeys : (logicalKey ? [logicalKey] : []),
+                executionKey: invocationKey,
+              });
+            } else {
+              hasNewRead = true;
+              lifecycle.recordSuccess({
+                opId: op.id,
+                name: call.function?.name,
+                isMutation: false,
+                result,
+                executionKey: invocationKey,
+              });
+            }
+          } else {
+            hasFailure = true;
+            if (result?.error?.code === "AMBIGUOUS") {
+              lifecycle.recordClarification(result.error?.message || "Ambiguous request", call.function?.name);
+            } else {
+              lifecycle.recordFailure({
+                opId: op.id,
+                name: call.function?.name,
+                isMutation,
+                error: result?.error,
+                logicalKey,
+                executionKey: invocationKey,
+              });
+            }
           }
         }
 
@@ -1394,14 +1477,41 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         currentHistory.push(toolMsg);
         await alphaStore.appendChat(toolMsg);
       }
+
       loopCount++;
+
+      // Action Completion & Multi-Round Boundary Control
+      if (allToolsAlreadyCompleted) {
+        // Model re-requested only already completed operations; terminate tool loop
+        break;
+      }
+
+      if (hasNewMutation && !hasNewRead && !hasFailure) {
+        // Mutation succeeded and no read tools or errors are pending.
+        lifecycle.setNeedsAnotherStep(false);
+      } else if (hasNewRead) {
+        // Read tool executed; continuation is genuinely needed to inspect/act.
+        lifecycle.setNeedsAnotherStep(true);
+      }
     }
 
-    if (loopCount >= 5 && !finalResponse) {
-      finalResponse = {
-        content: "I've performed several actions to fulfill your request. Is there anything else you need?",
-        tool_calls: [],
-      };
+    if (!finalResponse) {
+      try {
+        finalResponse = await callProvider(prov, model, currentHistory, sys, {
+          allowImages: hasImages,
+          maxTokens: Math.min(maxTokens, 300),
+          historyTurns,
+          tools: [], // Force text completion, no further tool loop
+          signal,
+        });
+      } catch {
+        finalResponse = {
+          content: lifecycle.hasCompletedMutations()
+            ? "I've completed the requested action."
+            : "I've processed your request.",
+          tool_calls: [],
+        };
+      }
     }
 
     const mutationTools = executedTools.filter((t) => t.isMutation);
@@ -1417,7 +1527,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (finalResponse) {
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
-      const finalText = await finalizeReply(finalResponse.content || "", webContext, toolSummary, { userId: currentUid });
+      const finalText = await finalizeReply(finalResponse.content || "", webContext, toolSummary, { userId: currentUid, lifecycle });
       void maybeCompactSummary(history, finalText);
       activity.clear();
       return finalText;
@@ -1443,7 +1553,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     const text = await sendChatOllama(history, buildSys(!webContext), webContext);
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
-    const out = await finalizeReply(text, webContext, undefined, { userId: currentUid });
+    const out = await finalizeReply(text, webContext, undefined, { userId: currentUid, lifecycle });
     activity.clear();
     return out;
   } catch (e) {
@@ -1524,6 +1634,7 @@ export async function finalizeReply(
     ...options,
     toolSummary,
     executedLogicalKeys: toolSummary?.executedLogicalKeys,
+    lifecycle: options?.lifecycle,
   });
   let out = text;
   const report = renderActionReport(results);
@@ -1531,12 +1642,14 @@ export async function finalizeReply(
     if (results.some((r) => r.status !== "success")) activity.set("action_failed");
     out = (out ? out + "\n\n" : "") + report;
   } else if (claimsMutationWithoutTag(text)) {
-    // If native tool mutations executed and ALL mutations succeeded, the action was actually performed.
+    // If native tool mutations or lifecycle mutations executed and ALL mutations succeeded, the action was actually performed.
     // In that case, do NOT generate the false NO_ACTION_NOTICE.
     const nativeMutationsFullySucceeded =
       Boolean(toolSummary && toolSummary.hasMutation && toolSummary.allMutationsSucceeded && !toolSummary.hasFailedMutation);
+    const lifecycleMutationsSucceeded =
+      Boolean(options?.lifecycle?.hasCompletedMutations() && !options?.lifecycle?.hasFailedMutations());
 
-    if (!nativeMutationsFullySucceeded) {
+    if (!nativeMutationsFullySucceeded && !lifecycleMutationsSucceeded) {
       out = (out ? out + "\n\n" : "") + NO_ACTION_NOTICE;
     }
   }
