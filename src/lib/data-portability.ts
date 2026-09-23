@@ -4,6 +4,7 @@ import { auth } from "./firebase";
 import {
   K,
   getKey,
+  isKeyForUid,
   ChatMessageSchema,
   NoteSchema,
   BillSchema,
@@ -392,7 +393,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   if (typeof window !== "undefined" && window.localStorage) {
     for (let i = 0; i < window.localStorage.length; i++) {
       const key = window.localStorage.key(i);
-      if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+      if (key && isKeyForUid(key, currentUid)) {
         const val = window.localStorage.getItem(key);
         if (val !== null) previousLocalStorage[key] = val;
       }
@@ -437,7 +438,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       if (typeof window !== "undefined" && window.localStorage) {
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
-          if (key && (key.endsWith(`.${currentUid}`) || key.includes(`.${currentUid}`))) {
+          if (key && isKeyForUid(key, currentUid)) {
             window.localStorage.removeItem(key);
             i--;
           }
@@ -478,7 +479,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         if (typeof window !== "undefined" && window.localStorage) {
           for (let i = 0; i < window.localStorage.length; i++) {
             const key = window.localStorage.key(i);
-            if (key && (key.endsWith(`.${currentUid}`) || key.includes(`.${currentUid}`))) {
+            if (key && isKeyForUid(key, currentUid)) {
               window.localStorage.removeItem(key);
               i--;
             }
@@ -528,12 +529,13 @@ export async function wipeAlphaData() {
   return await withCrossContextLock("alpha_global_wipe_lock", async () => {
     const errors: string[] = [];
 
-    // 1. Clear localStorage keys
+    // 1. Clear localStorage keys for active user
     try {
+      const currentUid = auth.currentUser?.uid || "local-user";
       const keysToRemove: string[] = [];
       for (let i = 0; i < window.localStorage.length; i++) {
         const key = window.localStorage.key(i);
-        if (key && (key.startsWith("alpha.") || key.startsWith("alpha_"))) {
+        if (key && isKeyForUid(key, currentUid)) {
           keysToRemove.push(key);
         }
       }

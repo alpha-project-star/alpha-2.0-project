@@ -300,11 +300,21 @@ import { auth } from "./firebase";
 let currentStoreUid: string | null = null;
 
 /**
+ * Checks if a key belongs to the given UID as its exact final namespace component.
+ */
+export function isKeyForUid(key: string, uid: string): boolean {
+  if (!key || !uid) return false;
+  const lastDot = key.lastIndexOf(".");
+  if (lastDot === -1) return false;
+  return key.slice(lastDot + 1) === uid;
+}
+
+/**
  * Returns the key scoped by the currently authenticated Firebase UID.
  */
 export function getKey(baseKey: string): string {
   if (currentStoreUid) {
-    if (baseKey.endsWith(`.${currentStoreUid}`)) return baseKey;
+    if (isKeyForUid(baseKey, currentStoreUid)) return baseKey;
     return `${baseKey}.${currentStoreUid}`;
   }
   return `${baseKey}.unauthenticated`;
@@ -312,33 +322,6 @@ export function getKey(baseKey: string): string {
 
 export function getCurrentStoreUser(): string | null {
   return currentStoreUid;
-}
-
-/**
- * Migrates legacy un-scoped local storage keys to the authenticated user's namespace.
- * Only runs once for a user if their user-scoped keys do not yet exist and legacy keys exist.
- * Clears the legacy un-scoped keys afterwards to prevent cross-account leakage.
- */
-function migrateLegacyUserKeys(uid: string) {
-  const storage = getStorage();
-  if (!storage) return;
-
-  for (const baseKey of Object.values(K)) {
-    const userKey = `${baseKey}.${uid}`;
-    try {
-      const existingUserVal = storage.getItem(userKey);
-      const legacyVal = storage.getItem(baseKey);
-
-      if (existingUserVal === null && legacyVal !== null && legacyVal.trim() !== "") {
-        storage.setItem(userKey, legacyVal);
-        storage.removeItem(baseKey);
-      } else if (legacyVal !== null) {
-        storage.removeItem(baseKey);
-      }
-    } catch (err) {
-      console.error(`Failed to migrate legacy key ${baseKey}:`, err);
-    }
-  }
 }
 
 /**
@@ -350,9 +333,6 @@ export function setStoreUser(uid: string | null) {
   if (currentStoreUid === safeUid) return;
 
   currentStoreUid = safeUid;
-  if (currentStoreUid) {
-    migrateLegacyUserKeys(currentStoreUid);
-  }
   reloadState();
   emit();
 }
@@ -424,7 +404,6 @@ export function writeLS<T>(key: string, v: T): { status: "success" | "unavailabl
 // Initial bootstrap check
 if (typeof window !== "undefined" && auth.currentUser) {
   currentStoreUid = auth.currentUser.uid;
-  migrateLegacyUserKeys(currentStoreUid);
 }
 
 let state: AlphaState = {
@@ -521,7 +500,7 @@ function subscribe(l: () => void) {
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (e) => {
     if (!e.key?.startsWith("alpha.")) return;
-    if (currentStoreUid && !e.key.endsWith(`.${currentStoreUid}`)) {
+    if (currentStoreUid && !isKeyForUid(e.key, currentStoreUid)) {
       return;
     }
     reloadState();
