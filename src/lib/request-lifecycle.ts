@@ -257,6 +257,10 @@ export class RequestActionLifecycle {
     return this.operations.some((o) => o.isMutation && o.status === "failed");
   }
 
+  hasPartialMutations(): boolean {
+    return this.hasCompletedMutations() && this.hasFailedMutations();
+  }
+
   hasUnresolvedWork(): boolean {
     if (this.clarification.isPending || this.state === "needs_clarification") return true;
     if (this.activeOperation) return true;
@@ -285,8 +289,10 @@ export class RequestActionLifecycle {
 
     if (failedMutations.length > 0 && completedMutations.length === 0) {
       this.state = "failed";
-    } else if (completedMutations.length > 0 && !this.activeOperation && !this.needsAnotherStep) {
+    } else if (completedMutations.length > 0 && failedMutations.length === 0 && !this.activeOperation && !this.needsAnotherStep) {
       this.state = "completed";
+    } else if (failedMutations.length > 0 && completedMutations.length > 0 && !this.activeOperation && !this.needsAnotherStep) {
+      this.state = "failed";
     } else if (this.activeOperation) {
       this.state = "executing";
     }

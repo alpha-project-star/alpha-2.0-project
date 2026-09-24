@@ -64,13 +64,14 @@ import {
 import type { RequestActionLifecycle } from "./request-lifecycle";
 import { getReminderTool } from "./tool-registry";
 
-export type ActionStatus = "success" | "failed" | "ambiguous" | "not_found" | "invalid";
+export type ActionStatus = "success" | "failed" | "ambiguous" | "not_found" | "invalid" | "partial";
 
 export interface ActionResult {
   tag: string;
   status: ActionStatus;
   message: string;
   logicalKeys?: string[];
+  failedKeys?: string[];
   structuredResult?: any;
 }
 
@@ -709,10 +710,13 @@ export async function executeActionTagsAsync(
 
     if (successfulIds.length === 0) {
       activity.set("action_failed");
+      const failedKeys = intendedIds.map((id) => getCanonicalDeleteKey(kind, id));
       return {
         tag,
         status: "failed",
         message: `Could not delete ${kind}.`,
+        failedKeys,
+        structuredResult: { count: 0, targetIds: intendedIds, successfulIds: [], failedIds: intendedIds },
       };
     } else if (successfulIds.length === intendedIds.length) {
       if (hits.length > 1) {
@@ -726,11 +730,14 @@ export async function executeActionTagsAsync(
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
       };
     } else {
+      activity.set("action_failed");
+      const failedKeys = failedIds.map((id) => getCanonicalDeleteKey(kind, id));
       return {
         tag,
-        status: "success",
+        status: "partial",
         message: `Deleted ${successfulIds.length} out of ${intendedIds.length} ${KIND_PLURAL[kind]} (${failedIds.length} failed).`,
         logicalKeys: [...successfulKeys],
+        failedKeys,
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
       };
     }
@@ -814,7 +821,14 @@ export async function executeActionTagsAsync(
 
     if (successfulIds.length === 0) {
       activity.set("action_failed");
-      results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear ${plural}.` });
+      const failedKeys = intendedIds.map((id) => getCanonicalDeleteKey(kind, id));
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "failed",
+        message: `Could not clear ${plural}.`,
+        failedKeys,
+        structuredResult: { count: 0, targetIds: intendedIds, successfulIds: [], failedIds: intendedIds },
+      });
     } else if (successfulIds.length === intendedIds.length) {
       executedMutations.add(bulkKey);
       executedMutations.add(clearKey);
@@ -826,11 +840,14 @@ export async function executeActionTagsAsync(
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
       });
     } else {
+      activity.set("action_failed");
+      const failedKeys = failedIds.map((id) => getCanonicalDeleteKey(kind, id));
       results.push({
         tag: "CLEAR_ALL",
-        status: "success",
+        status: "partial",
         message: `Cleared ${successfulIds.length} out of ${intendedIds.length} ${plural} (${failedIds.length} failed).`,
         logicalKeys: [...successfulKeys],
+        failedKeys,
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
       });
     }
@@ -1313,26 +1330,34 @@ export async function executeActionTagsAsync(
 
     if (successfulIds.length === 0) {
       activity.set("action_failed");
+      const failedKeys = intendedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       results.push({
         tag: "DELETE_REMINDER",
         status: "failed",
         message: `Could not delete reminders.`,
+        failedKeys,
+        structuredResult: { count: 0, targetIds: intendedIds, successfulIds: [], failedIds: intendedIds },
       });
     } else if (successfulIds.length === targetIds.length) {
-      executedMutations.add(setKey);
+      if (hits.length > 1) {
+        executedMutations.add(setKey);
+      }
       results.push({
         tag: "DELETE_REMINDER",
         status: "success",
         message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
-        logicalKeys: [setKey, ...singleKeys],
+        logicalKeys: hits.length > 1 ? [setKey, ...singleKeys] : [...singleKeys],
         structuredResult: { count: successfulIds.length, targetIds, successfulIds },
       });
     } else {
+      activity.set("action_failed");
+      const failedKeys = failedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       results.push({
         tag: "DELETE_REMINDER",
-        status: "success",
+        status: "partial",
         message: `Deleted ${successfulIds.length} out of ${targetIds.length} reminders (${failedIds.length} failed).`,
         logicalKeys: [...successfulKeys],
+        failedKeys,
         structuredResult: { count: successfulIds.length, targetIds, successfulIds, failedIds },
       });
     }
@@ -1561,10 +1586,13 @@ export async function executeActionTagsAsync(
 
     if (successfulIds.length === 0) {
       activity.set("action_failed");
+      const failedKeys = intendedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       results.push({
         tag: "CLEAR_ALL",
         status: "failed",
         message: "Could not clear reminders.",
+        failedKeys,
+        structuredResult: { count: 0, targetIds: intendedIds, successfulIds: [], failedIds: intendedIds },
       });
     } else if (successfulIds.length === intendedIds.length) {
       executedMutations.add(bulkKey);
@@ -1577,11 +1605,14 @@ export async function executeActionTagsAsync(
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
       });
     } else {
+      activity.set("action_failed");
+      const failedKeys = failedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       results.push({
         tag: "CLEAR_ALL",
-        status: "success",
+        status: "partial",
         message: `Cleared ${successfulIds.length} out of ${intendedIds.length} reminders (${failedIds.length} failed).`,
         logicalKeys: [...successfulKeys],
+        failedKeys,
         structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
       });
     }
@@ -1604,7 +1635,42 @@ export async function executeActionTagsAsync(
 
   if (options?.lifecycle) {
     for (const res of results) {
-      if (res.status === "success") {
+      const isPartial =
+        res.status === "partial" ||
+        Boolean(res.structuredResult?.failedIds?.length && res.structuredResult?.successfulIds?.length);
+
+      if (isPartial) {
+        // Record successful individual logical keys as successes
+        if (res.logicalKeys && res.logicalKeys.length > 0) {
+          for (const sk of res.logicalKeys) {
+            options.lifecycle.recordSuccess({
+              name: res.tag,
+              isMutation: true,
+              result: res.structuredResult !== undefined ? res.structuredResult : { key: sk },
+              logicalKeys: [sk],
+            });
+          }
+        }
+        // Record each failed target as an individual lifecycle failure using that target's canonical delete key
+        if (res.failedKeys && res.failedKeys.length > 0) {
+          for (const fk of res.failedKeys) {
+            options.lifecycle.recordFailure({
+              name: res.tag,
+              isMutation: true,
+              error: { message: `Failed mutation for ${fk}`, failedKey: fk, structuredResult: res.structuredResult },
+              logicalKeys: [fk],
+            });
+          }
+        } else if (res.structuredResult?.failedIds?.length) {
+          for (const fid of res.structuredResult.failedIds) {
+            options.lifecycle.recordFailure({
+              name: res.tag,
+              isMutation: true,
+              error: { message: `Failed mutation for target id: ${fid}`, targetId: fid, structuredResult: res.structuredResult },
+            });
+          }
+        }
+      } else if (res.status === "success") {
         options.lifecycle.recordSuccess({
           name: res.tag,
           isMutation: true,
@@ -1612,11 +1678,23 @@ export async function executeActionTagsAsync(
           logicalKeys: res.logicalKeys,
         });
       } else if (res.status === "failed") {
-        options.lifecycle.recordFailure({
-          name: res.tag,
-          isMutation: true,
-          error: res.message,
-        });
+        if (res.failedKeys && res.failedKeys.length > 0) {
+          for (const fk of res.failedKeys) {
+            options.lifecycle.recordFailure({
+              name: res.tag,
+              isMutation: true,
+              error: { message: res.message, failedKey: fk, structuredResult: res.structuredResult },
+              logicalKeys: [fk],
+            });
+          }
+        } else {
+          options.lifecycle.recordFailure({
+            name: res.tag,
+            isMutation: true,
+            error: res.message,
+            logicalKeys: res.logicalKeys,
+          });
+        }
       } else if (res.status === "ambiguous") {
         options.lifecycle.recordClarification(res.message, res.tag);
       }
@@ -1638,6 +1716,7 @@ const ICON: Record<ActionStatus, string> = {
   ambiguous: "⚠️",
   not_found: "❌",
   invalid: "⚠️",
+  partial: "⚠️",
 };
 
 /** Render the execution record appended under Alpha's reply. */
