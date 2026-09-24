@@ -30,6 +30,7 @@ export interface CanonicalActionRecord {
   isMutation: boolean;
   status: OperationStatus;
   logicalKey?: string;
+  logicalKeys?: string[];
   executionKey?: string;
   args?: any;
   result?: any;

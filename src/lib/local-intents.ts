@@ -141,23 +141,88 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     return await bulkClear(kind, lifecycle);
   }
   if (/^(?:clear|delete|remove)\s+(?:all\s+)?done\s+reminders/.test(lower)) {
-    const userId = auth.currentUser?.uid || null;
+    const userId = await getActiveUserId();
     if (!userId) return "You need to be signed in to manage reminders.";
     activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
     if (!res.success) return `Could not fetch reminders: ${res.error?.message || "error"}.`;
     const doneList = (res.data || []).filter((r: any) => r.reminderState === "completed");
-    for (const r of doneList) {
-      await tool.deleteReminder(r.id);
+    if (!doneList.length) return "No completed reminders to clear.";
+
+    const targetIds = doneList.map((r: any) => r.id);
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const intendedIds = sortedIds;
+    const bulkKey = getCanonicalReminderDeleteKey({ targetIds: sortedIds });
+
+    const successfulIds: string[] = [];
+    const successfulKeys: string[] = [];
+    const failedIds: string[] = [];
+
+    for (const id of intendedIds) {
+      const singleKey = getCanonicalReminderDeleteKey({ targetIds: [id] });
+      if (lifecycle?.hasCompletedMutation(singleKey)) {
+        successfulIds.push(id);
+        successfulKeys.push(singleKey);
+        continue;
+      }
+      try {
+        const delRes = await tool.deleteReminder(id);
+        if (delRes.success) {
+          successfulIds.push(id);
+          successfulKeys.push(singleKey);
+          lifecycle?.recordSuccess({
+            name: "DELETE_REMINDER",
+            isMutation: true,
+            result: delRes.data || { id },
+            logicalKeys: [singleKey],
+          });
+        } else {
+          failedIds.push(id);
+          lifecycle?.recordFailure({
+            name: "DELETE_REMINDER",
+            isMutation: true,
+            error: delRes.error || { message: "Failed to delete reminder" },
+            logicalKeys: [singleKey],
+          });
+        }
+      } catch (err: any) {
+        failedIds.push(id);
+        lifecycle?.recordFailure({
+          name: "DELETE_REMINDER",
+          isMutation: true,
+          error: err || { message: "unknown error" },
+          logicalKeys: [singleKey],
+        });
+      }
     }
-    lifecycle?.recordSuccess({
-      name: "CLEAR_DONE_REMINDERS",
-      isMutation: true,
-      result: { count: doneList.length },
-      logicalKeys: doneList.map((r: any) => getCanonicalReminderDeleteKey({ targetIds: [r.id] })),
-    });
-    return `Cleared ${doneList.length} completed reminder${doneList.length === 1 ? "" : "s"}.`;
+
+    if (successfulIds.length === 0) {
+      lifecycle?.recordFailure({
+        name: "CLEAR_DONE_REMINDERS",
+        isMutation: true,
+        error: { message: "Failed to clear completed reminders" },
+      });
+      return "Could not clear completed reminders.";
+    }
+
+    if (successfulIds.length === intendedIds.length) {
+      lifecycle?.recordSuccess({
+        name: "CLEAR_DONE_REMINDERS",
+        isMutation: true,
+        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
+        logicalKeys: [bulkKey, ...successfulKeys],
+      });
+      return `Cleared ${successfulIds.length} completed reminder${successfulIds.length === 1 ? "" : "s"}.`;
+    } else {
+      lifecycle?.recordSuccess({
+        name: "CLEAR_DONE_REMINDERS_PARTIAL",
+        isMutation: true,
+        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
+        logicalKeys: [...successfulKeys],
+      });
+      return `Cleared ${successfulIds.length} out of ${intendedIds.length} completed reminders (${failedIds.length} failed).`;
+    }
   }
 
   // ---- DELETE BY NAME (fuzzy) ------------------------------------------
@@ -209,8 +274,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     if (!b) return `I couldn't find a bill matching "${q}".`;
     activity.set("writing_bill");
     const paidKey = getCanonicalBillMarkPaidKey(b.id);
-    const updateKey = getCanonicalUpdateKey("bill", b.id, { status: "paid", balance: 0 });
-    if (lifecycle?.hasCompletedMutation(paidKey) || lifecycle?.hasCompletedMutation(updateKey)) {
+    if (lifecycle?.hasCompletedMutation(paidKey)) {
       return `Marked bill "${b.name}" as paid.`;
     }
     try {
@@ -221,15 +285,15 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: "MARK_BILL_PAID",
           isMutation: true,
           error: { message: "Failed to mark bill paid" },
-          logicalKeys: [paidKey, updateKey],
+          logicalKeys: [paidKey],
         });
         return `Could not mark bill "${b.name}" as paid.`;
       }
       lifecycle?.recordSuccess({
         name: "MARK_BILL_PAID",
         isMutation: true,
-        result: { id: b.id, name: b.name },
-        logicalKeys: [paidKey, updateKey],
+        result: { id: b.id, name: b.name, status: "paid", balance: 0 },
+        logicalKeys: [paidKey],
       });
       return `Marked bill "${b.name}" as paid.`;
     } catch (err: any) {
@@ -237,7 +301,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         name: "MARK_BILL_PAID",
         isMutation: true,
         error: err || { message: "unknown error" },
-        logicalKeys: [paidKey, updateKey],
+        logicalKeys: [paidKey],
       });
       return `Could not mark bill paid: ${err?.message || "unknown error"}`;
     }

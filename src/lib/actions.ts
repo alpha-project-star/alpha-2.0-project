@@ -60,7 +60,6 @@ import {
   getCanonicalUpdateKey,
   getCanonicalDeleteKey,
   getCanonicalBillMarkPaidKey,
-  getCanonicalDeleteLastKey,
 } from "./mutation-identity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
 import { getReminderTool } from "./tool-registry";
@@ -581,8 +580,7 @@ export async function executeActionTagsAsync(
     const b = hits[0] as Bill;
     const next = { ...b, balance: 0, status: "paid" as const };
     const paidKey = getCanonicalBillMarkPaidKey(b.id);
-    const updateKey = getCanonicalUpdateKey("bill", b.id, { balance: 0, status: "paid" });
-    if (executedMutations.has(paidKey) || executedMutations.has(updateKey)) {
+    if (executedMutations.has(paidKey)) {
       text = text.replace(fullMatch, "");
       markBillPaidRe.lastIndex = 0;
       continue;
@@ -595,12 +593,11 @@ export async function executeActionTagsAsync(
         results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid.` });
       } else {
         executedMutations.add(paidKey);
-        executedMutations.add(updateKey);
         results.push({
           tag: "MARK_BILL_PAID",
           status: "success",
           message: `Marked bill "${b.name}" as paid.`,
-          logicalKeys: [paidKey, updateKey],
+          logicalKeys: [paidKey],
           structuredResult: next,
         });
       }
@@ -679,38 +676,62 @@ export async function executeActionTagsAsync(
     }
     if (hits.length > 1 && !all) return ambiguous(tag, kind, hits, query);
     const targetIds = hits.map(h => h.id);
-    const bulkKey = getCanonicalBulkDeleteKey(kind, targetIds);
-    const singleKeys = targetIds.map(id => getCanonicalDeleteKey(kind, id));
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const bulkKey = getCanonicalBulkDeleteKey(kind, sortedIds);
 
-    try {
-      for (const h of hits) {
+    const intendedIds = sortedIds;
+    const successfulIds: string[] = [];
+    const successfulKeys: string[] = [];
+    const failedIds: string[] = [];
+
+    for (const h of hits) {
+      const singleKey = getCanonicalDeleteKey(kind, h.id);
+      if (executedMutations.has(singleKey)) {
+        successfulIds.push(h.id);
+        successfulKeys.push(singleKey);
+        continue;
+      }
+      try {
         await deleteById(kind, h.id);
+        const remaining = listOf(kind);
+        const gone = !remaining.some((x) => x.id === h.id);
+        if (gone) {
+          successfulIds.push(h.id);
+          successfulKeys.push(singleKey);
+          executedMutations.add(singleKey);
+        } else {
+          failedIds.push(h.id);
+        }
+      } catch (err) {
+        failedIds.push(h.id);
       }
-      const remaining = listOf(kind);
-      const stuck = hits.filter((h) => remaining.some((x) => x.id === h.id));
-      if (stuck.length) {
-        activity.set("action_failed");
-        return {
-          tag,
-          status: "failed",
-          message: `Could not delete ${stuck.length} ${KIND_PLURAL[kind]}.`,
-        };
-      }
-      for (const k of [bulkKey, ...singleKeys]) {
-        executedMutations.add(k);
+    }
+
+    if (successfulIds.length === 0) {
+      activity.set("action_failed");
+      return {
+        tag,
+        status: "failed",
+        message: `Could not delete ${kind}.`,
+      };
+    } else if (successfulIds.length === intendedIds.length) {
+      if (hits.length > 1) {
+        executedMutations.add(bulkKey);
       }
       return {
         tag,
         status: "success",
         message: `Deleted ${hits.length} ${hits.length === 1 ? kind : KIND_PLURAL[kind]}: ${hits.map((h) => `"${label(kind, h)}"`).join(", ")}.`,
-        logicalKeys: [bulkKey, ...singleKeys],
+        logicalKeys: hits.length > 1 ? [bulkKey, ...successfulKeys] : [...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
       };
-    } catch (err: unknown) {
-      activity.set("action_failed");
+    } else {
       return {
         tag,
-        status: "failed",
-        message: `Could not delete ${kind}: ${err instanceof Error ? err.message : String(err)}`,
+        status: "success",
+        message: `Deleted ${successfulIds.length} out of ${intendedIds.length} ${KIND_PLURAL[kind]} (${failedIds.length} failed).`,
+        logicalKeys: [...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
       };
     }
   };
@@ -759,31 +780,59 @@ export async function executeActionTagsAsync(
       continue;
     }
     const targetIds = list.map(x => x.id);
-    const bulkKey = getCanonicalBulkDeleteKey(kind, targetIds);
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const bulkKey = getCanonicalBulkDeleteKey(kind, sortedIds);
     const clearKey = getCanonicalClearAllKey(plural);
-    const singleKeys = targetIds.map(id => getCanonicalDeleteKey(kind, id));
-    try {
-      for (const x of list) {
-        await deleteById(kind, x.id);
+
+    const intendedIds = sortedIds;
+    const successfulIds: string[] = [];
+    const successfulKeys: string[] = [];
+    const failedIds: string[] = [];
+
+    for (const id of intendedIds) {
+      const singleKey = getCanonicalDeleteKey(kind, id);
+      if (executedMutations.has(singleKey)) {
+        successfulIds.push(id);
+        successfulKeys.push(singleKey);
+        continue;
       }
-      const ok = listOf(kind).length === 0;
-      if (!ok) {
-        activity.set("action_failed");
-        results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear all ${plural} — ${listOf(kind).length} remain.` });
-      } else {
-        executedMutations.add(bulkKey);
-        executedMutations.add(clearKey);
-        for (const k of singleKeys) executedMutations.add(k);
-        results.push({
-          tag: "CLEAR_ALL",
-          status: "success",
-          message: `Cleared all ${list.length} ${plural}.`,
-          logicalKeys: [bulkKey, clearKey, ...singleKeys],
-        });
+      try {
+        await deleteById(kind, id);
+        const remaining = listOf(kind);
+        const gone = !remaining.some((x) => x.id === id);
+        if (gone) {
+          successfulIds.push(id);
+          successfulKeys.push(singleKey);
+          executedMutations.add(singleKey);
+        } else {
+          failedIds.push(id);
+        }
+      } catch (err) {
+        failedIds.push(id);
       }
-    } catch (err: unknown) {
+    }
+
+    if (successfulIds.length === 0) {
       activity.set("action_failed");
-      results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear all ${plural}: ${err instanceof Error ? err.message : String(err)}` });
+      results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear ${plural}.` });
+    } else if (successfulIds.length === intendedIds.length) {
+      executedMutations.add(bulkKey);
+      executedMutations.add(clearKey);
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "success",
+        message: `Cleared all ${list.length} ${plural}.`,
+        logicalKeys: [bulkKey, clearKey, ...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
+      });
+    } else {
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "success",
+        message: `Cleared ${successfulIds.length} out of ${intendedIds.length} ${plural} (${failedIds.length} failed).`,
+        logicalKeys: [...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
+      });
     }
     text = text.replace(fullMatch, "");
     clearAllRe.lastIndex = 0;
