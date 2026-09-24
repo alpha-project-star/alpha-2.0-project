@@ -18,6 +18,10 @@ import {
   getCanonicalMemoryKey,
   getCanonicalBillKey,
   getCanonicalTaskKey,
+  getCanonicalNoteCreateKey,
+  getCanonicalMemoryCreateKey,
+  getCanonicalBillCreateKey,
+  getCanonicalClearAllKey,
 } from "./mutation-identity";
 
 async function getActiveUserId(): Promise<string | null> {
@@ -208,15 +212,24 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     activity.set("writing_note");
     const id = uid();
     const title = body.slice(0, 40);
-    await alphaStore.upsertNote({ id, title, body, updatedAt: Date.now() });
-    const opKey = getCanonicalNoteKey("create", id, title);
-    lifecycle?.recordSuccess({
-      name: "ADD_NOTE",
-      isMutation: true,
-      result: { id, title, body },
-      logicalKeys: [opKey],
-    });
-    return `Got it — note saved: "${body.slice(0, 60)}".`;
+    try {
+      await alphaStore.upsertNote({ id, title, body, updatedAt: Date.now() });
+      const opKey = getCanonicalNoteCreateKey(title, body);
+      lifecycle?.recordSuccess({
+        name: "ADD_NOTE",
+        isMutation: true,
+        result: { id, title, body },
+        logicalKeys: [opKey],
+      });
+      return `Got it — note saved: "${body.slice(0, 60)}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "ADD_NOTE",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `I couldn't save that note: ${err?.message || "unknown error"}.`;
+    }
   }
 
   // Memory: "remember that X" / "save a memory about X" / "store in memory X" / "keep in mind X"
@@ -228,20 +241,29 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     activity.set("writing_memory");
     const id = uid();
     const topic = detail.slice(0, 40);
-    await alphaStore.upsertMemory({
-      id,
-      topic,
-      detail,
-      updatedAt: Date.now(),
-    });
-    const key = getCanonicalMemoryKey("create", id, topic);
-    lifecycle?.recordSuccess({
-      name: "ADD_MEMORY",
-      isMutation: true,
-      result: { id, topic, detail },
-      logicalKeys: [key],
-    });
-    return `Stored to memory: "${detail.slice(0, 60)}".`;
+    try {
+      await alphaStore.upsertMemory({
+        id,
+        topic,
+        detail,
+        updatedAt: Date.now(),
+      });
+      const key = getCanonicalMemoryCreateKey(topic, detail);
+      lifecycle?.recordSuccess({
+        name: "ADD_MEMORY",
+        isMutation: true,
+        result: { id, topic, detail },
+        logicalKeys: [key],
+      });
+      return `Stored to memory: "${detail.slice(0, 60)}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "ADD_MEMORY",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `I couldn't store that memory: ${err?.message || "unknown error"}.`;
+    }
   }
 
   // Bill: "add a bill X for $N due Y"
@@ -252,15 +274,24 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const dueDate = trim(m[3] || "");
     activity.set("writing_bill");
     const id = uid();
-    await alphaStore.upsertBill({ id, name, amount, balance: amount, dueDate, status: "due" });
-    const key = getCanonicalBillKey("create", id, name);
-    lifecycle?.recordSuccess({
-      name: "ADD_BILL",
-      isMutation: true,
-      result: { id, name, amount },
-      logicalKeys: [key],
-    });
-    return `Bill added: ${name}${amount ? " for $" + amount : ""}.`;
+    try {
+      await alphaStore.upsertBill({ id, name, amount, balance: amount, dueDate, status: "due" });
+      const key = getCanonicalBillCreateKey(name, amount, dueDate);
+      lifecycle?.recordSuccess({
+        name: "ADD_BILL",
+        isMutation: true,
+        result: { id, name, amount },
+        logicalKeys: [key],
+      });
+      return `Bill added: ${name}${amount ? " for $" + amount : ""}.`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "ADD_BILL",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `I couldn't add that bill: ${err?.message || "unknown error"}.`;
+    }
   }
 
   // Delete latest of a kind: "delete the last note" / "remove last reminder"

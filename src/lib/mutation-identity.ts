@@ -190,6 +190,26 @@ function safeJsonParse(val: string): any {
   }
 }
 
+export function getCanonicalNoteCreateKey(title: string, body: string): string {
+  return `mutation:note:create:${normalizeMutationString(title)}:${normalizeMutationString(body)}`;
+}
+
+export function getCanonicalMemoryCreateKey(topic: string, detail: string): string {
+  return `mutation:memory:create:${normalizeMutationString(topic)}:${normalizeMutationString(detail)}`;
+}
+
+export function getCanonicalBillCreateKey(name: string, amount: number, dueDate?: string): string {
+  return `mutation:bill:create:${normalizeMutationString(name)}:${Number(amount || 0)}:${normalizeMutationString(dueDate || "")}`;
+}
+
+export function getCanonicalTaskCreateKey(title: string): string {
+  return `mutation:task:create:${normalizeMutationString(title)}`;
+}
+
+export function getCanonicalClearAllKey(entityType: string): string {
+  return `mutation:${normalizeMutationString(entityType)}:clear_all`;
+}
+
 export function getCanonicalNoteKey(action: string, id: string, title?: string): string {
   return `mutation:note:${action}:${normalizeMutationString(id)}:${normalizeMutationString(title || "")}`;
 }
