@@ -59,6 +59,8 @@ import {
   getCanonicalClearAllKey,
   getCanonicalUpdateKey,
   getCanonicalDeleteKey,
+  getCanonicalBillMarkPaidKey,
+  getCanonicalDeleteLastKey,
 } from "./mutation-identity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
 import { getReminderTool } from "./tool-registry";
@@ -578,8 +580,9 @@ export async function executeActionTagsAsync(
     }
     const b = hits[0] as Bill;
     const next = { ...b, balance: 0, status: "paid" as const };
-    const paidKey = getCanonicalUpdateKey("bill", b.id, { balance: 0, status: "paid" });
-    if (executedMutations.has(paidKey)) {
+    const paidKey = getCanonicalBillMarkPaidKey(b.id);
+    const updateKey = getCanonicalUpdateKey("bill", b.id, { balance: 0, status: "paid" });
+    if (executedMutations.has(paidKey) || executedMutations.has(updateKey)) {
       text = text.replace(fullMatch, "");
       markBillPaidRe.lastIndex = 0;
       continue;
@@ -592,7 +595,14 @@ export async function executeActionTagsAsync(
         results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid.` });
       } else {
         executedMutations.add(paidKey);
-        results.push({ tag: "MARK_BILL_PAID", status: "success", message: `Marked bill "${b.name}" as paid.`, logicalKeys: [paidKey] });
+        executedMutations.add(updateKey);
+        results.push({
+          tag: "MARK_BILL_PAID",
+          status: "success",
+          message: `Marked bill "${b.name}" as paid.`,
+          logicalKeys: [paidKey, updateKey],
+          structuredResult: next,
+        });
       }
     } catch (err: unknown) {
       activity.set("action_failed");
@@ -621,9 +631,11 @@ export async function executeActionTagsAsync(
       delLastRe.lastIndex = 0;
       continue;
     }
-    const victim = list[0];
+    const sorted = [...list].sort((a: any, b: any) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0));
+    const victim = sorted[0];
     const delKey = getCanonicalDeleteKey(kind, victim.id);
-    if (executedMutations.has(delKey)) {
+    const deleteLastKey = getCanonicalDeleteLastKey(kind);
+    if (executedMutations.has(delKey) || executedMutations.has(deleteLastKey)) {
       text = text.replace(fullMatch, "");
       delLastRe.lastIndex = 0;
       continue;
@@ -636,7 +648,14 @@ export async function executeActionTagsAsync(
         results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind} "${label(kind, victim)}".` });
       } else {
         executedMutations.add(delKey);
-        results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted ${kind} "${label(kind, victim)}".`, logicalKeys: [delKey] });
+        executedMutations.add(deleteLastKey);
+        results.push({
+          tag: "DELETE_LAST",
+          status: "success",
+          message: `Deleted ${kind} "${label(kind, victim)}".`,
+          logicalKeys: [delKey, deleteLastKey],
+          structuredResult: victim,
+        });
       }
     } catch (err: unknown) {
       activity.set("action_failed");

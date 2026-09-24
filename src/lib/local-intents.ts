@@ -23,6 +23,8 @@ import {
   getCanonicalUpdateKey,
   getCanonicalDeleteKey,
   getCanonicalBulkDeleteKey,
+  getCanonicalBillMarkPaidKey,
+  getCanonicalDeleteLastKey,
 } from "./mutation-identity";
 
 async function getActiveUserId(): Promise<string | null> {
@@ -206,14 +208,28 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const b = alphaStore.get().bills.find((x) => x.name.toLowerCase().includes(q));
     if (!b) return `I couldn't find a bill matching "${q}".`;
     activity.set("writing_bill");
+    const paidKey = getCanonicalBillMarkPaidKey(b.id);
+    const updateKey = getCanonicalUpdateKey("bill", b.id, { status: "paid", balance: 0 });
+    if (lifecycle?.hasCompletedMutation(paidKey) || lifecycle?.hasCompletedMutation(updateKey)) {
+      return `Marked bill "${b.name}" as paid.`;
+    }
     try {
       await alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
-      const paidKey = getCanonicalUpdateKey("bill", b.id, { status: "paid", balance: 0 });
+      const ok = alphaStore.get().bills.find(x => x.id === b.id)?.status === "paid";
+      if (!ok) {
+        lifecycle?.recordFailure({
+          name: "MARK_BILL_PAID",
+          isMutation: true,
+          error: { message: "Failed to mark bill paid" },
+          logicalKeys: [paidKey, updateKey],
+        });
+        return `Could not mark bill "${b.name}" as paid.`;
+      }
       lifecycle?.recordSuccess({
         name: "MARK_BILL_PAID",
         isMutation: true,
         result: { id: b.id, name: b.name },
-        logicalKeys: [paidKey],
+        logicalKeys: [paidKey, updateKey],
       });
       return `Marked bill "${b.name}" as paid.`;
     } catch (err: any) {
@@ -221,6 +237,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         name: "MARK_BILL_PAID",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [paidKey, updateKey],
       });
       return `Could not mark bill paid: ${err?.message || "unknown error"}`;
     }
@@ -405,20 +422,33 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       bill: { list: s.bills, del: (id) => alphaStore.deleteBill(id), act: "writing_bill" },
     };
     const e = map[kind];
-    if (e?.list[0]) {
+    if (e?.list && e.list.length > 0) {
       activity.set(e.act);
-      const victim = e.list[0];
+      const sorted = [...e.list].sort((a: any, b: any) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0));
+      const victim = sorted[0];
       const key = getCanonicalDeleteKey(kind, victim.id);
-      if (lifecycle?.hasCompletedMutation(key)) {
+      const deleteLastKey = getCanonicalDeleteLastKey(kind);
+      if (lifecycle?.hasCompletedMutation(key) || lifecycle?.hasCompletedMutation(deleteLastKey)) {
         return `Deleted the last ${kind}.`;
       }
       try {
         await e.del(victim.id);
+        const refreshedList = kind === "note" ? alphaStore.get().notes : kind === "memory" ? alphaStore.get().memories : kind === "task" ? alphaStore.get().tasks : alphaStore.get().bills;
+        const gone = !refreshedList.some((x: any) => x.id === victim.id);
+        if (!gone) {
+          lifecycle?.recordFailure({
+            name: `DELETE_${kind.toUpperCase()}`,
+            isMutation: true,
+            error: { message: "Victim still exists" },
+            logicalKeys: [key, deleteLastKey],
+          });
+          return `Could not delete last ${kind}.`;
+        }
         lifecycle?.recordSuccess({
           name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           result: victim,
-          logicalKeys: [key],
+          logicalKeys: [key, deleteLastKey],
         });
         return `Deleted the last ${kind}.`;
       } catch (err: any) {
@@ -426,7 +456,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           error: err || { message: "unknown error" },
-          logicalKey: key,
+          logicalKeys: [key, deleteLastKey],
         });
         return `Could not delete last ${kind}: ${err?.message || "unknown error"}`;
       }

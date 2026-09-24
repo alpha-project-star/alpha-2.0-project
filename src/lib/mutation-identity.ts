@@ -202,6 +202,14 @@ export function getCanonicalBillCreateKey(name: string, amount: number, dueDate?
   return `mutation:bill:create:${normalizeMutationString(name)}:${Number(amount || 0)}:${normalizeMutationString(dueDate || "")}`;
 }
 
+export function getCanonicalBillMarkPaidKey(billId: string): string {
+  return `mutation:bill:mark_paid:${normalizeMutationString(billId)}`;
+}
+
+export function getCanonicalDeleteLastKey(entityType: string): string {
+  return `mutation:${normalizeMutationString(entityType)}:delete_last`;
+}
+
 export function getCanonicalTaskCreateKey(title: string): string {
   return `mutation:task:create:${normalizeMutationString(title)}`;
 }

@@ -175,6 +175,7 @@ export class RequestActionLifecycle {
     isMutation: boolean;
     error: any;
     logicalKey?: string | null;
+    logicalKeys?: string[];
     executionKey?: string | null;
   }): void {
     let op = params.opId ? this.operations.find((o) => o.id === params.opId) : null;
