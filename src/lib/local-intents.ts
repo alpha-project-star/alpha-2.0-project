@@ -48,28 +48,38 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       const meridiem = isPm ? 'PM' : 'AM';
       const resolvedRawWhen = `${pendingClarif.rawWhen} ${meridiem}`;
       const dueAt = parseWhen(resolvedRawWhen, temporal.now());
-      if (dueAt !== null) {
-        activity.set("writing_reminder");
-        const tool = getReminderTool(userId);
-        const result = await tool.createReminder({
-          title: pendingClarif.title,
-          dueAt,
-          notes: pendingClarif.notes || '',
+      if (dueAt === null) {
+        lifecycle?.recordClarification(`I couldn't understand the time "${resolvedRawWhen}". Please specify AM or PM.`, "ADD_REMINDER");
+        return `I couldn't understand when "${resolvedRawWhen}" refers to. Do you mean AM or PM?`;
+      }
+      activity.set("writing_reminder");
+      const tool = getReminderTool(userId);
+      const result = await tool.createReminder({
+        title: pendingClarif.title,
+        dueAt,
+        notes: pendingClarif.notes || '',
+      });
+      if (result.success && result.data) {
+        reminderContextManager.clearPendingClarification(userId);
+        const reminder = result.data;
+        const key = getCanonicalReminderCreateKey({ title: reminder.title, dueAt: reminder.dueAt, notes: reminder.notes });
+        lifecycle?.recordSuccess({
+          name: "ADD_REMINDER",
+          isMutation: true,
+          result: reminder,
+          logicalKeys: [key],
         });
-        if (result.success && result.data) {
-          reminderContextManager.clearPendingClarification(userId);
-          const reminder = result.data;
-          const key = getCanonicalReminderCreateKey({ title: reminder.title, dueAt: reminder.dueAt, notes: reminder.notes });
-          lifecycle?.recordSuccess({
-            name: "ADD_REMINDER",
-            isMutation: true,
-            result: reminder,
-            logicalKeys: [key],
-          });
-          return `Reminder saved: "${reminder.title}" — ${formatReminderDate(reminder.dueAt)}`;
-        } else {
-          return `I couldn't save your reminder: ${result.error?.message || 'Unknown error'}. Please try again.`;
-        }
+        return `Reminder saved: "${reminder.title}" — ${formatReminderDate(reminder.dueAt)}`;
+      } else {
+        const error = result.error || { code: 'REPOSITORY_ERROR', message: 'Failed to create reminder' };
+        const key = getCanonicalReminderCreateKey({ title: pendingClarif.title, dueAt, notes: pendingClarif.notes });
+        lifecycle?.recordFailure({
+          name: "ADD_REMINDER",
+          isMutation: true,
+          error,
+          logicalKey: key,
+        });
+        return `I couldn't save your reminder: ${error.message}. Please try again.`;
       }
     }
   }

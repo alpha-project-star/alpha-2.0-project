@@ -6,14 +6,14 @@ export const REMINDER_TOOLS = [
     type: "function",
     function: {
       name: "createReminder",
-      description: "Create a new reminder. Ask the user for any missing details (what and when) before calling this.",
+      description: "Create a new reminder. CRITICAL TEMPORAL RULE: A bare 1–12 hour without AM/PM (e.g., 'tomorrow at 9', 'at 5') is ambiguous and must be clarified before the reminder is created (ask 'Do you mean 9 AM or 9 PM?'). Do not arbitrarily assume AM or PM. Explicit AM/PM (e.g. '9am', '9pm') and 24-hour values (e.g. '21:00', '13:00') are unambiguous and can be created directly. Relative durations (e.g. 'in 2 minutes') are also valid.",
       parameters: {
         type: "object",
         properties: {
           title: { type: "string", description: "Short title of the reminder (e.g., 'Call John')." },
           dueAt: { 
             type: "string", 
-            description: "When the reminder is due: either a natural-language date/time string (e.g., 'tomorrow at 9am', 'in 2 hours', 'next Monday at 3pm') or a unix timestamp in milliseconds. Alpha normalizes temporal expressions deterministically." 
+            description: "When the reminder is due: either a natural-language date/time string or a unix timestamp in milliseconds. Bare 1-12 hours without AM/PM are ambiguous and require clarification." 
           },
           notes: { type: "string", description: "Optional extra details." },
         },
@@ -50,14 +50,14 @@ export const REMINDER_TOOLS = [
     type: "function",
     function: {
       name: "updateReminder",
-      description: "Update an existing reminder. Use the ID if known, otherwise provide a search query.",
+      description: "Update an existing reminder. Use the ID if known, otherwise provide a search query. Note: bare 1-12 hour expressions without AM/PM are ambiguous and require clarification.",
       parameters: {
         type: "object",
         properties: {
           id: { type: "string", description: "The ID of the reminder to update." },
           query: { type: "string", description: "Search query for the title if ID is unknown." },
           title: { type: "string", description: "New title." },
-          dueAt: { type: "string", description: "New due date: either a natural-language date/time string (e.g., 'tomorrow at 9am') or a unix timestamp in milliseconds." },
+          dueAt: { type: "string", description: "New due date: natural-language date/time string or timestamp. Bare 1-12 hours without AM/PM are ambiguous." },
           notes: { type: "string", description: "New notes." },
           reminderState: { type: "string", enum: ["active", "completed", "cancelled"] },
         },

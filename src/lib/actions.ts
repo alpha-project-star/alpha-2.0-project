@@ -61,6 +61,7 @@ import {
   getCanonicalDeleteKey,
 } from "./mutation-identity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
+import { getReminderTool } from "./tool-registry";
 
 export type ActionStatus = "success" | "failed" | "ambiguous" | "not_found" | "invalid";
 
@@ -995,25 +996,32 @@ export async function executeActionTagsAsync(
     }
     const now = Date.now();
     try {
-      await repo.createReminder(effectiveUserId, {
-        id,
-        userId: effectiveUserId,
+      const reminderTool = getReminderTool(effectiveUserId);
+      const createResult = await reminderTool.createReminder({
         title,
-        notes,
         dueAt,
-        createdAt: now,
-        updatedAt: now,
-        reminderState: "active",
-        notificationState: "pending",
+        notes,
       });
-      executedMutations.add(keyWithParsedDue);
-      executedMutations.add(keyWithRawDue);
-      results.push({
-        tag: "ADD_REMINDER",
-        status: "success",
-        message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
-        logicalKeys: [keyWithParsedDue, keyWithRawDue],
-      });
+      if (createResult.success && createResult.data) {
+        const reminder = createResult.data;
+        const keyWithParsedDue = getCanonicalReminderCreateKey({ title: reminder.title, dueAt: reminder.dueAt, notes: reminder.notes });
+        const keyWithRawDue = getCanonicalReminderCreateKey({ title: reminder.title, dueAt: rawWhen, notes: reminder.notes });
+        executedMutations.add(keyWithParsedDue);
+        executedMutations.add(keyWithRawDue);
+        results.push({
+          tag: "ADD_REMINDER",
+          status: "success",
+          message: `Reminder saved: "${reminder.title}" — ${formatWhen(reminder.dueAt)}`,
+          logicalKeys: [keyWithParsedDue, keyWithRawDue],
+        });
+      } else {
+        activity.set("action_failed");
+        results.push({
+          tag: "ADD_REMINDER",
+          status: "failed",
+          message: `Reminder "${title}" could not be saved: ${createResult.error?.message || 'Unknown error'}`,
+        });
+      }
     } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
