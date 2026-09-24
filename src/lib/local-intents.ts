@@ -14,14 +14,13 @@ import {
   getCanonicalReminderCreateKey,
   getCanonicalReminderDeleteKey,
   getCanonicalReminderCompleteKey,
-  getCanonicalNoteKey,
-  getCanonicalMemoryKey,
-  getCanonicalBillKey,
-  getCanonicalTaskKey,
   getCanonicalNoteCreateKey,
   getCanonicalMemoryCreateKey,
   getCanonicalBillCreateKey,
   getCanonicalClearAllKey,
+  getCanonicalUpdateKey,
+  getCanonicalDeleteKey,
+  getCanonicalBulkDeleteKey,
 } from "./mutation-identity";
 
 async function getActiveUserId(): Promise<string | null> {
@@ -135,15 +134,24 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       );
     if (!n) return `I couldn't find a note matching "${q}".`;
     activity.set("writing_note");
-    await alphaStore.upsertNote({ ...n, title: to, updatedAt: Date.now() });
-    const key = getCanonicalNoteKey("update", n.id, to);
-    lifecycle?.recordSuccess({
-      name: "UPDATE_NOTE",
-      isMutation: true,
-      result: { id: n.id, title: to },
-      logicalKeys: [key],
-    });
-    return `Renamed note to "${to}".`;
+    try {
+      await alphaStore.upsertNote({ ...n, title: to, updatedAt: Date.now() });
+      const updateKey = getCanonicalUpdateKey("note", n.id, { title: to });
+      lifecycle?.recordSuccess({
+        name: "UPDATE_NOTE",
+        isMutation: true,
+        result: { id: n.id, title: to },
+        logicalKeys: [updateKey],
+      });
+      return `Renamed note to "${to}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "UPDATE_NOTE",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not update note: ${err?.message || "unknown error"}`;
+    }
   }
   mm = lower.match(/^mark\s+(?:the\s+)?bill\s+(.+?)\s+(?:as\s+)?paid/);
   if (mm) {
@@ -151,15 +159,24 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const b = alphaStore.get().bills.find((x) => x.name.toLowerCase().includes(q));
     if (!b) return `I couldn't find a bill matching "${q}".`;
     activity.set("writing_bill");
-    await alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
-    const key = getCanonicalBillKey("update", b.id, b.name);
-    lifecycle?.recordSuccess({
-      name: "MARK_BILL_PAID",
-      isMutation: true,
-      result: { id: b.id, name: b.name },
-      logicalKeys: [key],
-    });
-    return `Marked bill "${b.name}" as paid.`;
+    try {
+      await alphaStore.upsertBill({ ...b, status: "paid", balance: 0 });
+      const paidKey = getCanonicalUpdateKey("bill", b.id, { status: "paid", balance: 0 });
+      lifecycle?.recordSuccess({
+        name: "MARK_BILL_PAID",
+        isMutation: true,
+        result: { id: b.id, name: b.name },
+        logicalKeys: [paidKey],
+      });
+      return `Marked bill "${b.name}" as paid.`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "MARK_BILL_PAID",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not mark bill paid: ${err?.message || "unknown error"}`;
+    }
   }
 
   // Add reminder: "remind me to X at|on|by Y"  /  "set a reminder to X for Y"
@@ -330,22 +347,24 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     if (e?.list[0]) {
       activity.set(e.act);
       const victim = e.list[0];
-      await e.del(victim.id);
-      const key =
-        kind === "note"
-          ? getCanonicalNoteKey("delete", victim.id, victim.title)
-          : kind === "memory"
-            ? getCanonicalMemoryKey("delete", victim.id, victim.topic)
-            : kind === "task"
-              ? getCanonicalTaskKey("delete", victim.id, victim.title)
-              : getCanonicalBillKey("delete", victim.id, victim.name);
-      lifecycle?.recordSuccess({
-        name: `DELETE_LAST_${kind.toUpperCase()}`,
-        isMutation: true,
-        result: victim,
-        logicalKeys: [key],
-      });
-      return `Deleted the last ${kind}.`;
+      try {
+        await e.del(victim.id);
+        const key = getCanonicalDeleteKey(kind, victim.id);
+        lifecycle?.recordSuccess({
+          name: `DELETE_LAST_${kind.toUpperCase()}`,
+          isMutation: true,
+          result: victim,
+          logicalKeys: [key],
+        });
+        return `Deleted the last ${kind}.`;
+      } catch (err: any) {
+        lifecycle?.recordFailure({
+          name: `DELETE_LAST_${kind.toUpperCase()}`,
+          isMutation: true,
+          error: err || { message: "unknown error" },
+        });
+        return `Could not delete last ${kind}: ${err?.message || "unknown error"}`;
+      }
     }
     return `No ${kind}s to delete.`;
   }
@@ -451,18 +470,45 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
     if (!res.success || !res.data?.length) return "No reminders to clear.";
-    const n = res.data.length;
-    for (const r of res.data) {
-      await tool.deleteReminder(r.id);
+    const reminders = res.data;
+    const targetIds = reminders.map((r: any) => r.id);
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const bulkKey = getCanonicalReminderDeleteKey({ targetIds: sortedIds });
+    const clearKey = getCanonicalClearAllKey("reminders");
+    const singleKeys = sortedIds.map((id: string) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
+
+    let successCount = 0;
+    const successfulKeys: string[] = [];
+    for (const r of reminders) {
+      try {
+        await tool.deleteReminder(r.id);
+        successCount++;
+        successfulKeys.push(getCanonicalReminderDeleteKey({ targetIds: [r.id] }));
+      } catch (err) {
+        lifecycle?.recordFailure({
+          name: "DELETE_REMINDER",
+          isMutation: true,
+          error: err || { message: "unknown error" },
+        });
+      }
+    }
+    if (successCount === 0) {
+      lifecycle?.recordFailure({
+        name: "CLEAR_ALL_REMINDERS",
+        isMutation: true,
+        error: { message: "Failed to clear reminders" },
+      });
+      return "Could not clear reminders.";
     }
     lifecycle?.recordSuccess({
       name: "CLEAR_ALL_REMINDERS",
       isMutation: true,
-      result: { count: n },
-      logicalKeys: ["mutation:reminder:clear_all"],
+      result: { count: successCount },
+      logicalKeys: [bulkKey, clearKey, ...successfulKeys],
     });
-    return `Cleared all ${n} reminders.`;
+    return `Cleared ${successCount} reminders.`;
   }
+
   let list: { id: string; title?: string; topic?: string; name?: string }[] = [];
   let del: (id: string) => Promise<void> = async () => {};
   if (kind === "note") {
@@ -482,17 +528,47 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
     list = s.bills;
     del = (id) => alphaStore.deleteBill(id);
   } else return `I don't know how to clear "${kind}".`;
-  const n = list.length;
+
+  if (!list.length) return `No ${kind}s to clear.`;
+
+  const targetIds = list.map((item) => item.id);
+  const sortedIds = Array.from(new Set(targetIds)).sort();
+  const bulkKey = getCanonicalBulkDeleteKey(kind, sortedIds);
+  const clearKey = getCanonicalClearAllKey(kind === "memory" ? "memories" : `${kind}s`);
+  const singleKeys = sortedIds.map((id) => getCanonicalDeleteKey(kind, id));
+
+  let successCount = 0;
+  const successfulKeys: string[] = [];
   for (const item of [...list]) {
-    await del(item.id);
+    try {
+      await del(item.id);
+      successCount++;
+      successfulKeys.push(getCanonicalDeleteKey(kind, item.id));
+    } catch (err) {
+      lifecycle?.recordFailure({
+        name: `DELETE_${kind.toUpperCase()}`,
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+    }
   }
+
+  if (successCount === 0) {
+    lifecycle?.recordFailure({
+      name: `CLEAR_ALL_${kind.toUpperCase()}S`,
+      isMutation: true,
+      error: { message: `Failed to clear ${kind}s` },
+    });
+    return `Could not clear ${kind}s.`;
+  }
+
   lifecycle?.recordSuccess({
     name: `CLEAR_ALL_${kind.toUpperCase()}S`,
     isMutation: true,
-    result: { count: n },
-    logicalKeys: [`mutation:${kind}:clear_all`],
+    result: { count: successCount },
+    logicalKeys: [bulkKey, clearKey, ...successfulKeys],
   });
-  return `Cleared all ${n} ${kind}${n === 1 ? "" : "s"}.`;
+  return `Cleared ${successCount} ${kind}${successCount === 1 ? "" : "s"}.`;
 }
 
 async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLifecycle): Promise<string> {
@@ -529,15 +605,24 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple notes match "${q}" — which one? (${matches.map((m) => m.title || m.body.slice(0, 20)).join(", ")})`;
     const target = matches[0];
-    await alphaStore.deleteNote(target.id);
-    const key = getCanonicalNoteKey("delete", target.id, target.title);
-    lifecycle?.recordSuccess({
-      name: "DELETE_NOTE",
-      isMutation: true,
-      result: target,
-      logicalKeys: [key],
-    });
-    return `Deleted note "${target.title || target.body.slice(0, 30)}".`;
+    try {
+      await alphaStore.deleteNote(target.id);
+      const key = getCanonicalDeleteKey("note", target.id);
+      lifecycle?.recordSuccess({
+        name: "DELETE_NOTE",
+        isMutation: true,
+        result: target,
+        logicalKeys: [key],
+      });
+      return `Deleted note "${target.title || target.body.slice(0, 30)}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "DELETE_NOTE",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not delete note: ${err?.message || "unknown error"}`;
+    }
   }
   if (kind === "memory") {
     activity.set("writing_memory");
@@ -548,15 +633,24 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple memories match "${q}" — which? (${matches.map((m) => m.topic).join(", ")})`;
     const target = matches[0];
-    await alphaStore.deleteMemory(target.id);
-    const key = getCanonicalMemoryKey("delete", target.id, target.topic);
-    lifecycle?.recordSuccess({
-      name: "DELETE_MEMORY",
-      isMutation: true,
-      result: target,
-      logicalKeys: [key],
-    });
-    return `Forgot memory "${target.topic}".`;
+    try {
+      await alphaStore.deleteMemory(target.id);
+      const key = getCanonicalDeleteKey("memory", target.id);
+      lifecycle?.recordSuccess({
+        name: "DELETE_MEMORY",
+        isMutation: true,
+        result: target,
+        logicalKeys: [key],
+      });
+      return `Forgot memory "${target.topic}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "DELETE_MEMORY",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not delete memory: ${err?.message || "unknown error"}`;
+    }
   }
   if (kind === "task") {
     activity.set("updating_plan");
@@ -565,15 +659,24 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple tasks match "${q}" — which one? (${matches.map((p) => p.title).join(", ")})`;
     const target = matches[0];
-    await alphaStore.deleteTask(target.id);
-    const key = getCanonicalTaskKey("delete", target.id, target.title);
-    lifecycle?.recordSuccess({
-      name: "DELETE_TASK",
-      isMutation: true,
-      result: target,
-      logicalKeys: [key],
-    });
-    return `Deleted task "${target.title}".`;
+    try {
+      await alphaStore.deleteTask(target.id);
+      const key = getCanonicalDeleteKey("task", target.id);
+      lifecycle?.recordSuccess({
+        name: "DELETE_TASK",
+        isMutation: true,
+        result: target,
+        logicalKeys: [key],
+      });
+      return `Deleted task "${target.title}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "DELETE_TASK",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not delete task: ${err?.message || "unknown error"}`;
+    }
   }
   if (kind === "bill") {
     activity.set("writing_bill");
@@ -582,15 +685,24 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple bills match "${q}" — which one? (${matches.map((b) => b.name).join(", ")})`;
     const target = matches[0];
-    await alphaStore.deleteBill(target.id);
-    const key = getCanonicalBillKey("delete", target.id, target.name);
-    lifecycle?.recordSuccess({
-      name: "DELETE_BILL",
-      isMutation: true,
-      result: target,
-      logicalKeys: [key],
-    });
-    return `Deleted bill "${target.name}".`;
+    try {
+      await alphaStore.deleteBill(target.id);
+      const key = getCanonicalDeleteKey("bill", target.id);
+      lifecycle?.recordSuccess({
+        name: "DELETE_BILL",
+        isMutation: true,
+        result: target,
+        logicalKeys: [key],
+      });
+      return `Deleted bill "${target.name}".`;
+    } catch (err: any) {
+      lifecycle?.recordFailure({
+        name: "DELETE_BILL",
+        isMutation: true,
+        error: err || { message: "unknown error" },
+      });
+      return `Could not delete bill: ${err?.message || "unknown error"}`;
+    }
   }
   return `I don't know how to delete "${kind}".`;
 }
