@@ -239,16 +239,22 @@ export class RequestActionLifecycle {
     return this.operations.some((o) => o.isMutation && o.status === "failed");
   }
 
-  isRequestFulfilled(): boolean {
-    if (this.state === "needs_clarification") return false;
-    if (this.activeOperation) return false;
-    if (this.needsAnotherStep) return false;
+  hasUnresolvedWork(): boolean {
+    if (this.clarification.isPending || this.state === "needs_clarification") return true;
+    if (this.activeOperation) return true;
+    if (this.needsAnotherStep) return true;
+    if (this.hasFailedMutations()) return true;
 
     const mutations = this.operations.filter((o) => o.isMutation);
     if (mutations.length > 0) {
-      return mutations.every((m) => m.status === "completed");
+      return !mutations.every((m) => m.status === "completed");
     }
-    return this.operations.length > 0;
+
+    return this.operations.some((o) => o.status === "pending" || o.status === "executing");
+  }
+
+  isRequestFulfilled(): boolean {
+    return !this.hasUnresolvedWork() && this.operations.length > 0;
   }
 
   private recomputeState(): void {

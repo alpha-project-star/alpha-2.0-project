@@ -1154,12 +1154,10 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     try {
       const local = await tryLocalIntent(userText, lifecycle);
       if (local) {
-        lifecycle.recordSuccess({ name: "tryLocalIntent", isMutation: true, result: local });
         activity.clear();
         return local;
       }
     } catch (err) {
-      lifecycle.recordFailure({ name: "tryLocalIntent", isMutation: true, error: err });
       activity.clear();
       throw err;
     }
@@ -1480,18 +1478,16 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
       loopCount++;
 
-      // Action Completion & Multi-Round Boundary Control
+      // Action Completion & Multi-Round Boundary Control: Set continuation needs FIRST, then evaluate fulfillment
+      if (hasNewMutation && !hasNewRead && !hasFailure) {
+        lifecycle.setNeedsAnotherStep(false);
+      } else if (hasNewRead) {
+        lifecycle.setNeedsAnotherStep(true);
+      }
+
       if (allToolsAlreadyCompleted || lifecycle.isRequestFulfilled()) {
         // The request is fully fulfilled or only duplicate completed operations were attempted. Break loop immediately.
         break;
-      }
-
-      if (hasNewMutation && !hasNewRead && !hasFailure) {
-        // Mutation succeeded and no read tools or errors are pending.
-        lifecycle.setNeedsAnotherStep(false);
-      } else if (hasNewRead) {
-        // Read tool executed; continuation is genuinely needed to inspect/act.
-        lifecycle.setNeedsAnotherStep(true);
       }
     }
 

@@ -189,3 +189,20 @@ function safeJsonParse(val: string): any {
     return {};
   }
 }
+
+export function getCanonicalNoteKey(action: string, id: string, title?: string): string {
+  return `mutation:note:${action}:${normalizeMutationString(id)}:${normalizeMutationString(title || "")}`;
+}
+
+export function getCanonicalMemoryKey(action: string, id: string, topic?: string): string {
+  return `mutation:memory:${action}:${normalizeMutationString(id)}:${normalizeMutationString(topic || "")}`;
+}
+
+export function getCanonicalBillKey(action: string, id: string, name?: string): string {
+  return `mutation:bill:${action}:${normalizeMutationString(id)}:${normalizeMutationString(name || "")}`;
+}
+
+export function getCanonicalTaskKey(action: string, id: string, title?: string): string {
+  return `mutation:task:${action}:${normalizeMutationString(id)}:${normalizeMutationString(title || "")}`;
+}
+

@@ -53,6 +53,7 @@ export interface ActionResult {
   tag: string;
   status: ActionStatus;
   message: string;
+  logicalKeys?: string[];
 }
 
 export interface ExecuteActionTagsOptions {
@@ -1259,6 +1260,7 @@ export async function executeActionTagsAsync(
           name: res.tag,
           isMutation: true,
           result: res.message,
+          logicalKeys: res.logicalKeys,
         });
       } else if (res.status === "failed") {
         options.lifecycle.recordFailure({
