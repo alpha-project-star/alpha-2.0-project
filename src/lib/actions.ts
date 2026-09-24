@@ -283,16 +283,21 @@ export async function executeActionTagsAsync(
       addNoteRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(opKey);
     const id = uid();
-    await upsert("note", { id, title, body, updatedAt: Date.now() } satisfies Note);
-    const ok = verify("note", id, (x) => x.body === body && x.title === title);
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "ADD_NOTE", status: "success", message: `Note saved: "${title}"`, logicalKeys: [opKey] }
-        : { tag: "ADD_NOTE", status: "failed", message: `Note "${title}" could not be saved.` }
-    );
+    try {
+      await upsert("note", { id, title, body, updatedAt: Date.now() } satisfies Note);
+      const ok = verify("note", id, (x) => x.body === body && x.title === title);
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "ADD_NOTE", status: "failed", message: `Note "${title}" could not be saved.` });
+      } else {
+        executedMutations.add(opKey);
+        results.push({ tag: "ADD_NOTE", status: "success", message: `Note saved: "${title}"`, logicalKeys: [opKey] });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "ADD_NOTE", status: "failed", message: `Note "${title}" could not be saved: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     addNoteRe.lastIndex = 0;
   }
@@ -324,26 +329,31 @@ export async function executeActionTagsAsync(
       addMemRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(opKey);
     const id = uid();
-    await upsert("memory", {
-      id,
-      topic: finalTopic,
-      detail,
-      category: "general",
-      provenance: "explicit_user",
-      confidence: "high",
-      status: "active",
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    } satisfies Memory);
-    const ok = verify("memory", id, (x) => x.detail === detail);
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "ADD_MEMORY", status: "success", message: `Memory saved: "${finalTopic}"`, logicalKeys: [opKey] }
-        : { tag: "ADD_MEMORY", status: "failed", message: `Memory "${finalTopic}" could not be saved.` }
-    );
+    try {
+      await upsert("memory", {
+        id,
+        topic: finalTopic,
+        detail,
+        category: "general",
+        provenance: "explicit_user",
+        confidence: "high",
+        status: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      } satisfies Memory);
+      const ok = verify("memory", id, (x) => x.detail === detail);
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "ADD_MEMORY", status: "failed", message: `Memory "${finalTopic}" could not be saved.` });
+      } else {
+        executedMutations.add(opKey);
+        results.push({ tag: "ADD_MEMORY", status: "success", message: `Memory saved: "${finalTopic}"`, logicalKeys: [opKey] });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "ADD_MEMORY", status: "failed", message: `Memory "${finalTopic}" could not be saved: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     addMemRe.lastIndex = 0;
   }
@@ -373,28 +383,33 @@ export async function executeActionTagsAsync(
       addBillRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(opKey);
     const id = uid();
-    await upsert("bill", {
-      id,
-      name,
-      amount,
-      balance: amount,
-      dueDate,
-      status: "due",
-    } satisfies Bill);
-    const ok = verify("bill", id, (x) => x.amount === amount);
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? {
-            tag: "ADD_BILL",
-            status: "success",
-            message: `Bill saved: "${name}"${amount ? ` — ${amount}` : ""}`,
-            logicalKeys: [opKey],
-          }
-        : { tag: "ADD_BILL", status: "failed", message: `Bill "${name}" could not be saved.` }
-    );
+    try {
+      await upsert("bill", {
+        id,
+        name,
+        amount,
+        balance: amount,
+        dueDate,
+        status: "due",
+      } satisfies Bill);
+      const ok = verify("bill", id, (x) => x.amount === amount);
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "ADD_BILL", status: "failed", message: `Bill "${name}" could not be saved.` });
+      } else {
+        executedMutations.add(opKey);
+        results.push({
+          tag: "ADD_BILL",
+          status: "success",
+          message: `Bill saved: "${name}"${amount ? ` — ${amount}` : ""}`,
+          logicalKeys: [opKey],
+        });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "ADD_BILL", status: "failed", message: `Bill "${name}" could not be saved: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     addBillRe.lastIndex = 0;
   }
@@ -425,14 +440,39 @@ export async function executeActionTagsAsync(
     const n = hits[0] as Note;
     const title = match[2].trim() || n.title;
     const body = match[3].trim() || n.body;
-    await upsert("note", { ...n, title, body, updatedAt: Date.now() });
-    const ok = verify("note", n.id, (x) => x.title === title && x.body === body);
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "UPDATE_NOTE", status: "success", message: `Updated note "${title}".` }
-        : { tag: "UPDATE_NOTE", status: "failed", message: `Could not update note "${n.title}".` }
-    );
+    const updateKey = getCanonicalUpdateKey("note", n.id, { title, body });
+    if (executedMutations.has(updateKey)) {
+      text = text.replace(fullMatch, "");
+      updNoteRe.lastIndex = 0;
+      continue;
+    }
+    try {
+      await upsert("note", { ...n, title, body, updatedAt: Date.now() });
+      const ok = verify("note", n.id, (x) => x.title === title && x.body === body);
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({
+          tag: "UPDATE_NOTE",
+          status: "failed",
+          message: `Could not update note "${n.title}".`,
+        });
+      } else {
+        executedMutations.add(updateKey);
+        results.push({
+          tag: "UPDATE_NOTE",
+          status: "success",
+          message: `Updated note "${title}".`,
+          logicalKeys: [updateKey],
+        });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({
+        tag: "UPDATE_NOTE",
+        status: "failed",
+        message: `Could not update note "${n.title}": ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
     text = text.replace(fullMatch, "");
     updNoteRe.lastIndex = 0;
   }
@@ -535,14 +575,26 @@ export async function executeActionTagsAsync(
     }
     const b = hits[0] as Bill;
     const next = { ...b, balance: 0, status: "paid" as const };
-    await upsert("bill", next);
-    const ok = verify("bill", b.id, (x) => x.status === "paid");
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "MARK_BILL_PAID", status: "success", message: `Marked bill "${b.name}" as paid.` }
-        : { tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid.` }
-    );
+    const paidKey = getCanonicalUpdateKey("bill", b.id, { balance: 0, status: "paid" });
+    if (executedMutations.has(paidKey)) {
+      text = text.replace(fullMatch, "");
+      markBillPaidRe.lastIndex = 0;
+      continue;
+    }
+    try {
+      await upsert("bill", next);
+      const ok = verify("bill", b.id, (x) => x.status === "paid");
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid.` });
+      } else {
+        executedMutations.add(paidKey);
+        results.push({ tag: "MARK_BILL_PAID", status: "success", message: `Marked bill "${b.name}" as paid.`, logicalKeys: [paidKey] });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     markBillPaidRe.lastIndex = 0;
   }
@@ -567,14 +619,26 @@ export async function executeActionTagsAsync(
       continue;
     }
     const victim = list[0];
-    await deleteById(kind, victim.id);
-    const ok = !listOf(kind).some((x) => x.id === victim.id);
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "DELETE_LAST", status: "success", message: `Deleted ${kind} "${label(kind, victim)}".` }
-        : { tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind} "${label(kind, victim)}".` }
-    );
+    const delKey = getCanonicalDeleteKey(kind, victim.id);
+    if (executedMutations.has(delKey)) {
+      text = text.replace(fullMatch, "");
+      delLastRe.lastIndex = 0;
+      continue;
+    }
+    try {
+      await deleteById(kind, victim.id);
+      const ok = !listOf(kind).some((x) => x.id === victim.id);
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind} "${label(kind, victim)}".` });
+      } else {
+        executedMutations.add(delKey);
+        results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted ${kind} "${label(kind, victim)}".`, logicalKeys: [delKey] });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind}: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     delLastRe.lastIndex = 0;
   }
@@ -594,24 +658,41 @@ export async function executeActionTagsAsync(
       };
     }
     if (hits.length > 1 && !all) return ambiguous(tag, kind, hits, query);
-    for (const h of hits) {
-      await deleteById(kind, h.id);
-    }
-    const remaining = listOf(kind);
-    const stuck = hits.filter((h) => remaining.some((x) => x.id === h.id));
-    if (stuck.length) {
+    const targetIds = hits.map(h => h.id);
+    const bulkKey = getCanonicalBulkDeleteKey(kind, targetIds);
+    const singleKeys = targetIds.map(id => getCanonicalDeleteKey(kind, id));
+
+    try {
+      for (const h of hits) {
+        await deleteById(kind, h.id);
+      }
+      const remaining = listOf(kind);
+      const stuck = hits.filter((h) => remaining.some((x) => x.id === h.id));
+      if (stuck.length) {
+        activity.set("action_failed");
+        return {
+          tag,
+          status: "failed",
+          message: `Could not delete ${stuck.length} ${KIND_PLURAL[kind]}.`,
+        };
+      }
+      for (const k of [bulkKey, ...singleKeys]) {
+        executedMutations.add(k);
+      }
+      return {
+        tag,
+        status: "success",
+        message: `Deleted ${hits.length} ${hits.length === 1 ? kind : KIND_PLURAL[kind]}: ${hits.map((h) => `"${label(kind, h)}"`).join(", ")}.`,
+        logicalKeys: [bulkKey, ...singleKeys],
+      };
+    } catch (err: unknown) {
       activity.set("action_failed");
       return {
         tag,
         status: "failed",
-        message: `Could not delete ${stuck.length} ${KIND_PLURAL[kind]}.`,
+        message: `Could not delete ${kind}: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
-    return {
-      tag,
-      status: "success",
-      message: `Deleted ${hits.length} ${hits.length === 1 ? kind : KIND_PLURAL[kind]}: ${hits.map((h) => `"${label(kind, h)}"`).join(", ")}.`,
-    };
   };
 
   const delNoteRe = /\[\[DELETE_NOTE:\s*([^\]]+?)\s*\]\]/gi;
@@ -657,16 +738,33 @@ export async function executeActionTagsAsync(
       clearAllRe.lastIndex = 0;
       continue;
     }
-    for (const x of list) {
-      await deleteById(kind, x.id);
+    const targetIds = list.map(x => x.id);
+    const bulkKey = getCanonicalBulkDeleteKey(kind, targetIds);
+    const clearKey = getCanonicalClearAllKey(plural);
+    const singleKeys = targetIds.map(id => getCanonicalDeleteKey(kind, id));
+    try {
+      for (const x of list) {
+        await deleteById(kind, x.id);
+      }
+      const ok = listOf(kind).length === 0;
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear all ${plural} — ${listOf(kind).length} remain.` });
+      } else {
+        executedMutations.add(bulkKey);
+        executedMutations.add(clearKey);
+        for (const k of singleKeys) executedMutations.add(k);
+        results.push({
+          tag: "CLEAR_ALL",
+          status: "success",
+          message: `Cleared all ${list.length} ${plural}.`,
+          logicalKeys: [bulkKey, clearKey, ...singleKeys],
+        });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "CLEAR_ALL", status: "failed", message: `Could not clear all ${plural}: ${err instanceof Error ? err.message : String(err)}` });
     }
-    const ok = listOf(kind).length === 0;
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} ${plural}.` }
-        : { tag: "CLEAR_ALL", status: "failed", message: `Could not clear all ${plural} — ${listOf(kind).length} remain.` }
-    );
     text = text.replace(fullMatch, "");
     clearAllRe.lastIndex = 0;
   }
@@ -691,43 +789,91 @@ export async function executeActionTagsAsync(
     ] as const;
 
     if ((boolKeys as readonly string[]).includes(key)) {
-      await alphaStore.setSettings({ [key]: boolVal } as any);
-      const ok = (alphaStore.get().settings as any)[key] === boolVal;
-      if (!ok) activity.set("action_failed");
-      results.push(
-        ok
-          ? { tag, status: "success", message: `${key} ${boolVal ? "enabled" : "disabled"}.` }
-          : { tag, status: "failed", message: `Could not change ${key}.` }
-      );
+      const settingKey = getCanonicalSettingKey(key, boolVal);
+      if (executedMutations.has(settingKey)) {
+        text = text.replace(fullMatch, "");
+        setSettingRe.lastIndex = 0;
+        continue;
+      }
+      try {
+        await alphaStore.setSettings({ [key]: boolVal } as any);
+        const ok = (alphaStore.get().settings as any)[key] === boolVal;
+        if (!ok) {
+          activity.set("action_failed");
+          results.push({ tag, status: "failed", message: `Could not change ${key}.` });
+        } else {
+          executedMutations.add(settingKey);
+          results.push({ tag, status: "success", message: `${key} ${boolVal ? "enabled" : "disabled"}.`, logicalKeys: [settingKey] });
+        }
+      } catch (err: unknown) {
+        activity.set("action_failed");
+        results.push({ tag, status: "failed", message: `Could not change ${key}: ${err instanceof Error ? err.message : String(err)}` });
+      }
     } else if (key === "kokoroVoice") {
-      await alphaStore.setSettings({ kokoroVoice: raw });
-      const ok = alphaStore.get().settings.kokoroVoice === raw;
-      if (!ok) activity.set("action_failed");
-      results.push(
-        ok
-          ? { tag, status: "success", message: `Kokoro voice set to ${raw}.` }
-          : { tag, status: "failed", message: `Could not change ${key}.` }
-      );
+      const settingKey = getCanonicalSettingKey("kokoroVoice", raw);
+      if (executedMutations.has(settingKey)) {
+        text = text.replace(fullMatch, "");
+        setSettingRe.lastIndex = 0;
+        continue;
+      }
+      try {
+        await alphaStore.setSettings({ kokoroVoice: raw });
+        const ok = alphaStore.get().settings.kokoroVoice === raw;
+        if (!ok) {
+          activity.set("action_failed");
+          results.push({ tag, status: "failed", message: `Could not change ${key}.` });
+        } else {
+          executedMutations.add(settingKey);
+          results.push({ tag, status: "success", message: `Kokoro voice set to ${raw}.`, logicalKeys: [settingKey] });
+        }
+      } catch (err: unknown) {
+        activity.set("action_failed");
+        results.push({ tag, status: "failed", message: `Could not change ${key}: ${err instanceof Error ? err.message : String(err)}` });
+      }
     } else if (key === "ttsRate") {
       const rate = Math.max(0.7, Math.min(1.4, Number(raw) || cur.ttsRate));
-      await alphaStore.setSettings({ ttsRate: rate });
-      const ok = alphaStore.get().settings.ttsRate === rate;
-      if (!ok) activity.set("action_failed");
-      results.push(
-        ok
-          ? { tag, status: "success", message: `Speech rate set to ${rate.toFixed(2)}x.` }
-          : { tag, status: "failed", message: `Could not change ${key}.` }
-      );
+      const settingKey = getCanonicalSettingKey("ttsRate", rate);
+      if (executedMutations.has(settingKey)) {
+        text = text.replace(fullMatch, "");
+        setSettingRe.lastIndex = 0;
+        continue;
+      }
+      try {
+        await alphaStore.setSettings({ ttsRate: rate });
+        const ok = alphaStore.get().settings.ttsRate === rate;
+        if (!ok) {
+          activity.set("action_failed");
+          results.push({ tag, status: "failed", message: `Could not change ${key}.` });
+        } else {
+          executedMutations.add(settingKey);
+          results.push({ tag, status: "success", message: `Speech rate set to ${rate.toFixed(2)}x.`, logicalKeys: [settingKey] });
+        }
+      } catch (err: unknown) {
+        activity.set("action_failed");
+        results.push({ tag, status: "failed", message: `Could not change ${key}: ${err instanceof Error ? err.message : String(err)}` });
+      }
     } else if (key === "fastModel" || key === "thinkingModel" || key === "codingModel") {
       const lane = key.replace("Model", "") as "fast" | "thinking" | "coding";
-      await alphaStore.setSettings({ taskModels: { ...cur.taskModels, [lane]: raw } });
-      const ok = alphaStore.get().settings.taskModels[lane] === raw;
-      if (!ok) activity.set("action_failed");
-      results.push(
-        ok
-          ? { tag, status: "success", message: `${lane} model set to ${raw}.` }
-          : { tag, status: "failed", message: `Could not change ${key}.` }
-      );
+      const settingKey = getCanonicalSettingKey(`taskModel:${lane}`, raw);
+      if (executedMutations.has(settingKey)) {
+        text = text.replace(fullMatch, "");
+        setSettingRe.lastIndex = 0;
+        continue;
+      }
+      try {
+        await alphaStore.setSettings({ taskModels: { ...cur.taskModels, [lane]: raw } });
+        const ok = alphaStore.get().settings.taskModels[lane] === raw;
+        if (!ok) {
+          activity.set("action_failed");
+          results.push({ tag, status: "failed", message: `Could not change ${key}.` });
+        } else {
+          executedMutations.add(settingKey);
+          results.push({ tag, status: "success", message: `${lane} model set to ${raw}.`, logicalKeys: [settingKey] });
+        }
+      } catch (err: unknown) {
+        activity.set("action_failed");
+        results.push({ tag, status: "failed", message: `Could not change ${key}: ${err instanceof Error ? err.message : String(err)}` });
+      }
     } else if (/^(?:eye|camera|vision)$/i.test(key)) {
       results.push({
         tag,
@@ -752,15 +898,27 @@ export async function executeActionTagsAsync(
     const p = alphaStore.get().profile;
     const name = match[1].trim() || p.name;
     const bio = match[2].trim() || p.bio;
-    await alphaStore.setProfile({ name, bio });
-    const after = alphaStore.get().profile;
-    const ok = after.name === name && after.bio === bio;
-    if (!ok) activity.set("action_failed");
-    results.push(
-      ok
-        ? { tag: "SET_PROFILE", status: "success", message: `Profile updated${name ? ` for ${name}` : ""}.` }
-        : { tag: "SET_PROFILE", status: "failed", message: "Could not update your profile." }
-    );
+    const profileKey = getCanonicalProfileKey("name_bio", `${name}:${bio}`);
+    if (executedMutations.has(profileKey)) {
+      text = text.replace(fullMatch, "");
+      setProfileRe.lastIndex = 0;
+      continue;
+    }
+    try {
+      await alphaStore.setProfile({ name, bio });
+      const after = alphaStore.get().profile;
+      const ok = after.name === name && after.bio === bio;
+      if (!ok) {
+        activity.set("action_failed");
+        results.push({ tag: "SET_PROFILE", status: "failed", message: "Could not update your profile." });
+      } else {
+        executedMutations.add(profileKey);
+        results.push({ tag: "SET_PROFILE", status: "success", message: `Profile updated${name ? ` for ${name}` : ""}.`, logicalKeys: [profileKey] });
+      }
+    } catch (err: unknown) {
+      activity.set("action_failed");
+      results.push({ tag: "SET_PROFILE", status: "failed", message: `Could not update profile: ${err instanceof Error ? err.message : String(err)}` });
+    }
     text = text.replace(fullMatch, "");
     setProfileRe.lastIndex = 0;
   }
@@ -814,8 +972,6 @@ export async function executeActionTagsAsync(
       addRemRe.lastIndex = 0;
       continue;
     }
-    executedMutations.add(keyWithParsedDue);
-    executedMutations.add(keyWithRawDue);
     const now = Date.now();
     try {
       await repo.createReminder(effectiveUserId, {
@@ -829,10 +985,13 @@ export async function executeActionTagsAsync(
         reminderState: "active",
         notificationState: "pending",
       });
+      executedMutations.add(keyWithParsedDue);
+      executedMutations.add(keyWithRawDue);
       results.push({
         tag: "ADD_REMINDER",
         status: "success",
         message: `Reminder saved: "${title}" — ${formatWhen(w.iso)}`,
+        logicalKeys: [keyWithParsedDue, keyWithRawDue],
       });
     } catch (err: unknown) {
       activity.set("action_failed");
@@ -956,11 +1115,10 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add(canonicalUpdateKey);
-    if (canonicalUpdateKeyRaw) executedMutations.add(canonicalUpdateKeyRaw);
-
     try {
       await repo.updateReminder(effectiveUserId, target.id, patch);
+      executedMutations.add(canonicalUpdateKey);
+      if (canonicalUpdateKeyRaw) executedMutations.add(canonicalUpdateKeyRaw);
       const what = keys
         .map((k) => `${k} → ${k === "when" && patch.dueAt ? formatWhen(new Date(patch.dueAt).toISOString()) : fields[k]}`)
         .join(", ");
@@ -968,6 +1126,7 @@ export async function executeActionTagsAsync(
         tag: "UPDATE_REMINDER",
         status: "success",
         message: `Updated reminder "${target.title}": ${what}`,
+        logicalKeys: [canonicalUpdateKey, ...(canonicalUpdateKeyRaw ? [canonicalUpdateKeyRaw] : [])],
       });
     } catch (err: unknown) {
       activity.set("action_failed");
@@ -1040,17 +1199,17 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add(setKey);
-    for (const k of singleKeys) executedMutations.add(k);
-
     try {
       for (const h of hits) {
         await repo.deleteReminder(effectiveUserId, h.id);
       }
+      executedMutations.add(setKey);
+      for (const k of singleKeys) executedMutations.add(k);
       results.push({
         tag: "DELETE_REMINDER",
         status: "success",
         message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
+        logicalKeys: [setKey, ...singleKeys],
       });
     } catch (err: unknown) {
       activity.set("action_failed");
@@ -1122,19 +1281,19 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add(compKey);
-    executedMutations.add(updKey);
-
     try {
       await repo.updateReminder(effectiveUserId, target.id, {
         reminderState: "completed",
         notificationState: "accepted",
         updatedAt: Date.now(),
       });
+      executedMutations.add(compKey);
+      executedMutations.add(updKey);
       results.push({
         tag: "MARK_REMINDER_DONE",
         status: "success",
         message: `Marked reminder "${target.title}" as done ✅`,
+        logicalKeys: [compKey, updKey],
       });
     } catch (err: unknown) {
       activity.set("action_failed");
@@ -1183,11 +1342,10 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add(victimKey);
-
     try {
       await repo.deleteReminder(effectiveUserId, victim.id);
-      results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".` });
+      executedMutations.add(victimKey);
+      results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".`, logicalKeys: [victimKey] });
     } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
@@ -1237,14 +1395,27 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    executedMutations.add("rem:clear_all");
-    executedMutations.add("reminder:clear_all");
+    const targetIds = list.map(r => r.id);
+    const bulkKey = getCanonicalReminderDeleteKey({ targetIds });
+    const clearKey = getCanonicalClearAllKey("reminders");
+    const singleKeys = targetIds.map(id => getCanonicalReminderDeleteKey({ targetIds: [id] }));
 
     try {
       for (const r of list) {
         await repo.deleteReminder(effectiveUserId, r.id);
       }
-      results.push({ tag: "CLEAR_ALL", status: "success", message: `Cleared all ${list.length} reminders.` });
+      executedMutations.add("rem:clear_all");
+      executedMutations.add("reminder:clear_all");
+      executedMutations.add(bulkKey);
+      executedMutations.add(clearKey);
+      for (const k of singleKeys) executedMutations.add(k);
+
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "success",
+        message: `Cleared all ${list.length} reminders.`,
+        logicalKeys: ["rem:clear_all", "reminder:clear_all", bulkKey, clearKey, ...singleKeys],
+      });
     } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
