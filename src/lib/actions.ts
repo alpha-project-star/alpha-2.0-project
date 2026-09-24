@@ -70,6 +70,7 @@ export interface ActionResult {
   status: ActionStatus;
   message: string;
   logicalKeys?: string[];
+  structuredResult?: any;
 }
 
 export interface ExecuteActionTagsOptions {
@@ -1214,36 +1215,59 @@ export async function executeActionTagsAsync(
     }
 
     const targetIds = hits.map((h) => h.id);
-    const setKey = getCanonicalReminderDeleteKey({ targetIds });
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const setKey = getCanonicalReminderDeleteKey({ targetIds: sortedIds });
     const singleKeys = targetIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
 
-    if (
-      executedMutations.has(setKey) ||
-      (targetIds.length === 1 && executedMutations.has(singleKeys[0]))
-    ) {
-      text = text.replace(fullMatch, "");
-      delRemRe.lastIndex = 0;
-      continue;
+    const successfulIds: string[] = [];
+    const successfulKeys: string[] = [];
+    const failedIds: string[] = [];
+    const reminderTool = getReminderTool(effectiveUserId);
+
+    for (const id of targetIds) {
+      const singleKey = getCanonicalReminderDeleteKey({ targetIds: [id] });
+      if (executedMutations.has(singleKey)) {
+        successfulIds.push(id);
+        successfulKeys.push(singleKey);
+        continue;
+      }
+      try {
+        const delRes = await reminderTool.deleteReminder(id);
+        if (delRes.success) {
+          successfulIds.push(id);
+          successfulKeys.push(singleKey);
+          executedMutations.add(singleKey);
+        } else {
+          failedIds.push(id);
+        }
+      } catch (err) {
+        failedIds.push(id);
+      }
     }
 
-    try {
-      for (const h of hits) {
-        await repo.deleteReminder(effectiveUserId, h.id);
-      }
+    if (successfulIds.length === 0) {
+      activity.set("action_failed");
+      results.push({
+        tag: "DELETE_REMINDER",
+        status: "failed",
+        message: `Could not delete reminders.`,
+      });
+    } else if (successfulIds.length === targetIds.length) {
       executedMutations.add(setKey);
-      for (const k of singleKeys) executedMutations.add(k);
       results.push({
         tag: "DELETE_REMINDER",
         status: "success",
         message: `Deleted ${hits.length} ${hits.length === 1 ? "reminder" : "reminders"}: ${hits.map((h) => `"${h.title}"`).join(", ")}.`,
         logicalKeys: [setKey, ...singleKeys],
+        structuredResult: { count: successfulIds.length, targetIds, successfulIds },
       });
-    } catch (err: unknown) {
-      activity.set("action_failed");
+    } else {
       results.push({
         tag: "DELETE_REMINDER",
-        status: "failed",
-        message: `Could not delete reminders: ${err instanceof Error ? err.message : String(err)}`,
+        status: "success",
+        message: `Deleted ${successfulIds.length} out of ${targetIds.length} reminders (${failedIds.length} failed).`,
+        logicalKeys: [...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds, successfulIds, failedIds },
       });
     }
     text = text.replace(fullMatch, "");
@@ -1309,19 +1333,26 @@ export async function executeActionTagsAsync(
     }
 
     try {
-      await repo.updateReminder(effectiveUserId, target.id, {
-        reminderState: "completed",
-        notificationState: "accepted",
-        updatedAt: Date.now(),
-      });
-      executedMutations.add(compKey);
-      executedMutations.add(updKey);
-      results.push({
-        tag: "MARK_REMINDER_DONE",
-        status: "success",
-        message: `Marked reminder "${target.title}" as done ✅`,
-        logicalKeys: [compKey, updKey],
-      });
+      const reminderTool = getReminderTool(effectiveUserId);
+      const completeRes = await reminderTool.completeReminder(target.id);
+      if (completeRes.success) {
+        executedMutations.add(compKey);
+        executedMutations.add(updKey);
+        results.push({
+          tag: "MARK_REMINDER_DONE",
+          status: "success",
+          message: `Marked reminder "${target.title}" as done ✅`,
+          logicalKeys: [compKey, updKey],
+          structuredResult: completeRes.data || target,
+        });
+      } else {
+        activity.set("action_failed");
+        results.push({
+          tag: "MARK_REMINDER_DONE",
+          status: "failed",
+          message: `Could not mark reminder "${target.title}" as done: ${completeRes.error?.message || "unknown error"}`,
+        });
+      }
     } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
@@ -1361,7 +1392,8 @@ export async function executeActionTagsAsync(
       delLastRemRe.lastIndex = 0;
       continue;
     }
-    const victim = list[0];
+    const sorted = [...list].sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
+    const victim = sorted[0];
     const victimKey = getCanonicalReminderDeleteKey({ targetIds: [victim.id] });
     if (executedMutations.has(victimKey)) {
       text = text.replace(fullMatch, "");
@@ -1370,9 +1402,25 @@ export async function executeActionTagsAsync(
     }
 
     try {
-      await repo.deleteReminder(effectiveUserId, victim.id);
-      executedMutations.add(victimKey);
-      results.push({ tag: "DELETE_LAST", status: "success", message: `Deleted reminder "${victim.title}".`, logicalKeys: [victimKey] });
+      const reminderTool = getReminderTool(effectiveUserId);
+      const delRes = await reminderTool.deleteReminder(victim.id);
+      if (delRes.success) {
+        executedMutations.add(victimKey);
+        results.push({
+          tag: "DELETE_LAST",
+          status: "success",
+          message: `Deleted reminder "${victim.title}".`,
+          logicalKeys: [victimKey],
+          structuredResult: delRes.data || victim,
+        });
+      } else {
+        activity.set("action_failed");
+        results.push({
+          tag: "DELETE_LAST",
+          status: "failed",
+          message: `Could not delete reminder: ${delRes.error?.message || "unknown error"}`,
+        });
+      }
     } catch (err: unknown) {
       activity.set("action_failed");
       results.push({
@@ -1390,15 +1438,6 @@ export async function executeActionTagsAsync(
   while ((match = clearRemRe.exec(text)) !== null) {
     const fullMatch = match[0];
     activity.set(actionActivity("CLEAR_ALL"));
-
-    if (
-      executedMutations.has("rem:clear_all") ||
-      executedMutations.has("reminder:clear_all")
-    ) {
-      text = text.replace(fullMatch, "");
-      clearRemRe.lastIndex = 0;
-      continue;
-    }
 
     let list: FirestoreReminder[];
     try {
@@ -1423,32 +1462,61 @@ export async function executeActionTagsAsync(
     }
 
     const targetIds = list.map(r => r.id);
-    const bulkKey = getCanonicalReminderDeleteKey({ targetIds });
+    const sortedIds = Array.from(new Set(targetIds)).sort();
+    const bulkKey = getCanonicalReminderDeleteKey({ targetIds: sortedIds });
     const clearKey = getCanonicalClearAllKey("reminders");
-    const singleKeys = targetIds.map(id => getCanonicalReminderDeleteKey({ targetIds: [id] }));
 
-    try {
-      for (const r of list) {
-        await repo.deleteReminder(effectiveUserId, r.id);
+    const intendedIds = sortedIds;
+    const successfulIds: string[] = [];
+    const successfulKeys: string[] = [];
+    const failedIds: string[] = [];
+    const reminderTool = getReminderTool(effectiveUserId);
+
+    for (const id of intendedIds) {
+      const singleKey = getCanonicalReminderDeleteKey({ targetIds: [id] });
+      if (executedMutations.has(singleKey)) {
+        successfulIds.push(id);
+        successfulKeys.push(singleKey);
+        continue;
       }
-      executedMutations.add("rem:clear_all");
-      executedMutations.add("reminder:clear_all");
-      executedMutations.add(bulkKey);
-      executedMutations.add(clearKey);
-      for (const k of singleKeys) executedMutations.add(k);
+      try {
+        const delRes = await reminderTool.deleteReminder(id);
+        if (delRes.success) {
+          successfulIds.push(id);
+          successfulKeys.push(singleKey);
+          executedMutations.add(singleKey);
+        } else {
+          failedIds.push(id);
+        }
+      } catch (err) {
+        failedIds.push(id);
+      }
+    }
 
-      results.push({
-        tag: "CLEAR_ALL",
-        status: "success",
-        message: `Cleared all ${list.length} reminders.`,
-        logicalKeys: ["rem:clear_all", "reminder:clear_all", bulkKey, clearKey, ...singleKeys],
-      });
-    } catch (err: unknown) {
+    if (successfulIds.length === 0) {
       activity.set("action_failed");
       results.push({
         tag: "CLEAR_ALL",
         status: "failed",
-        message: `Could not clear reminders: ${err instanceof Error ? err.message : String(err)}`,
+        message: "Could not clear reminders.",
+      });
+    } else if (successfulIds.length === intendedIds.length) {
+      executedMutations.add(bulkKey);
+      executedMutations.add(clearKey);
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "success",
+        message: `Cleared all ${list.length} reminders.`,
+        logicalKeys: [bulkKey, clearKey, ...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
+      });
+    } else {
+      results.push({
+        tag: "CLEAR_ALL",
+        status: "success",
+        message: `Cleared ${successfulIds.length} out of ${intendedIds.length} reminders (${failedIds.length} failed).`,
+        logicalKeys: [...successfulKeys],
+        structuredResult: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
       });
     }
     text = text.replace(fullMatch, "");
@@ -1474,7 +1542,7 @@ export async function executeActionTagsAsync(
         options.lifecycle.recordSuccess({
           name: res.tag,
           isMutation: true,
-          result: res.message,
+          result: res.structuredResult !== undefined ? res.structuredResult : res.message,
           logicalKeys: res.logicalKeys,
         });
       } else if (res.status === "failed") {

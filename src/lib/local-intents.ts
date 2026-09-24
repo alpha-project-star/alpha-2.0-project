@@ -365,7 +365,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
   if (m) {
     const kind = m[1];
     if (kind === "reminder") {
-      const userId = auth.currentUser?.uid || null;
+      const userId = await getActiveUserId();
       if (!userId) return "You need to be signed in to manage reminders.";
       activity.set("writing_reminder");
       const tool = getReminderTool(userId);
@@ -373,15 +373,29 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       if (!res.success || !res.data?.length) return "No reminders to delete.";
       const sorted = [...res.data].sort((a: any, b: any) => (b.createdAt || 0) - (a.createdAt || 0));
       const latest = sorted[0];
-      await tool.deleteReminder(latest.id);
       const delKey = getCanonicalReminderDeleteKey({ targetIds: [latest.id] });
-      lifecycle?.recordSuccess({
-        name: "DELETE_REMINDER",
-        isMutation: true,
-        result: latest,
-        logicalKeys: [delKey],
-      });
-      return `Deleted the last reminder: "${latest.title}".`;
+      if (lifecycle?.hasCompletedMutation(delKey)) {
+        return `Deleted the last reminder: "${latest.title}".`;
+      }
+      const delRes = await tool.deleteReminder(latest.id);
+      if (delRes.success) {
+        lifecycle?.recordSuccess({
+          name: "DELETE_REMINDER",
+          isMutation: true,
+          result: delRes.data || latest,
+          logicalKeys: [delKey],
+        });
+        return `Deleted the last reminder: "${latest.title}".`;
+      } else {
+        const error = delRes.error || { message: "Failed to delete reminder" };
+        lifecycle?.recordFailure({
+          name: "DELETE_REMINDER",
+          isMutation: true,
+          error,
+          logicalKey: delKey,
+        });
+        return `Could not delete last reminder: ${error.message}.`;
+      }
     }
     const s = alphaStore.get();
     const map: Record<string, { list: any[]; del: (id: string) => Promise<void>; act: ActivityKind }> = {
@@ -394,11 +408,14 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     if (e?.list[0]) {
       activity.set(e.act);
       const victim = e.list[0];
+      const key = getCanonicalDeleteKey(kind, victim.id);
+      if (lifecycle?.hasCompletedMutation(key)) {
+        return `Deleted the last ${kind}.`;
+      }
       try {
         await e.del(victim.id);
-        const key = getCanonicalDeleteKey(kind, victim.id);
         lifecycle?.recordSuccess({
-          name: `DELETE_LAST_${kind.toUpperCase()}`,
+          name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           result: victim,
           logicalKeys: [key],
@@ -406,9 +423,10 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         return `Deleted the last ${kind}.`;
       } catch (err: any) {
         lifecycle?.recordFailure({
-          name: `DELETE_LAST_${kind.toUpperCase()}`,
+          name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           error: err || { message: "unknown error" },
+          logicalKey: key,
         });
         return `Could not delete last ${kind}: ${err?.message || "unknown error"}`;
       }
@@ -427,6 +445,9 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const res = await tool.completeReminder(q);
     if (res.success && res.data) {
       const compKey = getCanonicalReminderCompleteKey({ targetId: res.data.id });
+      if (lifecycle?.hasCompletedMutation(compKey)) {
+        return `Marked reminder "${res.data.title}" as done.`;
+      }
       lifecycle?.recordSuccess({
         name: "MARK_REMINDER_DONE",
         isMutation: true,
@@ -434,8 +455,19 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         logicalKeys: [compKey],
       });
       return `Marked reminder "${res.data.title}" as done.`;
+    } else {
+      const error = res.error || { message: "Reminder not found or could not be completed" };
+      lifecycle?.recordFailure({
+        name: "MARK_REMINDER_DONE",
+        isMutation: true,
+        error,
+      });
+      if (res.error?.code === "AMBIGUOUS") {
+        lifecycle?.recordClarification(res.error.message, "MARK_REMINDER_DONE");
+        return res.error.message;
+      }
+      return `I couldn't complete that reminder: ${error.message}.`;
     }
-    return `I couldn't find that reminder.`;
   }
 
   return null;
@@ -511,7 +543,7 @@ async function listItems(kind: string): Promise<string> {
 async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Promise<string> {
   const s = alphaStore.get();
   if (kind === "reminder") {
-    const userId = auth.currentUser?.uid || null;
+    const userId = await getActiveUserId();
     if (!userId) return "You need to be signed in to manage reminders.";
     activity.set("writing_reminder");
     const tool = getReminderTool(userId);
@@ -522,24 +554,51 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
     const sortedIds = Array.from(new Set(targetIds)).sort();
     const bulkKey = getCanonicalReminderDeleteKey({ targetIds: sortedIds });
     const clearKey = getCanonicalClearAllKey("reminders");
-    const singleKeys = sortedIds.map((id: string) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
 
-    let successCount = 0;
+    const intendedIds = sortedIds;
+    const successfulIds: string[] = [];
     const successfulKeys: string[] = [];
-    for (const r of reminders) {
+    const failedIds: string[] = [];
+
+    for (const id of intendedIds) {
+      const singleKey = getCanonicalReminderDeleteKey({ targetIds: [id] });
+      if (lifecycle?.hasCompletedMutation(singleKey)) {
+        successfulIds.push(id);
+        successfulKeys.push(singleKey);
+        continue;
+      }
       try {
-        await tool.deleteReminder(r.id);
-        successCount++;
-        successfulKeys.push(getCanonicalReminderDeleteKey({ targetIds: [r.id] }));
-      } catch (err) {
+        const delRes = await tool.deleteReminder(id);
+        if (delRes.success) {
+          successfulIds.push(id);
+          successfulKeys.push(singleKey);
+          lifecycle?.recordSuccess({
+            name: "DELETE_REMINDER",
+            isMutation: true,
+            result: delRes.data || { id },
+            logicalKeys: [singleKey],
+          });
+        } else {
+          failedIds.push(id);
+          lifecycle?.recordFailure({
+            name: "DELETE_REMINDER",
+            isMutation: true,
+            error: delRes.error || { message: "Failed to delete reminder" },
+            logicalKey: singleKey,
+          });
+        }
+      } catch (err: any) {
+        failedIds.push(id);
         lifecycle?.recordFailure({
           name: "DELETE_REMINDER",
           isMutation: true,
           error: err || { message: "unknown error" },
+          logicalKey: singleKey,
         });
       }
     }
-    if (successCount === 0) {
+
+    if (successfulIds.length === 0) {
       lifecycle?.recordFailure({
         name: "CLEAR_ALL_REMINDERS",
         isMutation: true,
@@ -547,13 +606,24 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
       });
       return "Could not clear reminders.";
     }
-    lifecycle?.recordSuccess({
-      name: "CLEAR_ALL_REMINDERS",
-      isMutation: true,
-      result: { count: successCount },
-      logicalKeys: [bulkKey, clearKey, ...successfulKeys],
-    });
-    return `Cleared ${successCount} reminders.`;
+
+    if (successfulIds.length === intendedIds.length) {
+      lifecycle?.recordSuccess({
+        name: "CLEAR_ALL_REMINDERS",
+        isMutation: true,
+        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
+        logicalKeys: [bulkKey, clearKey, ...successfulKeys],
+      });
+      return `Cleared ${successfulIds.length} reminders.`;
+    } else {
+      lifecycle?.recordSuccess({
+        name: "CLEAR_ALL_REMINDERS_PARTIAL",
+        isMutation: true,
+        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
+        logicalKeys: [...successfulKeys],
+      });
+      return `Cleared ${successfulIds.length} out of ${intendedIds.length} reminders (${failedIds.length} failed).`;
+    }
   }
 
   let list: { id: string; title?: string; topic?: string; name?: string }[] = [];
@@ -582,25 +652,41 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
   const sortedIds = Array.from(new Set(targetIds)).sort();
   const bulkKey = getCanonicalBulkDeleteKey(kind, sortedIds);
   const clearKey = getCanonicalClearAllKey(kind === "memory" ? "memories" : `${kind}s`);
-  const singleKeys = sortedIds.map((id) => getCanonicalDeleteKey(kind, id));
 
-  let successCount = 0;
+  const intendedIds = sortedIds;
+  const successfulIds: string[] = [];
   const successfulKeys: string[] = [];
-  for (const item of [...list]) {
+  const failedIds: string[] = [];
+
+  for (const id of intendedIds) {
+    const singleKey = getCanonicalDeleteKey(kind, id);
+    if (lifecycle?.hasCompletedMutation(singleKey)) {
+      successfulIds.push(id);
+      successfulKeys.push(singleKey);
+      continue;
+    }
     try {
-      await del(item.id);
-      successCount++;
-      successfulKeys.push(getCanonicalDeleteKey(kind, item.id));
-    } catch (err) {
+      await del(id);
+      successfulIds.push(id);
+      successfulKeys.push(singleKey);
+      lifecycle?.recordSuccess({
+        name: `DELETE_${kind.toUpperCase()}`,
+        isMutation: true,
+        result: { id },
+        logicalKeys: [singleKey],
+      });
+    } catch (err: any) {
+      failedIds.push(id);
       lifecycle?.recordFailure({
         name: `DELETE_${kind.toUpperCase()}`,
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKey: singleKey,
       });
     }
   }
 
-  if (successCount === 0) {
+  if (successfulIds.length === 0) {
     lifecycle?.recordFailure({
       name: `CLEAR_ALL_${kind.toUpperCase()}S`,
       isMutation: true,
@@ -609,13 +695,23 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
     return `Could not clear ${kind}s.`;
   }
 
-  lifecycle?.recordSuccess({
-    name: `CLEAR_ALL_${kind.toUpperCase()}S`,
-    isMutation: true,
-    result: { count: successCount },
-    logicalKeys: [bulkKey, clearKey, ...successfulKeys],
-  });
-  return `Cleared ${successCount} ${kind}${successCount === 1 ? "" : "s"}.`;
+  if (successfulIds.length === intendedIds.length) {
+    lifecycle?.recordSuccess({
+      name: `CLEAR_ALL_${kind.toUpperCase()}S`,
+      isMutation: true,
+      result: { count: successfulIds.length, targetIds: intendedIds, successfulIds },
+      logicalKeys: [bulkKey, clearKey, ...successfulKeys],
+    });
+    return `Cleared ${successfulIds.length} ${kind}${successfulIds.length === 1 ? "" : "s"}.`;
+  } else {
+    lifecycle?.recordSuccess({
+      name: `CLEAR_ALL_${kind.toUpperCase()}S_PARTIAL`,
+      isMutation: true,
+      result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
+      logicalKeys: [...successfulKeys],
+    });
+    return `Cleared ${successfulIds.length} out of ${intendedIds.length} ${kind}s (${failedIds.length} failed).`;
+  }
 }
 
 async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLifecycle): Promise<string> {
