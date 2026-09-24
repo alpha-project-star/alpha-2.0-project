@@ -44,6 +44,10 @@ import {
   getCanonicalReminderUpdateKey,
   getCanonicalReminderDeleteKey,
   getCanonicalReminderCompleteKey,
+  getCanonicalNoteKey,
+  getCanonicalMemoryKey,
+  getCanonicalBillKey,
+  getCanonicalTaskKey,
 } from "./mutation-identity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
 
@@ -263,7 +267,7 @@ export async function executeActionTagsAsync(
       addNoteRe.lastIndex = 0;
       continue;
     }
-    const opKey = `note:add:${title.toLowerCase()}:${body.toLowerCase()}`;
+    const opKey = getCanonicalNoteKey("create", id, title);
     if (executedMutations.has(opKey)) {
       text = text.replace(fullMatch, "");
       addNoteRe.lastIndex = 0;
@@ -276,7 +280,7 @@ export async function executeActionTagsAsync(
     if (!ok) activity.set("action_failed");
     results.push(
       ok
-        ? { tag: "ADD_NOTE", status: "success", message: `Note saved: "${title}"` }
+        ? { tag: "ADD_NOTE", status: "success", message: `Note saved: "${title}"`, logicalKeys: [opKey] }
         : { tag: "ADD_NOTE", status: "failed", message: `Note "${title}" could not be saved.` }
     );
     text = text.replace(fullMatch, "");
@@ -304,14 +308,14 @@ export async function executeActionTagsAsync(
       continue;
     }
     const finalTopic = topic || detail.slice(0, 40);
-    const opKey = `memory:add:${finalTopic.toLowerCase()}:${detail.toLowerCase()}`;
+    const id = uid();
+    const opKey = getCanonicalMemoryKey("create", id, finalTopic);
     if (executedMutations.has(opKey)) {
       text = text.replace(fullMatch, "");
       addMemRe.lastIndex = 0;
       continue;
     }
     executedMutations.add(opKey);
-    const id = uid();
     await upsert("memory", {
       id,
       topic: finalTopic,
@@ -327,7 +331,7 @@ export async function executeActionTagsAsync(
     if (!ok) activity.set("action_failed");
     results.push(
       ok
-        ? { tag: "ADD_MEMORY", status: "success", message: `Memory saved: "${finalTopic}"` }
+        ? { tag: "ADD_MEMORY", status: "success", message: `Memory saved: "${finalTopic}"`, logicalKeys: [opKey] }
         : { tag: "ADD_MEMORY", status: "failed", message: `Memory "${finalTopic}" could not be saved.` }
     );
     text = text.replace(fullMatch, "");
@@ -353,14 +357,14 @@ export async function executeActionTagsAsync(
     }
     const amount = Number(match[2].trim().replace(/[^\d.]/g, "")) || 0;
     const dueDate = match[3].trim();
-    const opKey = `bill:add:${name.toLowerCase()}:${amount}:${dueDate.toLowerCase()}`;
+    const id = uid();
+    const opKey = getCanonicalBillKey("create", id, name);
     if (executedMutations.has(opKey)) {
       text = text.replace(fullMatch, "");
       addBillRe.lastIndex = 0;
       continue;
     }
     executedMutations.add(opKey);
-    const id = uid();
     await upsert("bill", {
       id,
       name,
@@ -377,6 +381,7 @@ export async function executeActionTagsAsync(
             tag: "ADD_BILL",
             status: "success",
             message: `Bill saved: "${name}"${amount ? ` — ${amount}` : ""}`,
+            logicalKeys: [opKey],
           }
         : { tag: "ADD_BILL", status: "failed", message: `Bill "${name}" could not be saved.` }
     );

@@ -206,3 +206,12 @@ export function getCanonicalTaskKey(action: string, id: string, title?: string):
   return `mutation:task:${action}:${normalizeMutationString(id)}:${normalizeMutationString(title || "")}`;
 }
 
+export function getCanonicalSettingKey(field: string, value: any): string {
+  return `mutation:setting:${normalizeMutationString(field)}:${normalizeMutationString(value)}`;
+}
+
+export function getCanonicalProfileKey(field: string, value: any): string {
+  return `mutation:profile:${normalizeMutationString(field)}:${normalizeMutationString(value)}`;
+}
+
+
