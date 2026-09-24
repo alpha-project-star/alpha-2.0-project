@@ -60,7 +60,6 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         notes: pendingClarif.notes || '',
       });
       if (result.success && result.data) {
-        reminderContextManager.clearPendingClarification(userId);
         const reminder = result.data;
         const key = getCanonicalReminderCreateKey({ title: reminder.title, dueAt: reminder.dueAt, notes: reminder.notes });
         lifecycle?.recordSuccess({
@@ -69,6 +68,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           result: reminder,
           logicalKeys: [key],
         });
+        reminderContextManager.clearPendingClarification(userId);
         return `Reminder saved: "${reminder.title}" — ${formatReminderDate(reminder.dueAt)}`;
       } else {
         const error = result.error || { code: 'REPOSITORY_ERROR', message: 'Failed to create reminder' };

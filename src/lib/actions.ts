@@ -980,7 +980,6 @@ export async function executeActionTagsAsync(
       continue;
     }
 
-    const id = uid();
     const dueAt = parsedMs;
     const keyWithParsedDue = getCanonicalReminderCreateKey({ title, dueAt, notes });
     const keyWithRawDue = getCanonicalReminderCreateKey({ title, dueAt: rawWhen, notes });
@@ -994,7 +993,6 @@ export async function executeActionTagsAsync(
       addRemRe.lastIndex = 0;
       continue;
     }
-    const now = Date.now();
     try {
       const reminderTool = getReminderTool(effectiveUserId);
       const createResult = await reminderTool.createReminder({
