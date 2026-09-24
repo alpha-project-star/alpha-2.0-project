@@ -52,6 +52,12 @@ import {
   getCanonicalMemoryCreateKey,
   getCanonicalBillCreateKey,
   getCanonicalTaskCreateKey,
+  getCanonicalSettingKey,
+  getCanonicalProfileKey,
+  getCanonicalBulkDeleteKey,
+  getCanonicalClearAllKey,
+  getCanonicalUpdateKey,
+  getCanonicalDeleteKey,
 } from "./mutation-identity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
 
@@ -480,11 +486,13 @@ export async function executeActionTagsAsync(
         message: `Could not update ${kind} "${label(kind, target)}".`,
       };
     }
+    const updateKey = getCanonicalUpdateKey(kind, target.id, patch);
     const what = keys.map((k) => `${k} → ${next[k]}`).join(", ");
     return {
       tag,
       status: "success",
       message: `Updated ${kind} "${label(kind, next)}": ${what}`,
+      logicalKeys: [updateKey],
     };
   };
 

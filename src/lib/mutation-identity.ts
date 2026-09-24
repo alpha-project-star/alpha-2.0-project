@@ -226,6 +226,39 @@ export function getCanonicalTaskKey(action: string, id: string, title?: string):
   return `mutation:task:${action}:${normalizeMutationString(id)}:${normalizeMutationString(title || "")}`;
 }
 
+export function getCanonicalUpdateKey(entityType: string, targetId: string, patch: Record<string, any>): string {
+  const normType = normalizeMutationString(entityType);
+  const normId = normalizeMutationString(targetId);
+  const cleanPatch: Record<string, string> = {};
+  const forbidden = new Set(["id", "updatedat", "createdat", "userid", "uid"]);
+  for (const [k, v] of Object.entries(patch || {})) {
+    const lk = k.toLowerCase();
+    if (forbidden.has(lk)) continue;
+    if (v === undefined || v === null) continue;
+    cleanPatch[lk] = typeof v === "string" ? normalizeMutationString(v) : String(v);
+  }
+  const sorted = Object.keys(cleanPatch)
+    .sort()
+    .map((k) => `${k}=${cleanPatch[k]}`)
+    .join(";");
+  return `mutation:${normType}:update:${normId}:${sorted}`;
+}
+
+export function getCanonicalDeleteKey(entityType: string, targetId: string): string {
+  return `mutation:${normalizeMutationString(entityType)}:delete:${normalizeMutationString(targetId)}`;
+}
+
+export function getCanonicalBulkDeleteKey(entityType: string, targetIds: string[]): string {
+  const sorted = Array.from(
+    new Set(
+      targetIds
+        .map((id) => normalizeMutationString(id))
+        .filter(Boolean),
+    ),
+  ).sort();
+  return `mutation:${normalizeMutationString(entityType)}:bulk_delete:${sorted.join(",")}`;
+}
+
 export function getCanonicalSettingKey(field: string, value: any): string {
   return `mutation:setting:${normalizeMutationString(field)}:${normalizeMutationString(value)}`;
 }
