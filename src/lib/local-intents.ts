@@ -16,6 +16,7 @@ import {
   getCanonicalReminderCreateKey,
   getCanonicalReminderDeleteKey,
   getCanonicalReminderCompleteKey,
+  getCanonicalReminderUpdateKey,
   getCanonicalNoteCreateKey,
   getCanonicalMemoryCreateKey,
   getCanonicalBillCreateKey,
@@ -24,7 +25,6 @@ import {
   getCanonicalDeleteKey,
   getCanonicalBulkDeleteKey,
   getCanonicalBillMarkPaidKey,
-  getCanonicalDeleteLastKey,
 } from "./mutation-identity";
 
 async function getActiveUserId(): Promise<string | null> {
@@ -427,8 +427,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       const sorted = [...e.list].sort((a: any, b: any) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0));
       const victim = sorted[0];
       const key = getCanonicalDeleteKey(kind, victim.id);
-      const deleteLastKey = getCanonicalDeleteLastKey(kind);
-      if (lifecycle?.hasCompletedMutation(key) || lifecycle?.hasCompletedMutation(deleteLastKey)) {
+      if (lifecycle?.hasCompletedMutation(key)) {
         return `Deleted the last ${kind}.`;
       }
       try {
@@ -440,7 +439,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
             name: `DELETE_${kind.toUpperCase()}`,
             isMutation: true,
             error: { message: "Victim still exists" },
-            logicalKeys: [key, deleteLastKey],
+            logicalKeys: [key],
           });
           return `Could not delete last ${kind}.`;
         }
@@ -448,7 +447,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           result: victim,
-          logicalKeys: [key, deleteLastKey],
+          logicalKeys: [key],
         });
         return `Deleted the last ${kind}.`;
       } catch (err: any) {
@@ -456,7 +455,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: `DELETE_${kind.toUpperCase()}`,
           isMutation: true,
           error: err || { message: "unknown error" },
-          logicalKeys: [key, deleteLastKey],
+          logicalKeys: [key],
         });
         return `Could not delete last ${kind}: ${err?.message || "unknown error"}`;
       }
@@ -475,14 +474,18 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const res = await tool.completeReminder(q);
     if (res.success && res.data) {
       const compKey = getCanonicalReminderCompleteKey({ targetId: res.data.id });
-      if (lifecycle?.hasCompletedMutation(compKey)) {
+      const updKey = getCanonicalReminderUpdateKey({
+        targetId: res.data.id,
+        patch: { reminderState: "completed" },
+      });
+      if (lifecycle?.hasCompletedMutation(compKey) || lifecycle?.hasCompletedMutation(updKey)) {
         return `Marked reminder "${res.data.title}" as done.`;
       }
       lifecycle?.recordSuccess({
         name: "MARK_REMINDER_DONE",
         isMutation: true,
         result: res.data,
-        logicalKeys: [compKey],
+        logicalKeys: [compKey, updKey],
       });
       return `Marked reminder "${res.data.title}" as done.`;
     } else {

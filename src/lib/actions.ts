@@ -634,8 +634,7 @@ export async function executeActionTagsAsync(
     const sorted = [...list].sort((a: any, b: any) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0));
     const victim = sorted[0];
     const delKey = getCanonicalDeleteKey(kind, victim.id);
-    const deleteLastKey = getCanonicalDeleteLastKey(kind);
-    if (executedMutations.has(delKey) || executedMutations.has(deleteLastKey)) {
+    if (executedMutations.has(delKey)) {
       text = text.replace(fullMatch, "");
       delLastRe.lastIndex = 0;
       continue;
@@ -648,12 +647,11 @@ export async function executeActionTagsAsync(
         results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind} "${label(kind, victim)}".` });
       } else {
         executedMutations.add(delKey);
-        executedMutations.add(deleteLastKey);
         results.push({
           tag: "DELETE_LAST",
           status: "success",
           message: `Deleted ${kind} "${label(kind, victim)}".`,
-          logicalKeys: [delKey, deleteLastKey],
+          logicalKeys: [delKey],
           structuredResult: victim,
         });
       }

@@ -100,16 +100,21 @@ export class RequestActionLifecycle {
     name: string;
     isMutation: boolean;
     logicalKey?: string | null;
+    logicalKeys?: string[];
     executionKey?: string | null;
     args?: any;
   }): CanonicalActionRecord {
     const id = `op_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const keys = params.logicalKeys && params.logicalKeys.length > 0
+      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
+      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : [];
     const op: CanonicalActionRecord = {
       id,
       name: params.name,
       isMutation: params.isMutation,
       status: "executing",
-      logicalKey: params.logicalKey ? params.logicalKey.toLowerCase().trim() : undefined,
+      logicalKey: keys[0],
+      logicalKeys: keys,
       executionKey: params.executionKey || undefined,
       args: params.args,
       timestamp: Date.now(),
@@ -125,16 +130,23 @@ export class RequestActionLifecycle {
     name: string;
     isMutation: boolean;
     result: any;
+    logicalKey?: string | null;
     logicalKeys?: string[];
     executionKey?: string | null;
   }): void {
     let op = params.opId ? this.operations.find((o) => o.id === params.opId) : null;
+    const keys = params.logicalKeys && params.logicalKeys.length > 0
+      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
+      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : (op?.logicalKeys || (op?.logicalKey ? [op.logicalKey] : []));
+
     if (!op) {
       op = {
         id: `op_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         name: params.name,
         isMutation: params.isMutation,
         status: "completed",
+        logicalKey: keys[0],
+        logicalKeys: keys,
         executionKey: params.executionKey || undefined,
         result: params.result,
         timestamp: Date.now(),
@@ -143,6 +155,8 @@ export class RequestActionLifecycle {
     } else {
       op.status = "completed";
       op.result = params.result;
+      op.logicalKeys = keys;
+      if (keys[0]) op.logicalKey = keys[0];
     }
 
     if (params.executionKey) {
@@ -150,15 +164,10 @@ export class RequestActionLifecycle {
     }
 
     if (params.isMutation) {
-      if (params.logicalKeys && params.logicalKeys.length > 0) {
-        for (const k of params.logicalKeys) {
-          if (k) {
-            const norm = k.toLowerCase().trim();
-            this.completedLogicalMutations.set(norm, params.result);
-          }
+      for (const k of keys) {
+        if (k) {
+          this.completedLogicalMutations.set(k, params.result);
         }
-      } else if (op.logicalKey) {
-        this.completedLogicalMutations.set(op.logicalKey, params.result);
       }
     }
 
@@ -179,13 +188,18 @@ export class RequestActionLifecycle {
     executionKey?: string | null;
   }): void {
     let op = params.opId ? this.operations.find((o) => o.id === params.opId) : null;
+    const keys = params.logicalKeys && params.logicalKeys.length > 0
+      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
+      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : (op?.logicalKeys || (op?.logicalKey ? [op.logicalKey] : []));
+
     if (!op) {
       op = {
         id: `op_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
         name: params.name,
         isMutation: params.isMutation,
         status: "failed",
-        logicalKey: params.logicalKey ? params.logicalKey.toLowerCase().trim() : undefined,
+        logicalKey: keys[0],
+        logicalKeys: keys,
         executionKey: params.executionKey || undefined,
         error: params.error,
         timestamp: Date.now(),
@@ -194,6 +208,8 @@ export class RequestActionLifecycle {
     } else {
       op.status = "failed";
       op.error = params.error;
+      op.logicalKeys = keys;
+      if (keys[0]) op.logicalKey = keys[0];
     }
 
     if (this.activeOperation?.id === op.id) {
