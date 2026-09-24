@@ -7,6 +7,7 @@ import { ensureAuthenticatedUser } from "./auth";
 import { formatReminderDate } from "./reminder-date-utils";
 import type { FirestoreReminder } from "./reminder-repo";
 import { parseWhen } from "./when";
+import { reminderContextManager } from "./reminder-context";
 import { activity } from "./activity";
 import type { ActivityKind } from "./activity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
@@ -36,6 +37,49 @@ async function getActiveUserId(): Promise<string | null> {
 export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
   const t = raw.trim();
   const lower = t.toLowerCase();
+
+  const userId = await getActiveUserId() || auth.currentUser?.uid || 'local-user';
+  const pendingClarif = reminderContextManager.getPendingClarification(userId);
+  if (pendingClarif) {
+    const isAm = /\bam\b/i.test(lower) || /morning/i.test(lower);
+    const isPm = /\bpm\b/i.test(lower) || /evening|afternoon|night/i.test(lower);
+    if (isAm || isPm || /^(?:am|pm)\b/i.test(lower)) {
+      const meridiem = isPm ? 'PM' : 'AM';
+      const resolvedRawWhen = `${pendingClarif.rawWhen} ${meridiem}`;
+      const dueAt = parseWhen(resolvedRawWhen, new Date());
+      if (dueAt !== null) {
+        reminderContextManager.clearPendingClarification(userId);
+        activity.set("writing_reminder");
+        const tool = getReminderTool(userId);
+        const reminderId = uid();
+        const nowTime = Date.now();
+        const reminder: FirestoreReminder = {
+          id: reminderId,
+          userId,
+          title: pendingClarif.title,
+          notes: pendingClarif.notes || '',
+          dueAt,
+          createdAt: nowTime,
+          updatedAt: nowTime,
+          reminderState: 'active',
+          notificationState: 'pending',
+        };
+        await tool.createReminder({
+          title: pendingClarif.title,
+          dueAt,
+          notes: pendingClarif.notes || '',
+        });
+        const key = getCanonicalReminderCreateKey({ title: pendingClarif.title, dueAt, notes: pendingClarif.notes });
+        lifecycle?.recordSuccess({
+          name: "ADD_REMINDER",
+          isMutation: true,
+          result: reminder,
+          logicalKeys: [key],
+        });
+        return `Reminder saved: "${reminder.title}" — ${formatReminderDate(reminder.dueAt)}`;
+      }
+    }
+  }
 
   // Settings / backend / voice flip commands first.
   const settingsHit = await trySettingsIntent(t, lifecycle);

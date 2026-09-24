@@ -34,6 +34,13 @@ export interface ActiveReminderContext {
   updatedAt: number;
 }
 
+export interface PendingClarificationData {
+  title: string;
+  rawWhen: string;
+  notes?: string;
+  hour: number;
+}
+
 export type ReminderContextInput = 
   | FirestoreReminder 
   | {
@@ -51,6 +58,7 @@ export type ReminderContextInput =
  */
 class ReminderContextManager {
   private activeContext: ActiveReminderContext | null = null;
+  private pendingClarification: { userId: string; data: PendingClarificationData } | null = null;
   private currentUserId: string | null = null;
 
   constructor() {
@@ -71,6 +79,7 @@ class ReminderContextManager {
       if (v) {
         const parsed = JSON.parse(v);
         this.activeContext = parsed.context;
+        this.pendingClarification = parsed.pendingClarification || null;
         this.currentUserId = parsed.userId;
       }
     } catch {
@@ -83,9 +92,10 @@ class ReminderContextManager {
     if (!storage) return;
     const key = this.getStorageKey(this.currentUserId);
     try {
-      if (this.activeContext && this.currentUserId) {
+      if ((this.activeContext || this.pendingClarification) && this.currentUserId) {
         storage.setItem(key, JSON.stringify({
           context: this.activeContext,
+          pendingClarification: this.pendingClarification,
           userId: this.currentUserId
         }));
       } else {
@@ -119,8 +129,34 @@ class ReminderContextManager {
     return this.activeContext;
   }
 
+  async setPendingClarification(userId: string, data: PendingClarificationData) {
+    if (!userId) return;
+    await withCrossContextLock('alpha_lock_reminder_context', async () => {
+      this.currentUserId = userId;
+      this.pendingClarification = { userId, data };
+      this.save();
+    });
+  }
+
+  getPendingClarification(userId: string): PendingClarificationData | null {
+    this.reload();
+    if (!userId || this.currentUserId !== userId || !this.pendingClarification || this.pendingClarification.userId !== userId) {
+      return null;
+    }
+    return this.pendingClarification.data;
+  }
+
+  clearPendingClarification(userId: string) {
+    this.reload();
+    if (this.currentUserId === userId || !userId) {
+      this.pendingClarification = null;
+      this.save();
+    }
+  }
+
   clear() {
     this.activeContext = null;
+    this.pendingClarification = null;
     this.currentUserId = null;
     this.save();
   }

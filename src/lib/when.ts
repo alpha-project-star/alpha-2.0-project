@@ -151,6 +151,47 @@ export function normalizeWhen(raw: string, now: Date = new Date()): { iso: strin
   return t === null ? { iso: phrase, parsed: false, phrase } : { iso: new Date(t).toISOString(), parsed: true, phrase };
 }
 
+/**
+ * Detects whether a time expression is a 12-hour bare clock expression lacking AM/PM.
+ * Relative durations, explicit AM/PM, 24-hour time, and named times of day are NOT ambiguous.
+ */
+export function isAmbiguousTime(raw: string | number): boolean {
+  if (typeof raw === "number") return false;
+  const input = (raw || "").trim();
+  if (!input) return false;
+
+  if (/^\d{10,13}$/.test(input)) return false;
+  const iso = Date.parse(input);
+  if (!Number.isNaN(iso) && /\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|GMT|UTC|[A-Z][a-z]{2} \d/.test(input)) {
+    return false;
+  }
+
+  const s = input.toLowerCase().replace(/\s+/g, " ").replace(/^(?:on|at)\s+/, "");
+
+  if (/^in\s+/.test(s)) return false;
+  if (/(?:morning|afternoon|evening|night|tonight)/.test(s)) return false;
+
+  const clockMatch = s.match(/(?:(?:today|tomorrow|tmrw|next\s+[a-z]+|[a-z]+)\s+(?:at\s+)?)?(\d{1,2})(?::(\d{2}))?\s*(?!am|pm)\b/i);
+  if (clockMatch) {
+    const h = Number(clockMatch[1]);
+    const hasAmPm = /\b(am|pm)\b/i.test(s);
+    if (!hasAmPm && h >= 1 && h <= 12) {
+      return true;
+    }
+  }
+
+  const standaloneMatch = s.match(/^(\d{1,2})(?::(\d{2}))?$/);
+  if (standaloneMatch) {
+    const h = Number(standaloneMatch[1]);
+    const hasAmPm = /\b(am|pm)\b/i.test(s);
+    if (!hasAmPm && h >= 1 && h <= 12) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /** Human display for a stored `when` value. */
 export function formatWhen(stored: string): string {
   const t = Date.parse(stored);

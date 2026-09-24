@@ -1228,9 +1228,12 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   }
   
   const hasEvidence = /^\[1\]/m.test(webContext);
-  const clarificationGuidance = lifecycle.getClarificationState().suppliedInTurn
-    ? `\n\nCONVERSATION CONTEXT: The user has answered your prior question ("${safeContent(priorAssistantText.slice(0, 140))}"). Do NOT repeat your clarification question. Proceed directly to fulfill the requested action using available tools.`
-    : "";
+  const pendingClarif = currentUid ? reminderContextManager.getPendingClarification(currentUid) : null;
+  const clarificationGuidance = pendingClarif
+    ? `\n\nPENDING CLARIFICATION: The user was previously asked "Do you mean ${pendingClarif.hour} AM or ${pendingClarif.hour} PM?" regarding reminder "${pendingClarif.title}" at "${pendingClarif.rawWhen}". The user's response is "${userText}". Interpret whether they mean AM or PM, and call createReminder({ title: "${pendingClarif.title}", dueAt: "${pendingClarif.rawWhen} [AM/PM]", notes: "${pendingClarif.notes || ''}" }).`
+    : lifecycle.getClarificationState().suppliedInTurn
+      ? `\n\nCONVERSATION CONTEXT: The user has answered your prior question ("${safeContent(priorAssistantText.slice(0, 140))}"). Do NOT repeat your clarification question. Proceed directly to fulfill the requested action using available tools.`
+      : "";
 
   const buildSys = (offline: boolean) =>
     DEFAULT_SYSTEM(s.personaExtra || "", recall, rolling, {
@@ -1441,7 +1444,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
             }
           } else {
             hasFailure = true;
-            if (result?.error?.code === "AMBIGUOUS") {
+            if (result?.error?.code === "AMBIGUOUS" || result?.error?.code === "AMBIGUOUS_TIME") {
               lifecycle.recordClarification(result.error?.message || "Ambiguous request", call.function?.name);
             } else {
               lifecycle.recordFailure({

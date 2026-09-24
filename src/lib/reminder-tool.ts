@@ -8,6 +8,7 @@ import { uid } from './alpha-store';
 import { interpretReminderDate, formatReminderDate } from './reminder-date-utils';
 import { temporal } from './temporal';
 import { reminderContextManager } from './reminder-context';
+import { isAmbiguousTime } from './when';
 
 // Validation Schemas
 export const CreateReminderSchema = z.object({
@@ -31,6 +32,7 @@ export type ToolErrorCode =
   | 'INVALID_INPUT' 
   | 'NOT_FOUND' 
   | 'AMBIGUOUS'
+  | 'AMBIGUOUS_TIME'
   | 'REPOSITORY_ERROR'
   | 'UID_MISMATCH';
 
@@ -70,6 +72,18 @@ export class ReminderTool {
 
       const { title, dueAt: rawDue, notes } = validated.data;
       
+      if (typeof rawDue === 'string' && isAmbiguousTime(rawDue)) {
+        const matchHour = rawDue.match(/(\d{1,2})/);
+        const hour = matchHour ? Number(matchHour[1]) : 9;
+        await reminderContextManager.setPendingClarification(userId, {
+          title,
+          rawWhen: rawDue,
+          notes: notes || '',
+          hour,
+        });
+        return this.fail('AMBIGUOUS_TIME', `Do you mean ${hour} AM or ${hour} PM?`, op);
+      }
+
       const dueAt = interpretReminderDate(rawDue, temporal.now());
       if (dueAt === null) {
         return this.fail('INVALID_INPUT', `Could not understand the time: "${rawDue}"`, op);
@@ -189,6 +203,17 @@ export class ReminderTool {
       };
 
       if (rawDue !== undefined) {
+        if (typeof rawDue === 'string' && isAmbiguousTime(rawDue)) {
+          const matchHour = rawDue.match(/(\d{1,2})/);
+          const hour = matchHour ? Number(matchHour[1]) : 9;
+          await reminderContextManager.setPendingClarification(userId, {
+            title: existing!.title,
+            rawWhen: rawDue,
+            notes: existing!.notes || '',
+            hour,
+          });
+          return this.fail('AMBIGUOUS_TIME', `Do you mean ${hour} AM or ${hour} PM?`, op);
+        }
         const dueAt = interpretReminderDate(rawDue, temporal.now());
         if (dueAt === null) return this.fail('INVALID_INPUT', `Invalid time: ${rawDue}`, op);
         updatedPatch.dueAt = dueAt;

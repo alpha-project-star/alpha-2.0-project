@@ -31,9 +31,10 @@ import {
   type Task,
   type Goal,
 } from "./alpha-store";
-import { normalizeWhen, formatWhen } from "./when";
+import { normalizeWhen, formatWhen, isAmbiguousTime } from "./when";
 import { activity, actionActivity } from "./activity";
 import { auth } from "./firebase";
+import { reminderContextManager } from "./reminder-context";
 import {
   LocalReminderRepository,
   type FirestoreReminder,
@@ -939,6 +940,26 @@ export async function executeActionTagsAsync(
         tag: "ADD_REMINDER",
         status: "invalid",
         message: "An appointment or reminder needs a title — nothing was saved.",
+      });
+      text = text.replace(fullMatch, "");
+      addRemRe.lastIndex = 0;
+      continue;
+    }
+
+    if (isAmbiguousTime(rawWhen)) {
+      const matchHour = rawWhen.match(/(\d{1,2})/);
+      const hour = matchHour ? Number(matchHour[1]) : 9;
+      await reminderContextManager.setPendingClarification(effectiveUserId, {
+        title,
+        rawWhen,
+        notes,
+        hour,
+      });
+      activity.set("action_failed");
+      results.push({
+        tag: "ADD_REMINDER",
+        status: "failed",
+        message: `Do you mean ${hour} AM or ${hour} PM?`,
       });
       text = text.replace(fullMatch, "");
       addRemRe.lastIndex = 0;
