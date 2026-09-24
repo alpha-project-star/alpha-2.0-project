@@ -87,6 +87,7 @@ export const ACTION_ACTIVITY_KINDS: ReadonlySet<ActivityKind> = new Set<Activity
   "calling_tool",
   "executing_action",
   "action_failed",
+  "writing_code",
 ]);
 
 export interface Activity {

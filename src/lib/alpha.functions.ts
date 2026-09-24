@@ -1152,7 +1152,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       return eyeRes;
     }
     try {
-      const local = await tryLocalIntent(userText);
+      const local = await tryLocalIntent(userText, lifecycle);
       if (local) {
         lifecycle.recordSuccess({ name: "tryLocalIntent", isMutation: true, result: local });
         activity.clear();
@@ -1481,8 +1481,8 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       loopCount++;
 
       // Action Completion & Multi-Round Boundary Control
-      if (allToolsAlreadyCompleted) {
-        // Model re-requested only already completed operations; terminate tool loop
+      if (allToolsAlreadyCompleted || lifecycle.isRequestFulfilled()) {
+        // The request is fully fulfilled or only duplicate completed operations were attempted. Break loop immediately.
         break;
       }
 

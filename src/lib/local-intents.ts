@@ -9,6 +9,8 @@ import type { FirestoreReminder } from "./reminder-repo";
 import { parseWhen } from "./when";
 import { activity } from "./activity";
 import type { ActivityKind } from "./activity";
+import type { RequestActionLifecycle } from "./request-lifecycle";
+import { getCanonicalReminderCreateKey } from "./mutation-identity";
 
 async function getActiveUserId(): Promise<string | null> {
   const user = await ensureAuthenticatedUser();
@@ -20,13 +22,16 @@ async function getActiveUserId(): Promise<string | null> {
  * perform operations (add reminder, add note, save memory, delete X) without
  * hitting the LLM. Returns a spoken confirmation string, or null if no match.
  */
-export async function tryLocalIntent(raw: string): Promise<string | null> {
+export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
   const t = raw.trim();
   const lower = t.toLowerCase();
 
   // Settings / backend / voice flip commands first.
   const settingsHit = await trySettingsIntent(t);
-  if (settingsHit) return settingsHit;
+  if (settingsHit) {
+    lifecycle?.recordSuccess({ name: "trySettingsIntent", isMutation: true, result: settingsHit });
+    return settingsHit;
+  }
 
   // ---- MUSIC -------------------------------------------------------------
   if (/^(?:stop|pause)\s+(?:the\s+)?music\b/.test(lower)) {
@@ -148,8 +153,20 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
     });
     if (res.success && res.data) {
       const dueText = formatReminderDate(res.data.dueAt);
+      const logicalKey = getCanonicalReminderCreateKey(res.data);
+      lifecycle?.recordSuccess({
+        name: "createReminder",
+        isMutation: true,
+        result: res.data,
+        logicalKeys: logicalKey ? [logicalKey] : [],
+      });
       return `Done — reminder added: "${res.data.title}" (${dueText}).`;
     }
+    lifecycle?.recordFailure({
+      name: "createReminder",
+      isMutation: true,
+      error: res.error || { message: "unknown error" },
+    });
     return `I couldn't set that reminder: ${res.error?.message || "unknown error"}.`;
   }
 
@@ -162,7 +179,16 @@ export async function tryLocalIntent(raw: string): Promise<string | null> {
   if (m) {
     const body = trim(m[m.length - 1]);
     activity.set("writing_note");
-    await alphaStore.upsertNote({ id: uid(), title: body.slice(0, 40), body, updatedAt: Date.now() });
+    const id = uid();
+    const title = body.slice(0, 40);
+    await alphaStore.upsertNote({ id, title, body, updatedAt: Date.now() });
+    const opKey = `note:add:${title.toLowerCase()}:${body.toLowerCase()}`;
+    lifecycle?.recordSuccess({
+      name: "ADD_NOTE",
+      isMutation: true,
+      result: { id, title, body },
+      logicalKeys: [opKey],
+    });
     return `Got it — note saved: "${body.slice(0, 60)}".`;
   }
 
