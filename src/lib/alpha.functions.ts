@@ -1062,8 +1062,7 @@ CONSTRAINTS:
           historyTurns: 4,
           tools: [], // Strictly no tools allowed during proactive reminder generation
         });
-        const rawContent = response.content || "";
-        const cleaned = stripLeakedThinking(rawContent).trim();
+        const cleaned = (response.finalText || "").trim();
         if (cleaned) {
           return cleaned;
         }
@@ -1088,8 +1087,8 @@ CONSTRAINTS:
   }
 
   // Fallback to local Ollama if offline or no routes
-  const text = await sendChatOllama(messagesForTurn, sys);
-  const cleaned = stripLeakedThinking(text).trim();
+  const response = await sendChatOllama(messagesForTurn, sys);
+  const cleaned = (response.finalText || "").trim();
   if (!cleaned) throw new Error("Empty response from Ollama");
   return cleaned;
 }
@@ -1115,9 +1114,10 @@ export function determineInitialActivity(
 }
 
 export async function sendChat(
-  history: ChatMessage[],
+  _passedHistory: ChatMessage[],
   opts: { task?: TaskType; signal?: AbortSignal; disableTools?: boolean } = {},
 ): Promise<string> {
+  const history = alphaStore.getCompleteHistory();
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
   const now = Date.now();

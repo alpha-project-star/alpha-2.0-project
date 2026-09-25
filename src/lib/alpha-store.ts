@@ -125,6 +125,7 @@ export interface Settings {
 
 export interface AlphaState {
   chat: ChatMessage[];
+  internalHistory?: ChatMessage[];
   notes: Note[];
   bills: Bill[];
   tasks: Task[];
@@ -140,6 +141,7 @@ export interface AlphaState {
 
 export const K = {
   chat: "alpha.chat.v1",
+  internalHistory: "alpha.internalHistory.v1",
   notes: "alpha.notes.v1",
   bills: "alpha.bills.v1",
   goals: "alpha.goals.v1",
@@ -501,6 +503,7 @@ if (typeof window !== "undefined") {
 
 let state: AlphaState = {
   chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
+  internalHistory: parseLS<ChatMessage[]>(K.internalHistory, z.array(ChatMessageSchema), []),
   notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
   bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
   tasks: parseLS<Task[]>(K.tasks, z.array(TaskSchema) as any, []),
@@ -612,6 +615,7 @@ function reloadState() {
   migrateLegacyScopedKeys();
   state = {
     chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
+    internalHistory: parseLS<ChatMessage[]>(K.internalHistory, z.array(ChatMessageSchema), []),
     notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
     bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
     tasks: parseLS<Task[]>(K.tasks, z.array(z.any()), []),
@@ -656,21 +660,60 @@ export const alphaStore = {
       emit();
     });
   },
+  getCompleteHistory(): ChatMessage[] {
+    reloadState();
+    const visible = state.chat || [];
+    const internal = state.internalHistory || [];
+    const combined = [...visible, ...internal];
+    const seen = new Set<string>();
+    const deduped: ChatMessage[] = [];
+    for (const m of combined) {
+      if (m.id && seen.has(m.id)) continue;
+      if (m.id) seen.add(m.id);
+      deduped.push(m);
+    }
+    return deduped.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+  },
   appendChat(msg: ChatMessage): Promise<void> {
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const next = [...state.chat, msg].slice(-200);
-      writeLS(K.chat, next);
-      state = { ...state, chat: next };
+      const isIntermediate = msg.intermediate || msg.role === "tool" || (msg.role === "model" && !msg.text && msg.tool_calls?.length);
+      if (isIntermediate) {
+        const existingInternal = state.internalHistory || [];
+        const nextInternal = [...existingInternal, msg].slice(-400);
+        writeLS(K.internalHistory, nextInternal);
+        state = { ...state, internalHistory: nextInternal };
+      } else {
+        const next = [...state.chat, msg].slice(-200);
+        writeLS(K.chat, next);
+        state = { ...state, chat: next };
+      }
       emit();
     });
   },
   setChat(msgs: ChatMessage[]): Promise<void> {
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
-      const next = msgs.slice(-200);
-      writeLS(K.chat, next);
-      state = { ...state, chat: next };
+      const visible: ChatMessage[] = [];
+      const internal: ChatMessage[] = [];
+      for (const m of msgs) {
+        const isIntermediate = m.intermediate || m.role === "tool" || (m.role === "model" && !m.text && m.tool_calls?.length);
+        if (isIntermediate) {
+          internal.push(m);
+        } else {
+          visible.push(m);
+        }
+      }
+      const nextChat = visible.slice(-200);
+      writeLS(K.chat, nextChat);
+      state = { ...state, chat: nextChat };
+
+      if (internal.length > 0) {
+        const existingInternal = state.internalHistory || [];
+        const nextInternal = [...existingInternal, ...internal].slice(-400);
+        writeLS(K.internalHistory, nextInternal);
+        state = { ...state, internalHistory: nextInternal };
+      }
       emit();
     });
   },
@@ -679,7 +722,8 @@ export const alphaStore = {
       reloadState();
       conversationSummary.clear();
       writeLS(K.chat, []);
-      state = { ...state, chat: [] };
+      writeLS(K.internalHistory, []);
+      state = { ...state, chat: [], internalHistory: [] };
       reminderContextManager.clear();
       try {
         import("./alpha.functions").then((m) => m.resetCompactionState()).catch(() => {});
