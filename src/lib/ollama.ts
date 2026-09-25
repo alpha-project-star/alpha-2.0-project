@@ -1,5 +1,5 @@
 import { alphaStore, conversationSummary, type ChatMessage } from "./alpha-store";
-import { stripLeakedThinking } from "./openai-compat";
+import { stripLeakedThinking, extractNormalizedResponse, type NormalizedChatResponse } from "./openai-compat";
 
 /** Normalise the endpoint the user typed. */
 function base(): string {
@@ -51,7 +51,7 @@ export async function sendChatOllama(
   history: ChatMessage[],
   systemPrompt: string,
   webContext = "",
-): Promise<string> {
+): Promise<NormalizedChatResponse> {
   const model = alphaStore.get().settings.ollamaModel || "llama3.2:3b";
   const url = `${base()}/api/chat`;
 
@@ -80,13 +80,18 @@ export async function sendChatOllama(
     throw new Error(`Ollama ${res.status}: ${t.slice(0, 300) || "no body"}`);
   }
   const j: any = await res.json();
-  let text: string = (typeof j?.message?.content === "string" ? j.message.content : "").trim();
-  text = stripLeakedThinking(text);
-  if (!text) throw new Error("Ollama returned an empty response.");
+  const content = typeof j?.message?.content === "string" ? j.message.content : "";
+  const reasoning = j?.message?.reasoning_content || j?.message?.reasoning || "";
+  const tool_calls = j?.message?.tool_calls;
+  
+  const normalized = extractNormalizedResponse(content, reasoning, tool_calls, model);
+  if (!normalized.finalText && !normalized.hasToolCalls) {
+    throw new Error("Ollama returned an empty response.");
+  }
 
   // Fire-and-forget rolling summary using the same local model.
-  void maybeCompactLocal(history, text, model);
-  return text;
+  void maybeCompactLocal(history, normalized.finalText, model);
+  return normalized;
 }
 
 let lastCompactAt = 0;

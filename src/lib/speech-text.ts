@@ -10,6 +10,8 @@
  *    ordinary dollar amounts)
  */
 
+import { stripLeakedThinking } from "./openai-compat";
+
 const MATH_DISPLAY = /\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g;
 const MATH_INLINE = /\$([^$\n]+?)\$|\\\(([\s\S]+?)\\\)/g;
 
@@ -56,6 +58,7 @@ function speakTable(block: string): string {
 
 export function normalizeForSpeech(input: string): string {
   let s = input || "";
+  s = stripLeakedThinking(s);
 
   // 1. Internal syntax: Remove action tags, code blocks, raw URLs, and emojis.
   s = s.replace(/\[\[[\s\S]*?\]\]/g, " ");

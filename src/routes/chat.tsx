@@ -56,7 +56,14 @@ export const Route = createFileRoute("/chat")({
 const NAV = CHAT_NAV_ITEMS;
 
 function ChatRoute() {
-  const chat = useAlpha((s) => s.chat);
+  const chat = useAlpha((s) =>
+    s.chat.filter(
+      (m) =>
+        !m.intermediate &&
+        m.role !== "tool" &&
+        (m.role !== "system" || m.error)
+    )
+  );
   const act = useActivity();
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);

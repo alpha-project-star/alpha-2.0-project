@@ -36,6 +36,7 @@ import {
   getAuthoritativeSystemArchitecture,
   hasProviderKey,
   type ProviderId,
+  SUPPORTED_MODELS,
 } from "./models";
 import {
   decideSearch,
@@ -601,8 +602,10 @@ function planRoutes(
 
     // OpenAI vision models if openai key configured
     if (providerHasKey("openai")) {
-      push("openai:gpt-4o");
-      push("openai:gpt-4o-mini");
+      const openaiModels = SUPPORTED_MODELS.openai || [];
+      for (const m of openaiModels) {
+        if (m.includes("gpt-4")) push(`openai:${m}`);
+      }
     }
 
     // Fallback to verified vision models
@@ -631,17 +634,19 @@ function planRoutes(
   // 4. Whatever other lanes the user configured.
   push(s.taskModels.thinking);
   push(s.taskModels.coding);
-  // 5. OpenAI-compatible routes if provider has key (e.g. OpenAI, xAI Grok, Together, DeepSeek)
+  // 5. OpenAI-compatible routes if provider has key (e.g. OpenAI)
   if (providerHasKey("openai")) {
-    push("openai:gpt-4o-mini");
-    push("openai:gpt-4o");
-    push("openai:grok-2");
-    push("openai:grok-beta");
+    const openaiModels = SUPPORTED_MODELS.openai || [];
+    for (const m of openaiModels) {
+      push(`openai:${m}`);
+    }
   }
   // 6. Groq lane if provider has key.
   if (providerHasKey("groq")) {
-    push("groq:llama-3.3-70b-versatile");
-    push(`groq:${GROQ_EMERGENCY_MODEL}`);
+    const groqModels = SUPPORTED_MODELS.groq || [];
+    for (const m of groqModels) {
+      push(`groq:${m}`);
+    }
   }
   return out;
 }
@@ -953,10 +958,19 @@ export let lastAnsweredBy = "";
 function requestKey(history: ChatMessage[], task: TaskType): string {
   const last = [...history].reverse().find((m) => m.role === "user");
   const normalizedText = (last?.text || "").trim().toLowerCase();
-  const imageCount = last?.images?.length || 0;
-  // Exclude volatile generated message ID (last?.id) so duplicate message objects
-  // representing the same logical user turn map to the exact same request key.
-  return `${task}|${normalizedText}|${imageCount}`;
+  
+  // Fingerprint the actual image content to distinguish different images rather than just counting them
+  const imageFingerprints = (last?.images || []).map((img) => {
+    return img.slice(0, 80) + img.slice(-80) + img.length;
+  }).join(",");
+
+  // Include message ID and unique timestamp so a legitimate new user turn
+  // with identical text is treated as a separate request, while matching duplicate
+  // re-renders of the exact same message.
+  const msgId = last?.id || "";
+  const msgTs = last?.ts || 0;
+
+  return `${task}|${normalizedText}|${msgId}|${msgTs}|${imageFingerprints}`;
 }
 
 export function isChatGenerating(): boolean {
@@ -1133,12 +1147,9 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   const hasImages = !!lastUserMsg?.images?.length;
   const userText = lastUserMsg?.text || "";
 
-  // Detect whether user is answering a prior assistant clarification/question
-  const priorAssistantMsg = [...history].reverse().find((m) => m.role === "model" && m.text);
-  const priorAssistantText = (priorAssistantMsg?.text || "").trim();
-  const isAnsweringClarification =
-    priorAssistantText.endsWith("?") ||
-    /\b(?:what|when|which|clarify|specify|details|who|where)\b/i.test(priorAssistantText);
+  // Detect whether user is answering a prior assistant clarification/question authoritatively
+  const pendingClarif = currentUid ? reminderContextManager.getPendingClarification(currentUid) : null;
+  const isAnsweringClarification = !!pendingClarif;
   if (isAnsweringClarification && userText) {
     lifecycle.setClarificationSupplied(true);
   }
@@ -1228,7 +1239,8 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   }
   
   const hasEvidence = /^\[1\]/m.test(webContext);
-  const pendingClarif = currentUid ? reminderContextManager.getPendingClarification(currentUid) : null;
+  const priorAssistantMsg = [...history].reverse().find((m) => m.role === "model" && m.text);
+  const priorAssistantText = (priorAssistantMsg?.text || "").trim();
   const clarificationGuidance = pendingClarif
     ? `\n\nPENDING CLARIFICATION: The user was previously asked "Do you mean ${pendingClarif.hour} AM or ${pendingClarif.hour} PM?" regarding reminder "${pendingClarif.title}" at "${pendingClarif.rawWhen}". The user's response is "${userText}". Interpret whether they mean AM or PM, and call createReminder({ title: "${pendingClarif.title}", dueAt: "${pendingClarif.rawWhen} [AM/PM]", notes: "${pendingClarif.notes || ''}" }).`
     : lifecycle.getClarificationState().suppliedInTurn
@@ -1324,7 +1336,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         break;
       }
 
-      if (!response.tool_calls || response.tool_calls.length === 0) {
+      if (!response.toolCalls || response.toolCalls.length === 0) {
         finalResponse = response;
         break;
       }
@@ -1334,9 +1346,10 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       const assistantMsg: ChatMessage = {
         id: uid(),
         role: "model",
-        text: response.content || "",
+        text: response.finalText || "",
         ts: Date.now(),
-        tool_calls: response.tool_calls,
+        tool_calls: response.toolCalls,
+        intermediate: true, // Internal intermediate step
       };
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);
@@ -1346,7 +1359,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       let hasFailure = false;
       let allToolsAlreadyCompleted = true;
 
-      for (const call of response.tool_calls) {
+      for (const call of response.toolCalls) {
         const invocationKey = getCanonicalExecutionKey(call);
         const stableCallId = call.id;
         const logicalKey = getLogicalMutationKey(call);
@@ -1474,6 +1487,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           text: JSON.stringify(result),
           ts: Date.now(),
           tool_call_id: call.id,
+          intermediate: true, // Internal intermediate step
         };
         currentHistory.push(toolMsg);
         await alphaStore.appendChat(toolMsg);
@@ -1505,10 +1519,11 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         });
       } catch {
         finalResponse = {
-          content: lifecycle.hasCompletedMutations()
+          finalText: lifecycle.hasCompletedMutations()
             ? "I've completed the requested action."
             : "I've processed your request.",
-          tool_calls: [],
+          toolCalls: [],
+          hasToolCalls: false,
         };
       }
     }
@@ -1526,7 +1541,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (finalResponse) {
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
-      const finalText = await finalizeReply(finalResponse.content || "", webContext, toolSummary, { userId: currentUid, lifecycle });
+      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle });
       void maybeCompactSummary(history, finalText);
       activity.clear();
       return finalText;
@@ -1549,10 +1564,10 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   // No online route (no keys or offline) — fall through to local Ollama.
   activity.set(determineInitialActivity(hasImages, task, userText));
   try {
-    const text = await sendChatOllama(history, buildSys(!webContext), webContext);
+    const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext);
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
-    const out = await finalizeReply(text, webContext, undefined, { userId: currentUid, lifecycle });
+    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle });
     activity.clear();
     return out;
   } catch (e) {
@@ -1849,7 +1864,8 @@ ${lastAssistant.slice(0, 500)}`;
     });
     if (!res.ok) return;
     const j: any = await res.json();
-    const out = j?.choices?.[0]?.message?.content?.trim() || "";
+    let out = j?.choices?.[0]?.message?.content?.trim() || "";
+    out = stripLeakedThinking(out);
     if (out && alphaStore.get().chat.length >= 10) conversationSummary.set(out);
   } catch {
     /* swallow — background */

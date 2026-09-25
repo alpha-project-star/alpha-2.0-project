@@ -118,8 +118,10 @@ export const SUPPORTED_MODELS: Record<ProviderId, readonly string[]> = {
 } as const;
 
 export function isSupportedModel(provider: string, model: string): boolean {
-  if (!["groq", "openai", "openrouter"].includes(provider)) return false;
-  return typeof model === "string" && model.trim().length > 0;
+  const prov = provider as ProviderId;
+  const list = SUPPORTED_MODELS[prov];
+  if (!list) return false;
+  return list.includes(model) || list.some((m) => m.toLowerCase() === model.toLowerCase());
 }
 
 /** Human-readable label for a route, for the "answered by" record. */

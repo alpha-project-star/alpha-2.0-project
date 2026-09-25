@@ -26,10 +26,15 @@ export interface CompatOpts {
   signal?: AbortSignal;
 }
 
-export interface ChatResponse {
-  content: string;
-  tool_calls?: any[];
+export interface NormalizedChatResponse {
+  finalText: string;
+  toolCalls?: any[];
+  internalReasoning?: string;
+  hasToolCalls: boolean;
+  modelIdentity?: string;
 }
+
+export type ChatResponse = NormalizedChatResponse;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -55,19 +60,104 @@ function retryAfterMs(res: Response, body: string): number | null {
  * Some free reasoning models leak their scratchpad into `content`
  * ("Thinking Process: 1. Analyse the request…"). Strip a leading thinking
  * preamble and any <think> blocks so the user only sees the answer.
+ * Now supports all common reasoning and thinking header patterns recursively.
  */
 export function stripLeakedThinking(text: string): string {
   if (!text) return "";
   let t = text;
-  t = t.replace(/<(think|thinking|reasoning)>[\s\S]*?<\/\1>/gi, "").trim();
-  t = t.replace(/^<(think|thinking|reasoning)>[\s\S]*$/i, "").trim();
-  // "Here's a thinking process:" / "Thinking Process:" / "Let me think:" blocks
-  // that end at a clear answer marker.
-  const marker = t.match(
-    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response)\s*:?\s*)/i,
-  );
-  if (marker) t = t.slice(marker[0].length).trim();
+  
+  // Remove known XML tags containing thinking
+  t = t.replace(/<(think|thinking|reasoning|analysis)>[\s\S]*?<\/\1>/gi, "").trim();
+  t = t.replace(/^<(think|thinking|reasoning|analysis)>[\s\S]*$/i, "").trim();
+  
+  // Remove block patterns with clear final headers
+  const blockRegexes = [
+    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result)\s*:?\s*)/i,
+    /^(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
+    /^(?:thinking|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
+  ];
+
+  for (const rx of blockRegexes) {
+    const match = t.match(rx);
+    if (match) {
+      t = t.slice(match.index! + match[0].length).trim();
+      break;
+    }
+  }
+
+  // Double check if there is an unclosed tag at the start/end
+  t = t.replace(/^<(think|thinking|reasoning|analysis)>[\s\S]*$/i, "").trim();
+  t = t.replace(/^[\s\S]*?<\/(think|thinking|reasoning|analysis)>/i, "").trim();
+  
   return t;
+}
+
+/**
+ * Extracts raw content, dedicated reasoning, and tool calls into a unified,
+ * normalized chat response structure. Excludes internal reasoning from the user-facing output.
+ */
+export function extractNormalizedResponse(
+  content: string,
+  reasoningContent?: string,
+  toolCalls?: any[],
+  model?: string
+): NormalizedChatResponse {
+  let finalText = (content || "").trim();
+  let internalReasoning = (reasoningContent || "").trim();
+
+  // Extract from tags in content if present
+  const tags = ["think", "thinking", "reasoning", "analysis"];
+  for (const tag of tags) {
+    const startTag = `<${tag}>`;
+    const endTag = `</${tag}>`;
+    let startIndex = finalText.toLowerCase().indexOf(startTag);
+    while (startIndex !== -1) {
+      const endIndex = finalText.toLowerCase().indexOf(endTag, startIndex + startTag.length);
+      if (endIndex !== -1) {
+        const block = finalText.slice(startIndex + startTag.length, endIndex).trim();
+        if (block) {
+          internalReasoning += (internalReasoning ? "\n" : "") + block;
+        }
+        finalText = finalText.slice(0, startIndex) + finalText.slice(endIndex + endTag.length);
+      } else {
+        const block = finalText.slice(startIndex + startTag.length).trim();
+        if (block) {
+          internalReasoning += (internalReasoning ? "\n" : "") + block;
+        }
+        finalText = finalText.slice(0, startIndex);
+      }
+      startIndex = finalText.toLowerCase().indexOf(startTag);
+    }
+  }
+
+  // Extract text-headers in content
+  const headers = [
+    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result)\s*:?\s*)/i,
+    /^(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
+  ];
+
+  for (const rx of headers) {
+    const match = finalText.match(rx);
+    if (match) {
+      const block = match[0].trim();
+      if (!internalReasoning.includes(block)) {
+        internalReasoning += (internalReasoning ? "\n" : "") + block;
+      }
+      finalText = finalText.slice(match.index! + match[0].length).trim();
+      break;
+    }
+  }
+
+  // Safety sanitize
+  finalText = stripLeakedThinking(finalText).trim();
+
+  return {
+    finalText,
+    toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+    internalReasoning: internalReasoning || undefined,
+    hasToolCalls: !!(toolCalls && toolCalls.length > 0),
+    modelIdentity: model,
+  };
 }
 
 /**
@@ -212,14 +302,16 @@ export async function sendChatOpenAICompat(
     const j: any = await res.json();
     const msg = j?.choices?.[0]?.message;
     const tool_calls = msg?.tool_calls;
-    let content = (typeof msg?.content === "string" ? msg.content : "").trim();
-    content = stripLeakedThinking(content);
-    if (!content && !tool_calls) {
+    const content = typeof msg?.content === "string" ? msg.content : "";
+    const reasoning = msg?.reasoning_content || msg?.reasoning || "";
+    
+    const normalized = extractNormalizedResponse(content, reasoning, tool_calls, opts.model);
+    if (!normalized.finalText && !normalized.hasToolCalls) {
       const err: any = new Error(`${opts.model} returned an empty response.`);
       err.status = 502;
       throw err;
     }
-    return { content, tool_calls };
+    return normalized;
   }
   throw lastErr || new Error("Request failed.");
 }

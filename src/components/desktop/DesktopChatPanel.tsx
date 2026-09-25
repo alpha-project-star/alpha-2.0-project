@@ -17,7 +17,14 @@ import { OutstandingRemindersAffordance } from "../OutstandingRemindersAffordanc
 
 /** Full HUD chat panel rendered inside the desktop shell right column. */
 export function DesktopChatPanel() {
-  const chat = useAlpha((s) => s.chat);
+  const chat = useAlpha((s) =>
+    s.chat.filter(
+      (m) =>
+        !m.intermediate &&
+        m.role !== "tool" &&
+        (m.role !== "system" || m.error)
+    )
+  );
   const act = useActivity();
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);

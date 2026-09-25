@@ -29,6 +29,7 @@ export interface ChatMessage {
   tool_call_id?: string;
   /** Tools requested by the model in this turn. */
   tool_calls?: any[];
+  intermediate?: boolean;
 }
 
 export type { Task, Goal, Run, Step, Observation, Result } from "./execution";
@@ -242,6 +243,7 @@ export const ChatMessageSchema = z.object({
   error: z.boolean().optional(),
   tool_call_id: z.string().optional(),
   tool_calls: z.array(z.any()).optional(),
+  intermediate: z.boolean().optional(),
 });
 
 export const NoteSchema = z.object({
