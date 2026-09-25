@@ -92,6 +92,7 @@ function SettingsRoute() {
   const [whisperStatus, setWhisperStatus] = useState<string>("");
   const [musicStatus, setMusicStatus] = useState<string>("");
   const [dataStatus, setDataStatus] = useState<string>("");
+  const [permRefresh, setPermRefresh] = useState(0);
   const [tracks, setTracks] = useState<MusicTrackMeta[]>([]);
   const [newModel, setNewModel] = useState("");
   const [online, setOnline] = useState<boolean>(
@@ -663,6 +664,7 @@ function SettingsRoute() {
                       return;
                     }
                     const res = await requestBrowserNotificationPermission();
+                    setPermRefresh(prev => prev + 1);
                     if (res.state === "granted") {
                       setAlarmStatus("✅ Browser notifications enabled. System alerts will fire when reminders become due.");
                       toast.success("Browser notifications enabled");

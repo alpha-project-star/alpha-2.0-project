@@ -86,7 +86,7 @@ export interface CanonicalNotificationStatus {
   inAppDeliveryAvailable: boolean;
 }
 
-export function getCanonicalNotificationStatus(userId?: string): CanonicalNotificationStatus {
+export function getCanonicalNotificationStatus(): CanonicalNotificationStatus {
   const supported = isBrowserNotificationSupported();
   const perm = getBrowserNotificationPermission();
   const browserAvail = supported && perm === 'granted';

@@ -1,6 +1,7 @@
 import { speakWith, prepareUtterance, stopSpeaking } from "./voice";
 import { alertBus } from "./alerts";
 import { alphaStore } from "./alpha-store";
+import { requestBrowserNotificationPermission } from "./browser-notification-channel";
 
 /**
  * Background alarm audio, notification, and alert presentation engine.
@@ -72,15 +73,8 @@ function notify(title: string, body: string) {
 }
 
 export async function requestAlarmPermission(): Promise<boolean> {
-  try {
-    if (typeof Notification === "undefined") return false;
-    if (Notification.permission === "granted") return true;
-    if (Notification.permission === "denied") return false;
-    const p = await Notification.requestPermission();
-    return p === "granted";
-  } catch {
-    return false;
-  }
+  const result = await requestBrowserNotificationPermission();
+  return result.state === "granted";
 }
 
 export function fireAlarm(title: string, notes = "") {
