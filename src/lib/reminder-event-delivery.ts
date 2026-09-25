@@ -88,8 +88,9 @@ export class ReminderEventDelivery {
    * 1. Validates event structure and user isolation.
    * 2. Checks authoritative reminder state in repository to avoid duplicate consumption.
    * 3. Executes consumer function if provided.
-   * 4. Upon consumer success, authoritatively updates notificationState to 'accepted'.
-   * 5. If consumer fails, leaves event unacknowledged for future retry.
+   * 4. Persists delivery record via NotificationAcknowledgementManager.
+   * 5. Releases delivery claim ('notificationState' -> 'pending').
+   * 6. Authoritative acknowledgement state is managed separately by NotificationAcknowledgementManager.
    */
   public async consumeEvent(
     arg1: string | ReminderDueEvent,
@@ -216,8 +217,10 @@ export class ReminderEventDelivery {
             title: event.title,
             dueAt: event.dueAt
           });
-          
-          // Release claim
+        }
+        
+        // Release claim
+        if (this.repo) {
           await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
             notificationState: 'pending',
             updatedAt: Date.now()
