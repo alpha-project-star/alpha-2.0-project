@@ -1,6 +1,4 @@
-import { doc, getDoc, setDoc, updateDoc, collection, getDocs } from 'firebase/firestore';
-import { db } from './firebase';
-import { reminderContextManager, ActiveReminderContext } from './reminder-context';
+import { getStorage, PersistenceError } from './alpha-store';
 import { withCrossContextLock } from './cross-context-lock';
 import { ReminderRepository } from './reminder-repo';
 
@@ -51,123 +49,52 @@ export interface AcknowledgementRepository {
   getAcknowledgementByEventId(userId: string, eventId: string): Promise<AcknowledgementRecord | null>;
 }
 
-export class InMemoryAcknowledgementRepository implements AcknowledgementRepository {
-  private store = new Map<string, AcknowledgementRecord>();
-  public shouldFail = false;
-  public failureError = 'Simulated acknowledgement persistence failure';
+export class LocalAcknowledgementRepository implements AcknowledgementRepository {
+  private static STORAGE_PREFIX = 'alpha.acknowledgements.v1';
 
-  private key(userId: string, ackId: string): string {
-    return `${userId}:${ackId}`;
+  private loadAll(): Map<string, AcknowledgementRecord> {
+    const storage = getStorage();
+    if (!storage) return new Map();
+    const raw = storage.getItem(LocalAcknowledgementRepository.STORAGE_PREFIX);
+    if (!raw || raw.trim() === "") return new Map();
+    try {
+        return new Map(JSON.parse(raw).map((r: AcknowledgementRecord) => [r.ackId, r]));
+    } catch { return new Map(); }
   }
 
   async getAcknowledgement(userId: string, ackId: string): Promise<AcknowledgementRecord | null> {
-    if (this.shouldFail) throw new Error(this.failureError);
-    const item = this.store.get(this.key(userId, ackId));
-    return item ? { ...item } : null;
+    const all = this.loadAll();
+    const record = all.get(ackId);
+    return record && record.userId === userId ? { ...record } : null;
   }
 
   async saveAcknowledgement(userId: string, record: AcknowledgementRecord): Promise<void> {
-    if (this.shouldFail) throw new Error(this.failureError);
-    if (record.userId !== userId) throw new Error('User isolation mismatch on acknowledgement save');
-    this.store.set(this.key(userId, record.ackId), { ...record });
+    await withCrossContextLock(LocalAcknowledgementRepository.STORAGE_PREFIX, async () => {
+        const all = this.loadAll();
+        all.set(record.ackId, record);
+        getStorage()?.setItem(LocalAcknowledgementRepository.STORAGE_PREFIX, JSON.stringify(Array.from(all.values())));
+    });
   }
 
-  async updateAcknowledgement(
-    userId: string,
-    ackId: string,
-    patch: Partial<AcknowledgementRecord>,
-  ): Promise<void> {
-    if (this.shouldFail) throw new Error(this.failureError);
-    const k = this.key(userId, ackId);
-    const item = this.store.get(k);
-    if (!item) throw new Error(`Acknowledgement record not found: ${ackId}`);
-    if (item.userId !== userId) throw new Error('User isolation mismatch on acknowledgement update');
-    this.store.set(k, { ...item, ...patch, updatedAt: Date.now() });
-  }
-
-  async listAcknowledgements(userId: string): Promise<AcknowledgementRecord[]> {
-    if (this.shouldFail) throw new Error(this.failureError);
-    const prefix = `${userId}:`;
-    const results: AcknowledgementRecord[] = [];
-    for (const [k, v] of this.store.entries()) {
-      if (k.startsWith(prefix)) {
-        results.push({ ...v });
-      }
-    }
-    return results;
-  }
-
-  async getAcknowledgementByEventId(
-    userId: string,
-    eventId: string,
-  ): Promise<AcknowledgementRecord | null> {
-    if (this.shouldFail) throw new Error(this.failureError);
-    const list = await this.listAcknowledgements(userId);
-    const found = list.find((a) => a.eventId === eventId);
-    return found ? { ...found } : null;
-  }
-
-  findAcknowledgementGlobally(id: string): AcknowledgementRecord | null {
-    if (this.shouldFail) throw new Error(this.failureError);
-    for (const v of this.store.values()) {
-      if (v.ackId === id || v.eventId === id || v.reminderId === id) {
-        return { ...v };
-      }
-    }
-    return null;
-  }
-
-  clear(): void {
-    this.store.clear();
-  }
-}
-
-export class FirestoreAcknowledgementRepository implements AcknowledgementRepository {
-  private getDb() {
-    return db;
-  }
-
-  async getAcknowledgement(userId: string, ackId: string): Promise<AcknowledgementRecord | null> {
-    const db = this.getDb();
-    if (!db) return null;
-    const ref = doc(db, `users/${userId}/acknowledgements/${ackId}`);
-    const snap = await getDoc(ref);
-    if (!snap.exists()) return null;
-    return snap.data() as AcknowledgementRecord;
-  }
-
-  async saveAcknowledgement(userId: string, record: AcknowledgementRecord): Promise<void> {
-    const db = this.getDb();
-    if (!db) return;
-    const ref = doc(db, `users/${userId}/acknowledgements/${record.ackId}`);
-    await setDoc(ref, record);
-  }
-
-  async updateAcknowledgement(
-    userId: string,
-    ackId: string,
-    patch: Partial<AcknowledgementRecord>,
-  ): Promise<void> {
-    const db = this.getDb();
-    if (!db) return;
-    const ref = doc(db, `users/${userId}/acknowledgements/${ackId}`);
-    await updateDoc(ref, { ...patch, updatedAt: Date.now() });
+  async updateAcknowledgement(userId: string, ackId: string, patch: Partial<AcknowledgementRecord>): Promise<void> {
+    await withCrossContextLock(LocalAcknowledgementRepository.STORAGE_PREFIX, async () => {
+        const all = this.loadAll();
+        const record = all.get(ackId);
+        if (!record || record.userId !== userId) throw new Error('Acknowledgement record not found');
+        const updated = { ...record, ...patch, updatedAt: Date.now() };
+        all.set(ackId, updated);
+        getStorage()?.setItem(LocalAcknowledgementRepository.STORAGE_PREFIX, JSON.stringify(Array.from(all.values())));
+    });
   }
 
   async listAcknowledgements(userId: string): Promise<AcknowledgementRecord[]> {
-    const db = this.getDb();
-    if (!db) return [];
-    const col = collection(db, `users/${userId}/acknowledgements`);
-    const snap = await getDocs(col);
-    return snap.docs.map((d) => d.data() as AcknowledgementRecord);
+    const all = this.loadAll();
+    return Array.from(all.values()).filter(r => r.userId === userId);
   }
 
-  async getAcknowledgementByEventId(
-    userId: string,
-    eventId: string,
-  ): Promise<AcknowledgementRecord | null> {
+  async getAcknowledgementByEventId(userId: string, eventId: string): Promise<AcknowledgementRecord | null> {
     const list = await this.listAcknowledgements(userId);
-    return list.find((a) => a.eventId === eventId) || null;
+    return list.find(a => a.eventId === eventId) || null;
   }
 }
 
@@ -873,5 +800,5 @@ export class NotificationAcknowledgementManager {
 }
 
 export const notificationAcknowledgementManager = new NotificationAcknowledgementManager({
-  repo: new FirestoreAcknowledgementRepository()
+  repo: new LocalAcknowledgementRepository()
 });

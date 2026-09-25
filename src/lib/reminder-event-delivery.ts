@@ -4,6 +4,7 @@ import { ReminderDueEvent, validateReminderDueEvent } from './reminder-events';
 import { ReminderRepository, FirestoreReminder } from './reminder-repo';
 import { temporal } from './temporal';
 import { withCrossContextLock } from './cross-context-lock';
+import { notificationAcknowledgementManager } from './notification-acknowledgement';
 
 export type ConsumptionStatus = 
   | 'consumed'
@@ -208,6 +209,13 @@ export class ReminderEventDelivery {
         // EXECUTE CONSUMER ACTION
         if (consumerFn) {
           await consumerFn(event);
+          await notificationAcknowledgementManager.recordDelivery({
+            authenticatedUserId,
+            eventId: event.eventId,
+            reminderId: event.reminderId,
+            title: event.title,
+            dueAt: event.dueAt
+          });
         }
 
         // FINALIZE PERSISTENT NOTIFICATION STATE
