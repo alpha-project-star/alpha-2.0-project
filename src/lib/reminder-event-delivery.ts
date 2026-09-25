@@ -177,15 +177,6 @@ export class ReminderEventDelivery {
             };
           }
 
-          // Already-consumed check (notificationState === 'accepted')
-          if (reminder.notificationState === 'accepted') {
-            return {
-              success: true,
-              status: 'already_consumed',
-              eventId: event.eventId
-            };
-          }
-
           // Check if actively claimed by another context within lease
           if (reminder.notificationState === 'claimed') {
             const claimTime = reminder.updatedAt || 0;

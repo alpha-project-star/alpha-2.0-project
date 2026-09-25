@@ -16,6 +16,10 @@ import {
   NotificationDeliveryManager,
   type ProactiveResponseRecord,
 } from './notification-delivery';
+import {
+  isBrowserNotificationSupported,
+  getBrowserNotificationPermission,
+} from './browser-notification-channel';
 
 function extractEventField(raw: unknown, field: string): string {
   if (raw && typeof raw === 'object' && raw !== null && field in raw) {
@@ -347,6 +351,20 @@ export class ProactiveTrigger {
           record,
           channel: 'in_app',
         });
+
+        if (deliveryResult.success) {
+          if (isBrowserNotificationSupported() && getBrowserNotificationPermission() === 'granted') {
+            try {
+              await deliveryMgr.deliverProactiveResponse({
+                authenticatedUserId: authUser,
+                record,
+                channel: 'browser',
+              });
+            } catch (browserErr) {
+              console.error('Browser notification delivery failed:', browserErr);
+            }
+          }
+        }
 
         if (!deliveryResult.success) {
           this.inFlightEvents.delete(event.eventId);

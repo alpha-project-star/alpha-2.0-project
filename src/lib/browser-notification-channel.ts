@@ -340,7 +340,7 @@ export class BrowserNotificationChannelProvider implements NotificationChannelPr
           return {
             success: false,
             channel: this.id,
-            status: 'rejected',
+            status: 'temporary_failure',
             deliveryId,
             eventId: validated.eventId,
             error: {
