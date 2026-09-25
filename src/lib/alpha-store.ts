@@ -603,14 +603,16 @@ if (typeof window !== "undefined") {
   });
 }
 
-const serverSnap: AlphaState = state;
+const getSnapshot = () => state;
+const getServerSnapshot = () => serverSnap;
 
 export function useAlpha<T>(selector: (s: AlphaState) => T): T {
-  return useSyncExternalStore(
+  const fullState = useSyncExternalStore(
     subscribe,
-    () => selector(state),
-    () => selector(serverSnap),
+    getSnapshot,
+    getServerSnapshot,
   );
+  return selector(fullState);
 }
 
 function reloadState() {

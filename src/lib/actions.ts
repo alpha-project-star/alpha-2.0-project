@@ -76,11 +76,6 @@ export interface ActionResult {
   structuredResult?: any;
 }
 
-export interface ExecuteActionTagsOptions {
-  userId?: string | null;
-  repo?: ReminderRepository;
-}
-
 type Kind = "note" | "memory" | "task" | "goal" | "bill" | "reminder";
 
 const KIND_PLURAL: Record<Kind, string> = {

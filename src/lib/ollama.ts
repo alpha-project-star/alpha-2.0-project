@@ -19,7 +19,10 @@ function toOllamaMessages(history: ChatMessage[]) {
     .filter((m) => m.role !== "system")
     .slice(-40)
     .map((m) => {
-      const msg: any = { role: m.role === "user" ? "user" : "assistant", content: m.text || "" };
+      const role = m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant";
+      const msg: any = { role, content: m.text || "" };
+      if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+      if (m.tool_calls) msg.tool_calls = m.tool_calls;
       if (m.images?.length) {
         const imgs = m.images
           .map(splitDataUrl)

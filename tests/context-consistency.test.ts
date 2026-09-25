@@ -3,6 +3,7 @@ import { alphaStore } from "../src/lib/alpha-store";
 import type { ChatMessage } from "../src/lib/alpha-store";
 import { sendChat } from "../src/lib/alpha.functions";
 import * as openaiCompat from "../src/lib/openai-compat";
+import * as toolRegistryModule from "../src/lib/tool-registry";
 
 describe("Context & State Consistency (alpha-store history boundaries)", () => {
   beforeEach(async () => {
@@ -50,6 +51,16 @@ describe("Context & State Consistency (alpha-store history boundaries)", () => {
     let callCount = 0;
     let capturedSecondRoundHistory: any[] = [];
 
+    const mockToolExecutionResult = {
+      success: true,
+      count: 1,
+      reminders: [{ id: "mock_rem_1", title: "Deterministic Test Reminder" }],
+    };
+
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockResolvedValue(mockToolExecutionResult),
+    } as any);
+
     vi.spyOn(openaiCompat, "sendChatOpenAICompat").mockImplementation(async (history, _sys, _opts) => {
       callCount++;
       if (callCount === 1) {
@@ -78,15 +89,24 @@ describe("Context & State Consistency (alpha-store history boundaries)", () => {
     expect(reply).toBe("Here are your reminders.");
     expect(callCount).toBe(2);
 
-    const hasAssistantToolCall = capturedSecondRoundHistory.some(
+    // 1. The assistant "model" message containing the exact tool call ID "call_abc".
+    const assistantMsg = capturedSecondRoundHistory.find(
       (m) => m.role === "model" && m.tool_calls?.some((t: any) => t.id === "call_abc")
     );
-    const hasToolResult = capturedSecondRoundHistory.some(
+    expect(assistantMsg).toBeDefined();
+    expect(assistantMsg?.tool_calls?.[0]?.id).toBe("call_abc");
+
+    // 2. The "tool" message containing "tool_call_id === 'call_abc'".
+    const toolMsg = capturedSecondRoundHistory.find(
       (m) => m.role === "tool" && m.tool_call_id === "call_abc"
     );
+    expect(toolMsg).toBeDefined();
+    expect(toolMsg?.tool_call_id).toBe("call_abc");
 
-    expect(hasAssistantToolCall).toBe(true);
-    expect(hasToolResult).toBe(true);
+    // 3. The mocked tool execution result is represented in that tool message.
+    expect(toolMsg?.text).toBeDefined();
+    const parsedToolResult = JSON.parse(toolMsg!.text);
+    expect(parsedToolResult).toEqual(mockToolExecutionResult);
   });
 
   it("C. History-window calculation is not polluted by stale internal tool messages", async () => {
