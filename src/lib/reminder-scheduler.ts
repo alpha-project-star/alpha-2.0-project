@@ -181,8 +181,9 @@ export class ReminderScheduler {
       // 2. Must be active (not completed or cancelled)
       if (r.reminderState !== 'active') return false;
 
-      // 3. Must not be already claimed or accepted (processed)
-      if (r.notificationState && r.notificationState !== 'pending') return false;
+      // 3. Must not be already acknowledged (processed)
+      // (This is now handled by checking notificationAcknowledgementManager)
+      // if (r.notificationState && r.notificationState !== 'pending') return false;
 
       // 4. Must have valid timestamp
       if (typeof r.dueAt !== 'number' || isNaN(r.dueAt) || r.dueAt <= 0) return false;
@@ -213,17 +214,21 @@ export class ReminderScheduler {
       for (const reminder of reminders) {
         if (
           reminder.reminderState === 'active' &&
-          reminder.notificationState === 'accepted' &&
           reminder.nextRepeatAt &&
           now >= reminder.nextRepeatAt
         ) {
-          // Schedule repetition
-          await this.repo.updateReminder(activeUser, reminder.id, {
-            notificationState: 'pending',
-            nextRepeatAt: undefined, // Clear, to be set again by consumer if still unacknowledged
-            updatedAt: now,
-          });
-          dueReminders.push(reminder);
+          const ackStatus = await notificationAcknowledgementManager.getAcknowledgementStatus(activeUser, generateReminderEventId(reminder.id, reminder.dueAt));
+          if (ackStatus !== 'acknowledged') {
+            // Schedule repetition
+            dueReminders.push(reminder);
+          } else {
+             // Already acknowledged, clear repeat fields
+             await this.repo.updateReminder(activeUser, reminder.id, {
+                nextRepeatAt: undefined,
+                repetitionCount: 0,
+                updatedAt: now
+             });
+          }
         }
       }
 
@@ -254,6 +259,12 @@ export class ReminderScheduler {
               title: reminder.title,
             };
 
+            const ackStatus = await notificationAcknowledgementManager.getAcknowledgementStatus(activeUser, event.eventId);
+            if (ackStatus === 'acknowledged') {
+                this.processingIds.delete(reminder.id);
+                return;
+            }
+
             const consumerFn = async (evt: ReminderDueEvent): Promise<void> => {
               if (this.options.onReminderDue) {
                 await this.options.onReminderDue(evt);
@@ -269,7 +280,7 @@ export class ReminderScheduler {
                 fireAlarm(evt.title, reminder.notes || "");
               }
 
-              // Set next repeat after successful delivery
+              // Schedule next repeat
               await this.repo!.updateReminder(activeUser, reminder.id, {
                 nextRepeatAt: Date.now() + 10000, // 10 seconds
                 repetitionCount: (reminder.repetitionCount || 0) + 1,

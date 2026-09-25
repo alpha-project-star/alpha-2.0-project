@@ -872,4 +872,6 @@ export class NotificationAcknowledgementManager {
   }
 }
 
-export const notificationAcknowledgementManager = new NotificationAcknowledgementManager();
+export const notificationAcknowledgementManager = new NotificationAcknowledgementManager({
+  repo: new FirestoreAcknowledgementRepository()
+});

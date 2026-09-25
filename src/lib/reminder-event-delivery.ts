@@ -211,12 +211,12 @@ export class ReminderEventDelivery {
         }
 
         // FINALIZE PERSISTENT NOTIFICATION STATE
-        if (this.repo) {
-          await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
-            notificationState: 'accepted',
-            updatedAt: Date.now()
-          });
-        }
+        // if (this.repo) {
+        //   await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+        //     notificationState: 'accepted',
+        //     updatedAt: Date.now()
+        //   });
+        // }
 
         return {
           success: true,
