@@ -347,10 +347,16 @@ export class NotificationAcknowledgementManager {
   private reminderRepo: ReminderRepository | null = null;
 
   public setReminderRepository(repo: ReminderRepository) {
+    this.repoAlignCount++; // track number of manual alignments for observability
     this.reminderRepo = repo;
   }
 
+  private repoAlignCount = 0;
+
   public getReminderRepository(): ReminderRepository | null {
+    if (!this.reminderRepo) {
+      this.reminderRepo = reminderRepository;
+    }
     return this.reminderRepo;
   }
 
@@ -619,9 +625,10 @@ export class NotificationAcknowledgementManager {
         };
 
         await this.repo.saveAcknowledgement(userId, updatedRecord);
-        if (this.reminderRepo) {
+        const activeReminderRepo = this.getReminderRepository();
+        if (activeReminderRepo) {
           try {
-            await this.reminderRepo.updateReminder(userId, updatedRecord.reminderId, {
+            await activeReminderRepo.updateReminder(userId, updatedRecord.reminderId, {
               reminderState: 'acknowledged',
               nextRepeatAt: undefined,
               repetitionCount: 0,

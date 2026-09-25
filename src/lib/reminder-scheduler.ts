@@ -62,18 +62,20 @@ export class ReminderScheduler {
       if (repo) this.repo = repo;
       if (options.eventDelivery) this.eventDelivery = options.eventDelivery;
     }
+
+    // Force full wiring alignment at construction time to avoid un-initialized runtime gaps
+    if (this.repo) {
+      this.getEventDelivery().setRepo(this.repo);
+      notificationAcknowledgementManager.setReminderRepository(this.repo);
+    }
   }
 
   public setUser(userId?: string, repo?: ReminderRepository): void {
     this.userId = userId;
-    if (repo) {
-      this.repo = repo;
-      this.getEventDelivery().setRepo(repo);
-      notificationAcknowledgementManager.setReminderRepository(repo);
-    } else if (this.repo) {
-      this.getEventDelivery().setRepo(this.repo);
-      notificationAcknowledgementManager.setReminderRepository(this.repo);
-    }
+    const activeRepo = repo || this.repo || reminderRepository;
+    this.repo = activeRepo;
+    this.getEventDelivery().setRepo(activeRepo);
+    notificationAcknowledgementManager.setReminderRepository(activeRepo);
   }
 
   public getEventDelivery(): ReminderEventDelivery {
