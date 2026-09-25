@@ -1,11 +1,16 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { alphaStore } from "../src/lib/alpha-store";
 import type { ChatMessage } from "../src/lib/alpha-store";
+import { sendChat } from "../src/lib/alpha.functions";
+import * as openaiCompat from "../src/lib/openai-compat";
 
 describe("Context & State Consistency (alpha-store history boundaries)", () => {
   beforeEach(async () => {
     const storeMap = new Map<string, string>();
+    vi.stubGlobal("navigator", { onLine: true });
     (globalThis as any).window = {
+      navigator: { onLine: true },
+      location: { origin: "https://alpha.local" },
       localStorage: {
         getItem: (key: string) => storeMap.get(key) || null,
         setItem: (key: string, val: string) => storeMap.set(key, val),
@@ -40,20 +45,48 @@ describe("Context & State Consistency (alpha-store history boundaries)", () => {
     expect(requestHistory.some((m) => m.id === "r1")).toBe(false);
   });
 
-  it("B. Active tool-loop history remains available within the same request execution", () => {
-    // During an active request, runChat builds a local currentHistory array including intermediate tool steps
-    const initialHistory = alphaStore.getCompleteHistory();
-    const currentHistory = [...initialHistory];
+  it("B. Active tool-loop history remains available within the same request execution", async () => {
+    await alphaStore.setSettings({ openRouterKey: "mock-key" });
+    let callCount = 0;
+    let capturedSecondRoundHistory: any[] = [];
 
-    const activeToolCall: ChatMessage = { id: "act_1", role: "model", tool_calls: [{ id: "c2", name: "createReminder", arguments: {} }], intermediate: true, ts: Date.now() };
-    const activeToolResult: ChatMessage = { id: "act_2", role: "tool", tool_call_id: "c2", name: "createReminder", text: "success", intermediate: true, ts: Date.now() + 1 };
+    vi.spyOn(openaiCompat, "sendChatOpenAICompat").mockImplementation(async (history, _sys, _opts) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          finalText: "",
+          toolCalls: [
+            {
+              id: "call_abc",
+              type: "function",
+              function: {
+                name: "listReminders",
+                arguments: "{}",
+              },
+            },
+          ],
+        };
+      } else {
+        capturedSecondRoundHistory = [...history];
+        return {
+          finalText: "Here are your reminders.",
+        };
+      }
+    });
 
-    currentHistory.push(activeToolCall);
-    currentHistory.push(activeToolResult);
+    const reply = await sendChat([]);
+    expect(reply).toBe("Here are your reminders.");
+    expect(callCount).toBe(2);
 
-    // Assert that the second model round in the active loop receives the tool call and result
-    expect(currentHistory).toContain(activeToolCall);
-    expect(currentHistory).toContain(activeToolResult);
+    const hasAssistantToolCall = capturedSecondRoundHistory.some(
+      (m) => m.role === "model" && m.tool_calls?.some((t: any) => t.id === "call_abc")
+    );
+    const hasToolResult = capturedSecondRoundHistory.some(
+      (m) => m.role === "tool" && m.tool_call_id === "call_abc"
+    );
+
+    expect(hasAssistantToolCall).toBe(true);
+    expect(hasToolResult).toBe(true);
   });
 
   it("C. History-window calculation is not polluted by stale internal tool messages", async () => {
