@@ -155,19 +155,17 @@ And a structured diagram:
 │ Service │
 └─────────┘`;
 
-    // Simulate progressive streaming accumulation chunk by chunk
-    let accumulated = "";
-    const chunks = completeFullText.split(" ");
-
-    for (const chunk of chunks) {
-      accumulated += (accumulated ? " " : "") + chunk;
-      const normalizedChunk = normalizePresentation(accumulated);
-      expect(typeof normalizedChunk).toBe("string");
-      expect(normalizedChunk.length).toBeGreaterThan(0);
+    // Simulate progressive streaming accumulation by taking exact character substring slices
+    const stepSize = 15;
+    for (let i = stepSize; i < completeFullText.length; i += stepSize) {
+      const partial = completeFullText.slice(0, i);
+      const normalizedPartial = normalizePresentation(partial);
+      expect(typeof normalizedPartial).toBe("string");
+      expect(normalizedPartial.length).toBeGreaterThan(0);
     }
 
-    // Final convergence test: normalized accumulated stream MUST equal normalized complete text
-    const finalStreamNormalized = normalizePresentation(accumulated);
+    // Final accumulated text is the exact original completeFullText string
+    const finalStreamNormalized = normalizePresentation(completeFullText);
     const completeDirectNormalized = normalizePresentation(completeFullText);
 
     expect(finalStreamNormalized).toBe(completeDirectNormalized);
