@@ -217,6 +217,14 @@ export class ReminderEventDelivery {
             title: event.title,
             dueAt: event.dueAt
           });
+          
+          const reminder = await this.repo.getReminder(authenticatedUserId, event.reminderId);
+          if (reminder) {
+              await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+                nextRepeatAt: Date.now() + 10000,
+                repetitionCount: (reminder.repetitionCount || 0) + 1,
+              });
+          }
         }
         
         // Release claim

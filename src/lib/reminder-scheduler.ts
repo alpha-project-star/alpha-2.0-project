@@ -275,12 +275,6 @@ export class ReminderScheduler {
               } else {
                 fireAlarm(evt.title, reminder.notes || "");
               }
-
-              // Schedule next repeat
-              await this.repo!.updateReminder(activeUser, reminder.id, {
-                nextRepeatAt: Date.now() + 10000, // 10 seconds
-                repetitionCount: (reminder.repetitionCount || 0) + 1,
-              });
             };
 
             const delivery = this.getEventDelivery();
