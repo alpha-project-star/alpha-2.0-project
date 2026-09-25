@@ -216,6 +216,12 @@ export class ReminderEventDelivery {
             title: event.title,
             dueAt: event.dueAt
           });
+          
+          // Release claim
+          await this.repo.updateReminder(authenticatedUserId, event.reminderId, {
+            notificationState: 'pending',
+            updatedAt: Date.now()
+          });
         }
 
         // FINALIZE PERSISTENT NOTIFICATION STATE
