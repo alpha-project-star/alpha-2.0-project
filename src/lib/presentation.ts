@@ -161,7 +161,7 @@ function normalizeCallouts(text: string): string {
     const line = lines[i];
 
     // Match blockquotes with informal notice headers e.g. > **Note:** or > Note:
-    const bqMatch = line.match(/^>\s*(?:\*\*)?(Note|Tip|Important|Warning|Error|Caution|Success|Alert)\b(?:\*\*)?:\s*(.*)$/i);
+    const bqMatch = line.match(/^>\s*(?:\*\*)?(Note|Notice|Tip|Important|Warning|Error|Caution|Success|Alert)\b(?:\*\*)?:\s*(.*)$/i);
     if (bqMatch) {
       const type = mapCalloutType(bqMatch[1]);
       const content = bqMatch[2].replace(/^\*\*\s*/, "").trim();
@@ -173,7 +173,7 @@ function normalizeCallouts(text: string): string {
     }
 
     // Match standalone bold headers e.g. **Note:** ... or **Warning:** ... at line start
-    const boldMatch = line.match(/^(?:\*\*)?(Note|Tip|Important|Warning|Error|Caution|Success|Alert)\b(?:\*\*)?:\s*(.*)$/i);
+    const boldMatch = line.match(/^(?:\*\*)?(Note|Notice|Tip|Important|Warning|Error|Caution|Success|Alert)\b(?:\*\*)?:\s*(.*)$/i);
     const isIsolatedNotice = boldMatch && (i === 0 || lines[i - 1].trim() === "");
     if (isIsolatedNotice && boldMatch) {
       const type = mapCalloutType(boldMatch[1]);

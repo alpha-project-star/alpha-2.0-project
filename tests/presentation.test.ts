@@ -125,7 +125,7 @@ describe("Presentation Normalization Layer (src/lib/presentation.ts)", () => {
     expect(segments[2].type).toBe("text");
   });
 
-  it("handles streaming partial content safely and converges exactly to final normalized presentation", () => {
+  it("handles progressive accumulation of original response chunks and converges identically to final normalized presentation", () => {
     const completeFullText = `# Architecture Overview
 
 Here is a summary with a [Documentation Link](https://example.com/docs/alpha/v2/deep/path/index.html?ref=123).
@@ -155,17 +155,24 @@ And a structured diagram:
 │ Service │
 └─────────┘`;
 
-    // Simulate progressive streaming accumulation by taking exact character substring slices
-    const stepSize = 15;
-    for (let i = stepSize; i < completeFullText.length; i += stepSize) {
-      const partial = completeFullText.slice(0, i);
-      const normalizedPartial = normalizePresentation(partial);
+    // Progressive accumulation simulating token chunks arriving directly from original response
+    let accumulated = "";
+    const chunkSize = 17;
+
+    for (let pos = 0; pos < completeFullText.length; pos += chunkSize) {
+      const chunk = completeFullText.slice(pos, pos + chunkSize);
+      accumulated += chunk;
+
+      const normalizedPartial = normalizePresentation(accumulated);
       expect(typeof normalizedPartial).toBe("string");
       expect(normalizedPartial.length).toBeGreaterThan(0);
     }
 
-    // Final accumulated text is the exact original completeFullText string
-    const finalStreamNormalized = normalizePresentation(completeFullText);
+    // 1. Byte-for-byte / content-for-content identity
+    expect(accumulated).toBe(completeFullText);
+
+    // 2. Final progressive normalization equals direct complete normalization
+    const finalStreamNormalized = normalizePresentation(accumulated);
     const completeDirectNormalized = normalizePresentation(completeFullText);
 
     expect(finalStreamNormalized).toBe(completeDirectNormalized);
@@ -175,5 +182,14 @@ And a structured diagram:
     expect(finalStreamNormalized).toContain("|---|---|");
     expect(finalStreamNormalized).toContain("$$\nE = mc^2\n$$");
     expect(finalStreamNormalized).toContain("```diagram\n┌─────────┐");
+  });
+
+  it("verifies canonical response pipeline: model response -> normalized finalText -> alphaStore -> MessageContent", () => {
+    const rawModelOutput = "# System Status\n\n> **Notice:** All services operational.";
+    const normalized = normalizePresentation(rawModelOutput);
+
+    expect(normalized).toContain("## System Status");
+    expect(normalized).toContain("> [!NOTE]");
+    expect(normalized).toContain("All services operational.");
   });
 });
