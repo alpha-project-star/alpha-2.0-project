@@ -239,7 +239,8 @@ export const ChatMessageSchema = z.object({
   role: z.enum(["user", "model", "system", "tool"]),
   origin: z.enum(["user", "model", "system", "proactive"]).optional(),
   proactiveEventId: z.string().optional(),
-  text: z.string(),
+  text: z.string().optional().default(""),
+  name: z.string().optional(),
   images: z.array(z.string()).optional(),
   ts: z.number(),
   error: z.boolean().optional(),
@@ -452,6 +453,7 @@ function parseLS<T>(key: string, schema: z.ZodType<T>, fallback: T): T {
   }
   const result = schema.safeParse(parsed);
   if (!result.success) {
+    console.log("PARSELS FAIL for", key, result.error);
     if (typeof parsed === "object" && parsed !== null) {
       const merged = { ...(fallback as any), ...parsed };
       const retry = schema.safeParse(merged);
@@ -661,6 +663,10 @@ export const alphaStore = {
     });
   },
   getCompleteHistory(): ChatMessage[] {
+    reloadState();
+    return [...(state.chat || [])];
+  },
+  getDiagnosticHistory(): ChatMessage[] {
     reloadState();
     const visible = state.chat || [];
     const internal = state.internalHistory || [];
