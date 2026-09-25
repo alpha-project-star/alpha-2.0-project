@@ -241,11 +241,7 @@ export class ReminderScheduler {
           await withCrossContextLock(lockName, async () => {
             // Concurrency & Idempotency check:
             const fresh = await this.repo!.getReminder(activeUser, reminder.id);
-            if (
-              !fresh ||
-              fresh.reminderState !== 'active' ||
-              (fresh.notificationState && fresh.notificationState !== 'pending')
-            ) {
+            if (!fresh || fresh.reminderState !== 'active') {
               return;
             }
 
