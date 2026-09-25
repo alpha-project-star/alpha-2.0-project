@@ -2,6 +2,7 @@ import { doc, getDoc, setDoc, updateDoc, collection, getDocs } from 'firebase/fi
 import { db } from './firebase';
 import { reminderContextManager, ActiveReminderContext } from './reminder-context';
 import { withCrossContextLock } from './cross-context-lock';
+import { ReminderRepository } from './reminder-repo';
 
 export type AcknowledgementStatus = 'pending' | 'delivered' | 'acknowledged' | 'failed';
 
@@ -383,6 +384,12 @@ export class NotificationAcknowledgementManager {
     this.repo = options.repo || new InMemoryAcknowledgementRepository();
   }
 
+  private reminderRepo: ReminderRepository | null = null;
+
+  public setReminderRepository(repo: ReminderRepository) {
+    this.reminderRepo = repo;
+  }
+
   public subscribe(listener: (record: AcknowledgementRecord) => void): () => void {
     this.listeners.add(listener);
     return () => {
@@ -648,6 +655,9 @@ export class NotificationAcknowledgementManager {
         };
 
         await this.repo.saveAcknowledgement(userId, updatedRecord);
+        if (this.reminderRepo) {
+          await this.reminderRepo.updateReminder(userId, updatedRecord.reminderId, { reminderState: 'acknowledged' });
+        }
         this.notify(updatedRecord);
 
         const conversationalReply = generateConversationalAcknowledgementReply(

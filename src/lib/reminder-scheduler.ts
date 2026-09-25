@@ -8,6 +8,7 @@ import { ReminderEventDelivery, reminderEventDelivery } from './reminder-event-d
 import { fireAlarm } from './alarm-engine';
 import { withCrossContextLock } from './cross-context-lock';
 import { handleReminderDue } from './proactive-trigger';
+import { notificationAcknowledgementManager } from './notification-acknowledgement';
 
 export { InMemoryReminderRepository };
 export type { ReminderDueEvent };
@@ -68,6 +69,7 @@ export class ReminderScheduler {
       if (this.eventDelivery) {
         this.eventDelivery.setRepo(repo);
       }
+      notificationAcknowledgementManager.setReminderRepository(repo);
     }
   }
 
@@ -135,6 +137,16 @@ export class ReminderScheduler {
     return recoveredCount;
   }
 
+  public async markPassedReminders(userId: string, now: number): Promise<void> {
+    if (!this.repo) return;
+    const reminders = await this.repo.listReminders(userId);
+    for (const r of reminders) {
+      if (r.reminderState === 'active' && r.dueAt < now) {
+         await this.repo.updateReminder(userId, r.id, { reminderState: 'passed', updatedAt: now });
+      }
+    }
+  }
+
   /**
    * Evaluates reminders for a given user and current time deterministically.
    * Returns reminders that are due and eligible for firing.
@@ -193,6 +205,7 @@ export class ReminderScheduler {
     const events: ReminderDueEvent[] = [];
 
     try {
+      // await this.markPassedReminders(activeUser, now);
       const reminders = await this.repo.listReminders(activeUser);
       const dueReminders = await this.evaluateDueReminders(reminders, now, activeUser);
 

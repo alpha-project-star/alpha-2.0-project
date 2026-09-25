@@ -3,9 +3,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import {
   onAuthStateChanged,
   signInAnonymously,
-  signInWithPopup,
   signOut,
-  GoogleAuthProvider,
   User,
 } from "firebase/auth";
 import { auth } from "./firebase";
@@ -22,16 +20,6 @@ const AuthContext = createContext<AuthState>({ status: 'loading' });
 
 let bootstrapPromise: Promise<User | null> | null = null;
 let bootstrapAttempted = false;
-
-/**
- * Initiates Google sign-in popup flow.
- */
-export async function signInWithGoogle(): Promise<User> {
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: 'select_account' });
-  const cred = await signInWithPopup(auth, provider);
-  return cred.user;
-}
 
 /**
  * Signs out the current Firebase user.
@@ -105,15 +93,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               if (isMounted) {
                 setStoreUser(null);
                 reminderContextManager.clear();
-                // Graceful fallback to unauthenticated local mode if anonymous sign-in is disabled in Firebase console
-                if (
-                  err?.code === 'auth/operation-not-allowed' ||
-                  err?.code === 'auth/admin-restricted-operation'
-                ) {
-                  setState({ status: 'unauthenticated' });
-                } else {
-                  setState({ status: 'unauthenticated' });
-                }
+                setState({ status: 'unauthenticated' });
               }
             } finally {
               bootstrapPromise = null;

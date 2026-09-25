@@ -106,9 +106,11 @@ export class RequestActionLifecycle {
     args?: any;
   }): CanonicalActionRecord {
     const id = `op_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const keys = params.logicalKeys && params.logicalKeys.length > 0
-      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
-      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : [];
+    const incomingKeys = [
+      ...(params.logicalKeys || []),
+      ...(params.logicalKey ? [params.logicalKey] : []),
+    ].map(k => k.toLowerCase().trim()).filter(Boolean);
+    const keys = Array.from(new Set(incomingKeys));
     const op: CanonicalActionRecord = {
       id,
       name: params.name,
@@ -136,9 +138,17 @@ export class RequestActionLifecycle {
     executionKey?: string | null;
   }): void {
     let op = params.opId ? this.operations.find((o) => o.id === params.opId) : null;
-    const keys = params.logicalKeys && params.logicalKeys.length > 0
-      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
-      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : (op?.logicalKeys || (op?.logicalKey ? [op.logicalKey] : []));
+    const incoming = [
+      ...(params.logicalKeys || []),
+      ...(params.logicalKey ? [params.logicalKey] : []),
+    ].map(k => k.toLowerCase().trim()).filter(Boolean);
+    const existing = [
+      ...(op?.logicalKeys || []),
+      ...(op?.logicalKey ? [op.logicalKey] : []),
+    ].map(k => k.toLowerCase().trim()).filter(Boolean);
+    const keys = incoming.length > 0
+      ? Array.from(new Set([...incoming, ...existing]))
+      : Array.from(new Set(existing));
 
     if (!op) {
       op = {
@@ -189,9 +199,17 @@ export class RequestActionLifecycle {
     executionKey?: string | null;
   }): void {
     let op = params.opId ? this.operations.find((o) => o.id === params.opId) : null;
-    const keys = params.logicalKeys && params.logicalKeys.length > 0
-      ? params.logicalKeys.map(k => k.toLowerCase().trim()).filter(Boolean)
-      : params.logicalKey ? [params.logicalKey.toLowerCase().trim()] : (op?.logicalKeys || (op?.logicalKey ? [op.logicalKey] : []));
+    const incoming = [
+      ...(params.logicalKeys || []),
+      ...(params.logicalKey ? [params.logicalKey] : []),
+    ].map(k => k.toLowerCase().trim()).filter(Boolean);
+    const existing = [
+      ...(op?.logicalKeys || []),
+      ...(op?.logicalKey ? [op.logicalKey] : []),
+    ].map(k => k.toLowerCase().trim()).filter(Boolean);
+    const keys = incoming.length > 0
+      ? Array.from(new Set([...incoming, ...existing]))
+      : Array.from(new Set(existing));
 
     if (!op) {
       op = {

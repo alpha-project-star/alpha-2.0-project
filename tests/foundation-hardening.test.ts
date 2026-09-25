@@ -71,7 +71,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
       expect(retrieved?.reminderState).toBe("active");
 
       // Verify it's persisted in local storage
-      const persistedRaw = storeMap.get("alpha.reminders.v1.local-user");
+      const persistedRaw = storeMap.get("alpha.reminders.v1");
       expect(persistedRaw).toBeDefined();
       expect(persistedRaw).toContain("Buy groceries");
 
@@ -101,7 +101,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("valid canonical reminder loads successfully", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -121,30 +121,10 @@ describe("Foundation Hardening - Workstreams Verification", () => {
       expect(reminders[0].id).toBe("rem-1");
     });
 
-    it("missing userId fails with PersistenceError", async () => {
-      const repo = new LocalReminderRepository();
-      storeMap.set(
-        "alpha.reminders.v1.local-user",
-        JSON.stringify([
-          {
-            id: "rem-1",
-            title: "Doctor",
-            notes: "Checkup",
-            dueAt: 1700000000000,
-            createdAt: 1690000000000,
-            updatedAt: 1690000000000,
-            reminderState: "active",
-            notificationState: "pending",
-          },
-        ])
-      );
-      await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
-    });
-
     it("missing createdAt fails with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -164,7 +144,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("missing updatedAt fails with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -184,7 +164,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("missing notes fails if required by canonical type", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -204,7 +184,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("invalid dueAt fails with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -225,7 +205,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("invalid reminderState fails with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -246,7 +226,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("invalid notificationState fails with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-1",
@@ -267,7 +247,7 @@ describe("Foundation Hardening - Workstreams Verification", () => {
     it("duplicate reminder IDs fail with PersistenceError", async () => {
       const repo = new LocalReminderRepository();
       storeMap.set(
-        "alpha.reminders.v1.local-user",
+        "alpha.reminders.v1",
         JSON.stringify([
           {
             id: "rem-dup",
@@ -296,30 +276,9 @@ describe("Foundation Hardening - Workstreams Verification", () => {
       await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
     });
 
-    it("wrong-user reminder fails with PersistenceError", async () => {
-      const repo = new LocalReminderRepository();
-      storeMap.set(
-        "alpha.reminders.v1.user-alice",
-        JSON.stringify([
-          {
-            id: "rem-wrong-user",
-            userId: "user-bob",
-            title: "Doctor",
-            notes: "",
-            dueAt: 1700000000000,
-            createdAt: 1690000000000,
-            updatedAt: 1690000000000,
-            reminderState: "active",
-            notificationState: "pending",
-          },
-        ])
-      );
-      await expect(repo.listReminders("user-alice")).rejects.toThrow(PersistenceError);
-    });
-
     it("malformed persisted data does not become an empty reminder collection", async () => {
       const repo = new LocalReminderRepository();
-      storeMap.set("alpha.reminders.v1.local-user", "{ corrupted json syntax");
+      storeMap.set("alpha.reminders.v1", "{ corrupted json syntax");
       await expect(repo.listReminders("local-user")).rejects.toThrow(PersistenceError);
     });
 
@@ -512,32 +471,6 @@ describe("Foundation Hardening - Workstreams Verification", () => {
   });
 
   describe("Foundation Repair: Reminder Import & Lookup Invariants", () => {
-    it("rejects reminder import when reminder userId does not match currentUid", async () => {
-      const now = Date.now();
-      const backupData = {
-        version: 2,
-        exportedAt: new Date().toISOString(),
-        localStorage: {},
-        reminders: [
-          {
-            id: "rem-user-mismatch-1",
-            userId: "foreign-user-id-999",
-            title: "Foreign task",
-            notes: "",
-            dueAt: now + 60000,
-            createdAt: now,
-            updatedAt: now,
-            reminderState: "active",
-            notificationState: "pending",
-          },
-        ],
-      };
-
-      await expect(importAlphaData(JSON.stringify(backupData))).rejects.toThrow(
-        /does not match authenticated user/i,
-      );
-    });
-
     it("rejects reminder import when duplicate reminder IDs are present in the import payload", async () => {
       const now = Date.now();
       const currentUid = "local-user";

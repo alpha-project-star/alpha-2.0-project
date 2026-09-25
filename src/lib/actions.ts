@@ -591,7 +591,14 @@ export async function executeActionTagsAsync(
       const ok = verify("bill", b.id, (x) => x.status === "paid");
       if (!ok) {
         activity.set("action_failed");
-        results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid.` });
+        results.push({
+          tag: "MARK_BILL_PAID",
+          status: "failed",
+          message: `Could not mark bill "${b.name}" as paid.`,
+          logicalKeys: [paidKey],
+          failedKeys: [paidKey],
+          structuredResult: next,
+        });
       } else {
         executedMutations.add(paidKey);
         results.push({
@@ -604,61 +611,17 @@ export async function executeActionTagsAsync(
       }
     } catch (err: unknown) {
       activity.set("action_failed");
-      results.push({ tag: "MARK_BILL_PAID", status: "failed", message: `Could not mark bill "${b.name}" as paid: ${err instanceof Error ? err.message : String(err)}` });
+      results.push({
+        tag: "MARK_BILL_PAID",
+        status: "failed",
+        message: `Could not mark bill "${b.name}" as paid: ${err instanceof Error ? err.message : String(err)}`,
+        logicalKeys: [paidKey],
+        failedKeys: [paidKey],
+        structuredResult: next,
+      });
     }
     text = text.replace(fullMatch, "");
     markBillPaidRe.lastIndex = 0;
-  }
-
-  // ---------------- DELETE LAST (note|memory|bill)
-  const delLastRe = /\[\[DELETE_LAST:\s*(note|memory|bill)\s*\]\]/gi;
-  while ((match = delLastRe.exec(text)) !== null) {
-    const fullMatch = match[0];
-    const kind = match[1].toLowerCase() as Kind;
-    if (kind === "note") activity.set("writing_note");
-    else if (kind === "memory") activity.set("writing_memory");
-    else if (kind === "bill") activity.set("writing_bill");
-    const list = listOf(kind);
-    if (!list.length) {
-      results.push({
-        tag: "DELETE_LAST",
-        status: "not_found",
-        message: `There are no ${KIND_PLURAL[kind]} to delete.`,
-      });
-      text = text.replace(fullMatch, "");
-      delLastRe.lastIndex = 0;
-      continue;
-    }
-    const sorted = [...list].sort((a: any, b: any) => (b.createdAt || b.updatedAt || 0) - (a.createdAt || a.updatedAt || 0));
-    const victim = sorted[0];
-    const delKey = getCanonicalDeleteKey(kind, victim.id);
-    if (executedMutations.has(delKey)) {
-      text = text.replace(fullMatch, "");
-      delLastRe.lastIndex = 0;
-      continue;
-    }
-    try {
-      await deleteById(kind, victim.id);
-      const ok = !listOf(kind).some((x) => x.id === victim.id);
-      if (!ok) {
-        activity.set("action_failed");
-        results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind} "${label(kind, victim)}".` });
-      } else {
-        executedMutations.add(delKey);
-        results.push({
-          tag: "DELETE_LAST",
-          status: "success",
-          message: `Deleted ${kind} "${label(kind, victim)}".`,
-          logicalKeys: [delKey],
-          structuredResult: victim,
-        });
-      }
-    } catch (err: unknown) {
-      activity.set("action_failed");
-      results.push({ tag: "DELETE_LAST", status: "failed", message: `Could not delete ${kind}: ${err instanceof Error ? err.message : String(err)}` });
-    }
-    text = text.replace(fullMatch, "");
-    delLastRe.lastIndex = 0;
   }
 
   // ---------------- DELETE SPECIFIC (note|memory|bill)
@@ -1442,6 +1405,9 @@ export async function executeActionTagsAsync(
           tag: "MARK_REMINDER_DONE",
           status: "failed",
           message: `Could not mark reminder "${target.title}" as done: ${completeRes.error?.message || "unknown error"}`,
+          logicalKeys: [compKey, updKey],
+          failedKeys: [compKey, updKey],
+          structuredResult: target,
         });
       }
     } catch (err: unknown) {
@@ -1450,6 +1416,9 @@ export async function executeActionTagsAsync(
         tag: "MARK_REMINDER_DONE",
         status: "failed",
         message: `Could not mark reminder "${target.title}" as done: ${err instanceof Error ? err.message : String(err)}`,
+        logicalKeys: [compKey, updKey],
+        failedKeys: [compKey, updKey],
+        structuredResult: target,
       });
     }
     text = text.replace(fullMatch, "");
@@ -1510,6 +1479,9 @@ export async function executeActionTagsAsync(
           tag: "DELETE_LAST",
           status: "failed",
           message: `Could not delete reminder: ${delRes.error?.message || "unknown error"}`,
+          logicalKeys: [victimKey],
+          failedKeys: [victimKey],
+          structuredResult: victim,
         });
       }
     } catch (err: unknown) {
@@ -1518,6 +1490,9 @@ export async function executeActionTagsAsync(
         tag: "DELETE_LAST",
         status: "failed",
         message: `Could not delete reminder: ${err instanceof Error ? err.message : String(err)}`,
+        logicalKeys: [victimKey],
+        failedKeys: [victimKey],
+        structuredResult: victim,
       });
     }
     text = text.replace(fullMatch, "");

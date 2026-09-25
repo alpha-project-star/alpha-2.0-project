@@ -23,7 +23,7 @@
 import { getStorage, PersistenceError } from './alpha-store';
 import { withCrossContextLock } from './cross-context-lock';
 
-export type ReminderState = 'active' | 'completed' | 'cancelled';
+export type ReminderState = 'active' | 'completed' | 'cancelled' | 'passed' | 'acknowledged';
 export type NotificationState = 'pending' | 'claimed' | 'accepted' | 'failed';
 export type ProactiveResponseState = 'pending' | 'generating' | 'generated' | 'failed';
 
@@ -67,7 +67,7 @@ function isFiniteNumber(val: unknown): val is number {
 }
 
 function isReminderState(val: unknown): val is ReminderState {
-  return val === 'active' || val === 'completed' || val === 'cancelled';
+  return val === 'active' || val === 'completed' || val === 'cancelled' || val === 'passed' || val === 'acknowledged';
 }
 
 function isNotificationState(val: unknown): val is NotificationState {
@@ -202,8 +202,8 @@ export class LocalReminderRepository implements ReminderRepository {
   public failureError = 'Local reminder persistence failure';
 
   private storageKey(userId: string): string {
-    const safeUid = userId ? userId.trim() : 'local-user';
-    return `${STORAGE_PREFIX}.${safeUid}`;
+    // All reminders now use the stable canonical base key for single-user local Alpha.
+    return STORAGE_PREFIX;
   }
 
   private load(userId: string): Map<string, FirestoreReminder> {
@@ -214,7 +214,6 @@ export class LocalReminderRepository implements ReminderRepository {
     if (!storage) {
       return this.store;
     }
-    const safeUid = userId ? userId.trim() : 'local-user';
     const key = this.storageKey(userId);
     let raw: string | null;
     try {
@@ -245,7 +244,8 @@ export class LocalReminderRepository implements ReminderRepository {
 
     const map = new Map<string, FirestoreReminder>();
     for (const rawItem of list) {
-      const reminder = validateAndParseReminder(rawItem, safeUid, key);
+      // For single-user local Alpha, we relax user ownership validation
+      const reminder = validateAndParseReminder(rawItem, "local-user", key);
       if (map.has(reminder.id)) {
         throw new PersistenceError(key, new Error(`Duplicate reminder ID in storage: "${reminder.id}"`));
       }
@@ -279,15 +279,13 @@ export class LocalReminderRepository implements ReminderRepository {
 
   async listReminders(userId: string): Promise<FirestoreReminder[]> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    const map = this.load(effectiveUserId);
-    return Array.from(map.values()).filter(r => r.userId === effectiveUserId || !r.userId || r.userId === 'local-user');
+    const map = this.load("local-user");
+    return Array.from(map.values());
   }
 
   async getReminder(userId: string, reminderId: string): Promise<FirestoreReminder | null> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    const map = this.load(effectiveUserId);
+    const map = this.load("local-user");
     const item = map.get(reminderId);
     if (!item) return null;
     return { ...item };
@@ -295,26 +293,24 @@ export class LocalReminderRepository implements ReminderRepository {
 
   async createReminder(userId: string, reminder: FirestoreReminder): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
-      const map = this.load(effectiveUserId);
+    await withCrossContextLock(this.storageKey("local-user"), async () => {
+      const map = this.load("local-user");
       const nextReminder: FirestoreReminder = {
         ...reminder,
-        userId: effectiveUserId,
+        userId: "local-user",
         updatedAt: Date.now(),
       };
       const nextMap = new Map(map);
       nextMap.set(reminder.id, nextReminder);
-      this.save(effectiveUserId, nextMap);
+      this.save("local-user", nextMap);
       this.store.set(reminder.id, nextReminder);
     });
   }
 
   async updateReminder(userId: string, reminderId: string, patch: Partial<FirestoreReminder>): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
-      const map = this.load(effectiveUserId);
+    await withCrossContextLock(this.storageKey("local-user"), async () => {
+      const map = this.load("local-user");
       const existing = map.get(reminderId);
       if (!existing) {
         throw new Error(`Reminder not found: ${reminderId}`);
@@ -329,20 +325,19 @@ export class LocalReminderRepository implements ReminderRepository {
       };
       const nextMap = new Map(map);
       nextMap.set(reminderId, updated);
-      this.save(effectiveUserId, nextMap);
+      this.save("local-user", nextMap);
       this.store.set(reminderId, updated);
     });
   }
 
   async deleteReminder(userId: string, reminderId: string): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
-      const map = this.load(effectiveUserId);
+    await withCrossContextLock(this.storageKey("local-user"), async () => {
+      const map = this.load("local-user");
       if (!map.has(reminderId)) return;
       const nextMap = new Map(map);
       nextMap.delete(reminderId);
-      this.save(effectiveUserId, nextMap);
+      this.save("local-user", nextMap);
       this.store.delete(reminderId);
     });
   }
@@ -370,20 +365,19 @@ export class LocalReminderRepository implements ReminderRepository {
 
   async replaceReminders(userId: string, reminders: FirestoreReminder[]): Promise<void> {
     if (this.shouldFail) throw new Error(this.failureError);
-    const effectiveUserId = userId || 'local-user';
-    await withCrossContextLock(this.storageKey(effectiveUserId), async () => {
+    await withCrossContextLock(this.storageKey("local-user"), async () => {
       const nextMap = new Map<string, FirestoreReminder>();
       for (const r of reminders) {
         nextMap.set(r.id, {
           ...r,
-          userId: effectiveUserId,
+          userId: "local-user",
           updatedAt: Date.now(),
         });
       }
-      this.save(effectiveUserId, nextMap);
+      this.save("local-user", nextMap);
       // Update in-memory store for matching userId
       for (const [id, r] of this.store.entries()) {
-        if (r.userId === effectiveUserId) {
+        if (r.userId === "local-user") {
           this.store.delete(id);
         }
       }

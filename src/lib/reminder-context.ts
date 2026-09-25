@@ -66,21 +66,21 @@ class ReminderContextManager {
   }
 
   private getStorageKey(userId: string | null): string {
-    const safeUid = userId ? userId.trim() : 'local-user';
-    return `${LS_KEY}.${safeUid}`;
+    // All reminder contexts now use the stable canonical base key.
+    return LS_KEY;
   }
 
   private reload(userId?: string) {
     const storage = getStorage();
     if (!storage) return;
-    const key = this.getStorageKey(userId || this.currentUserId);
+    const key = this.getStorageKey(null);
     try {
       const v = storage.getItem(key);
       if (v) {
         const parsed = JSON.parse(v);
         this.activeContext = parsed.context;
         this.pendingClarification = parsed.pendingClarification || null;
-        this.currentUserId = parsed.userId;
+        this.currentUserId = "local-user";
       }
     } catch {
       this.clear();
@@ -90,13 +90,13 @@ class ReminderContextManager {
   private save() {
     const storage = getStorage();
     if (!storage) return;
-    const key = this.getStorageKey(this.currentUserId);
+    const key = this.getStorageKey(null);
     try {
-      if ((this.activeContext || this.pendingClarification) && this.currentUserId) {
+      if (this.activeContext || this.pendingClarification) {
         storage.setItem(key, JSON.stringify({
           context: this.activeContext,
           pendingClarification: this.pendingClarification,
-          userId: this.currentUserId
+          userId: "local-user"
         }));
       } else {
         storage.removeItem(key);
@@ -105,14 +105,13 @@ class ReminderContextManager {
   }
 
   async setContext(userId: string, reminder: ReminderContextInput) {
-    if (!userId) return;
     await withCrossContextLock('alpha_lock_reminder_context', async () => {
-      this.currentUserId = userId;
+      this.currentUserId = "local-user";
       this.activeContext = {
         id: reminder.id,
         title: reminder.title,
         dueAt: reminder.dueAt,
-        userId,
+        userId: "local-user",
         notes: (reminder as any).notes,
         updatedAt: Date.now()
       };
@@ -122,49 +121,39 @@ class ReminderContextManager {
 
   getContext(userId: string): ActiveReminderContext | null {
     this.reload();
-    if (!userId || this.currentUserId !== userId) {
-      this.clear();
-      return null;
-    }
     return this.activeContext;
   }
 
   async setPendingClarification(userId: string, data: PendingClarificationData) {
-    if (!userId) return;
     await withCrossContextLock('alpha_lock_reminder_context', async () => {
-      this.currentUserId = userId;
-      this.pendingClarification = { userId, data };
+      this.currentUserId = "local-user";
+      this.pendingClarification = { userId: "local-user", data };
       this.save();
     });
   }
 
   getPendingClarification(userId: string): PendingClarificationData | null {
     this.reload();
-    if (!userId || this.currentUserId !== userId || !this.pendingClarification || this.pendingClarification.userId !== userId) {
-      return null;
-    }
-    return this.pendingClarification.data;
+    return this.pendingClarification?.data || null;
   }
 
   clearPendingClarification(userId: string) {
     this.reload();
-    if (this.currentUserId === userId || !userId) {
-      this.pendingClarification = null;
-      this.save();
-    }
+    this.pendingClarification = null;
+    this.save();
   }
 
   clear() {
     this.activeContext = null;
     this.pendingClarification = null;
-    this.currentUserId = null;
+    this.currentUserId = "local-user";
     this.save();
   }
 
   async invalidate(userId: string, reminderId: string) {
     await withCrossContextLock('alpha_lock_reminder_context', async () => {
       this.reload();
-      if (this.currentUserId === userId && this.activeContext?.id === reminderId) {
+      if (this.activeContext?.id === reminderId) {
         this.clear();
       }
     });

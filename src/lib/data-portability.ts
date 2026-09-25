@@ -237,7 +237,6 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   }
 
   // Stage reminders (canonical LocalReminderRepository records)
-  const currentUid = auth.currentUser?.uid || "local-user";
   const stagedReminders: FirestoreReminder[] = [];
   const seenReminderIds = new Set<string>();
 
@@ -253,12 +252,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         throw new Error(`Invalid reminder in backup: duplicate reminder ID "${r.id}".`);
       }
       seenReminderIds.add(r.id);
-      if (typeof r.userId !== "string" || !r.userId.trim()) {
-        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing or has an empty userId.`);
-      }
-      if (r.userId !== currentUid) {
-        throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" has userId "${r.userId}" which does not match authenticated user "${currentUid}".`);
-      }
+      
       if (typeof r.title !== "string") {
         throw new Error(`Invalid reminder in backup: reminder ID "${r.id}" is missing a string title.`);
       }
@@ -280,25 +274,10 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       if (r.notificationState !== "pending" && r.notificationState !== "claimed" && r.notificationState !== "accepted" && r.notificationState !== "failed") {
         throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid notificationState "${String(r.notificationState)}".`);
       }
-      if (r.legacyFiredAt !== undefined && (typeof r.legacyFiredAt !== "number" || !isFinite(r.legacyFiredAt))) {
-        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid legacyFiredAt.`);
-      }
-      if (r.proactiveState !== undefined && !["pending", "generating", "generated", "failed"].includes(r.proactiveState)) {
-        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveState.`);
-      }
-      if (r.proactiveEventId !== undefined && typeof r.proactiveEventId !== "string") {
-        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveEventId.`);
-      }
-      if (r.proactiveHandledAt !== undefined && (typeof r.proactiveHandledAt !== "number" || !isFinite(r.proactiveHandledAt))) {
-        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveHandledAt.`);
-      }
-      if (r.proactiveMessageId !== undefined && typeof r.proactiveMessageId !== "string") {
-        throw new Error(`Invalid reminder in backup: "${r.title}" has an invalid proactiveMessageId.`);
-      }
 
       stagedReminders.push({
         id: r.id,
-        userId: r.userId,
+        userId: "local-user",
         title: r.title,
         notes: r.notes,
         dueAt: r.dueAt,
@@ -339,7 +318,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
         }
         stagedReminders.push({
           id: lr.id || uid(),
-          userId: currentUid,
+          userId: "local-user",
           title: lr.title.trim(),
           notes: lr.notes || "",
           dueAt,
@@ -393,7 +372,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   if (typeof window !== "undefined" && window.localStorage) {
     for (let i = 0; i < window.localStorage.length; i++) {
       const key = window.localStorage.key(i);
-      if (key && isKeyForUid(key, currentUid)) {
+      if (key && (isAlphaKeyPrefix(key) || isKeyForUid(key, "local-user"))) {
         const val = window.localStorage.getItem(key);
         if (val !== null) previousLocalStorage[key] = val;
       }
@@ -403,7 +382,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
   const reminderRepo = new LocalReminderRepository();
   let previousReminders: FirestoreReminder[];
   try {
-    previousReminders = await reminderRepo.listReminders(currentUid);
+    previousReminders = await reminderRepo.listReminders("local-user");
   } catch (snapshotErr) {
     throw new Error(
       `Import aborted: failed to snapshot existing reminders (${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}). Existing data was not modified.`
@@ -436,12 +415,15 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
     try {
       // 1. Clear existing local state for exact replacement
       if (typeof window !== "undefined" && window.localStorage) {
+        const keysToRemove: string[] = [];
         for (let i = 0; i < window.localStorage.length; i++) {
           const key = window.localStorage.key(i);
-          if (key && isKeyForUid(key, currentUid)) {
-            window.localStorage.removeItem(key);
-            i--;
+          if (key && (isAlphaKeyPrefix(key) || isKeyForUid(key, "local-user"))) {
+            keysToRemove.push(key);
           }
+        }
+        for (const k of keysToRemove) {
+          window.localStorage.removeItem(k);
         }
         // 2. Write staged localStorage entries
         for (const [key, val] of Object.entries(stagedLocalStorage)) {
@@ -450,7 +432,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       }
 
       // 3. Replace reminders in canonical LocalReminderRepository
-      await reminderRepo.replaceReminders(currentUid, stagedReminders);
+      await reminderRepo.replaceReminders("local-user", stagedReminders);
 
       // 4. Replace music tracks in IndexedDB (including empty music collection replacement)
       if (shouldReplaceMusic) {
@@ -477,18 +459,21 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
       console.error("Import replacement failed, rolling back to previous state:", writeError);
       try {
         if (typeof window !== "undefined" && window.localStorage) {
+          const keysToRemove: string[] = [];
           for (let i = 0; i < window.localStorage.length; i++) {
             const key = window.localStorage.key(i);
-            if (key && isKeyForUid(key, currentUid)) {
-              window.localStorage.removeItem(key);
-              i--;
+            if (key && (isAlphaKeyPrefix(key) || isKeyForUid(key, "local-user"))) {
+              keysToRemove.push(key);
             }
+          }
+          for (const k of keysToRemove) {
+            window.localStorage.removeItem(k);
           }
           for (const [key, val] of Object.entries(previousLocalStorage)) {
             window.localStorage.setItem(key, val);
           }
         }
-        await reminderRepo.replaceReminders(currentUid, previousReminders);
+        await reminderRepo.replaceReminders("local-user", previousReminders);
         if (shouldReplaceMusic) {
           const db = await openDb();
           await new Promise<void>((resolve) => {
@@ -529,13 +514,12 @@ export async function wipeAlphaData() {
   return await withCrossContextLock("alpha_global_wipe_lock", async () => {
     const errors: string[] = [];
 
-    // 1. Clear localStorage keys for active user
+    // 1. Clear localStorage keys
     try {
-      const currentUid = auth.currentUser?.uid || "local-user";
       const keysToRemove: string[] = [];
       for (let i = 0; i < window.localStorage.length; i++) {
         const key = window.localStorage.key(i);
-        if (key && isKeyForUid(key, currentUid)) {
+        if (key && (isAlphaKeyPrefix(key) || isKeyForUid(key, "local-user"))) {
           keysToRemove.push(key);
         }
       }
@@ -549,8 +533,7 @@ export async function wipeAlphaData() {
     // 2. Clear canonical reminders
     try {
       const reminderRepo = new LocalReminderRepository();
-      const currentUid = auth.currentUser?.uid || "local-user";
-      await reminderRepo.replaceReminders(currentUid, []);
+      await reminderRepo.replaceReminders("local-user", []);
     } catch (err: unknown) {
       errors.push(`Failed to clear canonical reminders: ${err instanceof Error ? err.message : String(err)}`);
     }

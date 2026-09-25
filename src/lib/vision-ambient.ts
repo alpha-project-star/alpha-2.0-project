@@ -71,25 +71,8 @@ export function getHourlyState(ownerUid?: string | null): { count: number; reset
     const storage = getStorage();
     if (!storage) return { count: 0, resetAt: 0 };
 
-    const targetUid = ownerUid !== undefined ? ownerUid : getCurrentStoreUser();
-    // Invariant: No authenticated UID => no shared ambient quota storage
-    if (!targetUid) {
-      return { count: 0, resetAt: 0 };
-    }
-
-    const currentUid = getCurrentStoreUser();
-    if (targetUid !== currentUid) {
-      // Must not read or cross into a different user's quota namespace
-      return { count: 0, resetAt: 0 };
-    }
-
-    const counterKey = getKey(AMBIENT_COUNTER_KEY);
-    const resetKey = getKey(AMBIENT_RESET_KEY);
-
-    // Validate that keys strictly adhere to canonical Alpha user namespace
-    if (!isKeyForUid(counterKey, targetUid) || !isKeyForUid(resetKey, targetUid)) {
-      return { count: 0, resetAt: 0 };
-    }
+    const counterKey = AMBIENT_COUNTER_KEY;
+    const resetKey = AMBIENT_RESET_KEY;
 
     const rawCount = storage.getItem(counterKey);
     const rawResetAt = storage.getItem(resetKey);
@@ -108,25 +91,8 @@ export function updateHourlyState(count: number, resetAt: number, ownerUid?: str
     const storage = getStorage();
     if (!storage) return;
 
-    const targetUid = ownerUid !== undefined ? ownerUid : getCurrentStoreUser();
-    // Invariant: No authenticated UID => no persistent quota write
-    if (!targetUid) {
-      return;
-    }
-
-    const currentUid = getCurrentStoreUser();
-    if (targetUid !== currentUid) {
-      // Cross-user write forbidden: do not charge new or different user
-      return;
-    }
-
-    const counterKey = getKey(AMBIENT_COUNTER_KEY);
-    const resetKey = getKey(AMBIENT_RESET_KEY);
-
-    // Validate that keys strictly adhere to canonical Alpha user namespace
-    if (!isKeyForUid(counterKey, targetUid) || !isKeyForUid(resetKey, targetUid)) {
-      return;
-    }
+    const counterKey = AMBIENT_COUNTER_KEY;
+    const resetKey = AMBIENT_RESET_KEY;
 
     storage.setItem(counterKey, String(Math.max(0, count)));
     storage.setItem(resetKey, String(Math.max(0, resetAt)));
@@ -250,23 +216,17 @@ export async function maybeFire(): Promise<void> {
 async function executeAmbientScan(): Promise<void> {
   if (!running || !isLeader || !revalidateLeadership()) return;
 
-  // 1. Establish the authenticated user identity that owns that execution at the beginning
-  const executionOwnerUid = getCurrentStoreUser();
-  if (!executionOwnerUid) {
-    return;
-  }
-
   const now = Date.now();
   const interval = Math.max(15, alphaStore.get().settings.visionAmbientIntervalSec || 30) * 1000;
   if (now - lastFireAt < interval) return;
   if (momentum < 0.18) return; // Not enough real change.
 
   // Load and check hourly limit from persistent storage for this execution's owner
-  let { count, resetAt } = getHourlyState(executionOwnerUid);
+  let { count, resetAt } = getHourlyState();
   if (now - resetAt > 3600000 || resetAt === 0) {
     resetAt = now;
     count = 0;
-    updateHourlyState(count, resetAt, executionOwnerUid);
+    updateHourlyState(count, resetAt);
   }
 
   if (count >= HARD_CAP_PER_HOUR) {
@@ -294,18 +254,9 @@ async function executeAmbientScan(): Promise<void> {
   // Capture failed: 0 quota consumption
   if (!frame) return;
 
-  // 2. Account ownership invariant: captureOwnerUid === quotaOwnerUid
-  // If the authenticated user changed while capture was in progress:
-  // A starts capture -> A to B account switch -> capture completes: do NOT charge B!
-  const currentUid = getCurrentStoreUser();
-  if (currentUid !== executionOwnerUid) {
-    // Discard the capture without charging the new user
-    return;
-  }
-
   // 3. Capture succeeded: EXACTLY ONE quota unit consumed
   count++;
-  updateHourlyState(count, resetAt, executionOwnerUid);
+  updateHourlyState(count, resetAt);
 
   try {
     const reply = await sendChat([
@@ -318,13 +269,12 @@ async function executeAmbientScan(): Promise<void> {
       },
     ], { task: "fast", disableTools: true });
 
-    // Stale completion check: if disabled, superseded, lost leadership, or account changed while in-flight, discard!
+    // Stale completion check: if disabled, superseded, or lost leadership while in-flight, discard!
     if (
       executionId !== currentAmbientExecutionId ||
       !running ||
       !isLeader ||
-      !revalidateLeadership() ||
-      getCurrentStoreUser() !== executionOwnerUid
+      !revalidateLeadership()
     ) {
       return;
     }

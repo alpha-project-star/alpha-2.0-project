@@ -7,8 +7,6 @@ import {
   ChevronDown,
   ChevronRight,
   Download,
-  LogIn,
-  LogOut,
   Music,
   Trash2,
   Upload,
@@ -27,7 +25,7 @@ import {
   isBrowserNotificationSupported,
 } from "../lib/browser-notification-channel";
 import { registerPushSubscription, unregisterPushSubscription, isPushSupported } from "../lib/push-subscription";
-import { useAuth, signInWithGoogle, signOutUser } from "../lib/auth";
+import { useAuth } from "../lib/auth";
 import { ToolHeader } from "../components/ToolHeader";
 import { KittScanner } from "../components/KittScanner";
 import {
@@ -98,7 +96,6 @@ function SettingsRoute() {
   const [online, setOnline] = useState<boolean>(
     typeof navigator !== "undefined" ? navigator.onLine : true,
   );
-  const [authLoading, setAuthLoading] = useState(false);
   const [openGroup, setOpenGroup] = useState<"account" | "online" | "offline" | "data" | "migration" | null>(null);
   const importRef = useRef<HTMLInputElement>(null);
 
@@ -281,99 +278,30 @@ function SettingsRoute() {
           title="Account & Identity"
           hint={
             auth.status === "authenticated"
-              ? `Connected as ${auth.user.email || auth.user.displayName || "Google User"}`
+              ? `Local Identity: ${auth.user.uid}`
               : "Operating in Local Mode (local-user)"
           }
           open={openGroup === "account"}
           onToggle={() => setOpenGroup(openGroup === "account" ? null : "account")}
         >
           <Section
-            title="Authentication & Sync Status"
-            hint="Determines whether reminders, chat, and directives are stored locally or linked to your account."
+            title="Local Data Identity"
+            hint="Alpha uses a stable local identity to ensure your data is persistent across restarts."
           >
-            {auth.status === "authenticated" ? (
-              <div className="space-y-3">
-                <div className="flex items-center gap-3 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-xs">
-                  {auth.user.photoURL ? (
-                    <img
-                      src={auth.user.photoURL}
-                      alt=""
-                      className="w-10 h-10 rounded-full border border-emerald-400/50 shrink-0"
-                    />
-                  ) : (
-                    <div className="w-10 h-10 rounded-full bg-emerald-500/20 text-emerald-300 flex items-center justify-center font-bold text-sm shrink-0">
-                      {(auth.user.email || auth.user.displayName || "U")[0].toUpperCase()}
-                    </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="font-semibold text-foreground truncate">
-                      {auth.user.displayName || "Google User"}
-                    </div>
-                    <div className="text-muted-foreground truncate font-mono text-[11px]">
-                      {auth.user.email}
-                    </div>
-                    <div className="text-[10px] text-emerald-400 mt-0.5">
-                      ✓ Connected with Google (Firebase)
-                    </div>
-                  </div>
+            <div className="space-y-3">
+              <div className="p-3 rounded-lg bg-primary/10 border border-primary/25 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-primary font-medium">
+                  <User className="w-4 h-4" />
+                  <span>Local Mode Active</span>
                 </div>
-
-                <div className="flex justify-end">
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      try {
-                        await signOutUser();
-                        toast.success("Signed out successfully");
-                      } catch (e: any) {
-                        toast.error(`Sign out failed: ${e?.message || e}`);
-                      }
-                    }}
-                    className="px-3 py-1.5 text-xs rounded-md glass neon-border text-destructive hover:bg-destructive/10 inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    Sign out
-                  </button>
-                </div>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  Alpha is functioning completely locally. All your reminders, chat history, notes, and preferences are safely saved in this browser under your local profile.
+                </p>
+                <p className="text-muted-foreground text-[11px] leading-relaxed">
+                  Data is stored securely on this device. You do not need an account to use Alpha's full feature set.
+                </p>
               </div>
-            ) : (
-              <div className="space-y-3">
-                <div className="p-3 rounded-lg bg-primary/10 border border-primary/25 text-xs space-y-2">
-                  <div className="flex items-center gap-2 text-primary font-medium">
-                    <User className="w-4 h-4" />
-                    <span>Local Mode Active</span>
-                  </div>
-                  <p className="text-muted-foreground text-[11px] leading-relaxed">
-                    Alpha is functioning completely locally. All your reminders, chat history, notes, and preferences are safely saved in this browser under your local profile.
-                  </p>
-                  <p className="text-muted-foreground text-[11px] leading-relaxed">
-                    You do not need to sign in to use Alpha or acknowledge reminders. If you would like to link your Google account, click below.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={authLoading}
-                  onClick={async () => {
-                    setAuthLoading(true);
-                    try {
-                      const user = await signInWithGoogle();
-                      toast.success(`Signed in as ${user.email || "Google User"}`);
-                    } catch (e: any) {
-                      if (e?.code !== "auth/popup-closed-by-user" && e?.code !== "auth/cancelled-popup-request") {
-                        toast.error(`Sign-in failed: ${e?.message || e}`);
-                      }
-                    } finally {
-                      setAuthLoading(false);
-                    }
-                  }}
-                  className="w-full py-2.5 px-4 rounded-xl bg-primary text-primary-foreground font-medium text-xs hover:bg-primary/90 active:scale-95 disabled:opacity-50 transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>{authLoading ? "Opening Google Sign-In…" : "Sign in with Google"}</span>
-                </button>
-              </div>
-            )}
+            </div>
           </Section>
         </Group>
 

@@ -48,7 +48,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const isPm = /\bpm\b/i.test(lower) || /evening|afternoon|night/i.test(lower);
     if (isAm || isPm || /^(?:am|pm)\b/i.test(lower)) {
       const meridiem = isPm ? 'PM' : 'AM';
-      const resolvedRawWhen = `${pendingClarif.rawWhen} ${meridiem}`;
+      const resolvedRawWhen = `${pendingClarif.rawWhen.replace(/\s*(am|pm)\s*$/gi, '')} ${meridiem}`;
       const dueAt = parseWhen(resolvedRawWhen, temporal.now());
       if (dueAt === null) {
         lifecycle?.recordClarification(`I couldn't understand the time "${resolvedRawWhen}". Please specify AM or PM.`, "ADD_REMINDER");
@@ -79,7 +79,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: "ADD_REMINDER",
           isMutation: true,
           error,
-          logicalKey: key,
+          logicalKeys: [key],
         });
         return `I couldn't save your reminder: ${error.message}. Please try again.`;
       }
@@ -140,9 +140,8 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     else if (kind === "task") activity.set("updating_plan");
     return await bulkClear(kind, lifecycle);
   }
-  if (/^(?:clear|delete|remove)\s+(?:all\s+)?done\s+reminders/.test(lower)) {
-    const userId = await getActiveUserId();
-    if (!userId) return "You need to be signed in to manage reminders.";
+  if (/^(?:clear|delete|remove)\s+(?:all\s+)?(?:done|completed|finished)\s+reminders/.test(lower)) {
+    const userId = await getActiveUserId() || 'local-user';
     activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
@@ -198,10 +197,12 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     }
 
     if (successfulIds.length === 0) {
+      const failedKeys = intendedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       lifecycle?.recordFailure({
         name: "CLEAR_DONE_REMINDERS",
         isMutation: true,
-        error: { message: "Failed to clear completed reminders" },
+        error: { message: "Failed to clear completed reminders", failedIds: intendedIds },
+        logicalKeys: failedKeys,
       });
       return "Could not clear completed reminders.";
     }
@@ -215,12 +216,6 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
       });
       return `Cleared ${successfulIds.length} completed reminder${successfulIds.length === 1 ? "" : "s"}.`;
     } else {
-      lifecycle?.recordSuccess({
-        name: "CLEAR_DONE_REMINDERS_PARTIAL",
-        isMutation: true,
-        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
-        logicalKeys: [...successfulKeys],
-      });
       return `Cleared ${successfulIds.length} out of ${intendedIds.length} completed reminders (${failedIds.length} failed).`;
     }
   }
@@ -314,10 +309,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
   if (m) {
     const title = trim(m[1]);
     const when = trim(m[2] || "");
-    const userId = await getActiveUserId();
-    if (!userId) {
-      return "You need to be signed in to manage reminders.";
-    }
+    const userId = await getActiveUserId() || 'local-user';
     if (!when) {
       return `When would you like to be reminded to ${title}? Please specify a date or time.`;
     }
@@ -357,9 +349,9 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     activity.set("writing_note");
     const id = uid();
     const title = body.slice(0, 40);
+    const opKey = getCanonicalNoteCreateKey(title, body);
     try {
       await alphaStore.upsertNote({ id, title, body, updatedAt: Date.now() });
-      const opKey = getCanonicalNoteCreateKey(title, body);
       lifecycle?.recordSuccess({
         name: "ADD_NOTE",
         isMutation: true,
@@ -372,6 +364,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         name: "ADD_NOTE",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [opKey],
       });
       return `I couldn't save that note: ${err?.message || "unknown error"}.`;
     }
@@ -386,6 +379,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     activity.set("writing_memory");
     const id = uid();
     const topic = detail.slice(0, 40);
+    const key = getCanonicalMemoryCreateKey(topic, detail);
     try {
       await alphaStore.upsertMemory({
         id,
@@ -393,7 +387,6 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         detail,
         updatedAt: Date.now(),
       });
-      const key = getCanonicalMemoryCreateKey(topic, detail);
       lifecycle?.recordSuccess({
         name: "ADD_MEMORY",
         isMutation: true,
@@ -406,6 +399,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         name: "ADD_MEMORY",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `I couldn't store that memory: ${err?.message || "unknown error"}.`;
     }
@@ -419,9 +413,9 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
     const dueDate = trim(m[3] || "");
     activity.set("writing_bill");
     const id = uid();
+    const key = getCanonicalBillCreateKey(name, amount, dueDate);
     try {
       await alphaStore.upsertBill({ id, name, amount, balance: amount, dueDate, status: "due" });
-      const key = getCanonicalBillCreateKey(name, amount, dueDate);
       lifecycle?.recordSuccess({
         name: "ADD_BILL",
         isMutation: true,
@@ -434,6 +428,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         name: "ADD_BILL",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `I couldn't add that bill: ${err?.message || "unknown error"}.`;
     }
@@ -446,8 +441,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
   if (m) {
     const kind = m[1];
     if (kind === "reminder") {
-      const userId = await getActiveUserId();
-      if (!userId) return "You need to be signed in to manage reminders.";
+      const userId = await getActiveUserId() || 'local-user';
       activity.set("writing_reminder");
       const tool = getReminderTool(userId);
       const res = await tool.listReminders();
@@ -473,7 +467,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
           name: "DELETE_REMINDER",
           isMutation: true,
           error,
-          logicalKey: delKey,
+          logicalKeys: [delKey],
         });
         return `Could not delete last reminder: ${error.message}.`;
       }
@@ -531,8 +525,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
   m = lower.match(/(?:mark|set)\s+(?:reminder\s+)?(.+?)\s+(?:as\s+)?done/);
   if (m) {
     const q = trim(m[1]);
-    const userId = await getActiveUserId();
-    if (!userId) return "You need to be signed in to manage reminders.";
+    const userId = await getActiveUserId() || 'local-user';
     activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.completeReminder(q);
@@ -575,8 +568,7 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
 async function listItems(kind: string): Promise<string> {
   const s = alphaStore.get();
   if (kind === "reminder") {
-    const userId = await getActiveUserId();
-    if (!userId) return "You need to be signed in to view your reminders.";
+    const userId = await getActiveUserId() || 'local-user';
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
     if (!res.success) return `I couldn't fetch your reminders: ${res.error?.message || "error"}.`;
@@ -640,8 +632,7 @@ async function listItems(kind: string): Promise<string> {
 async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Promise<string> {
   const s = alphaStore.get();
   if (kind === "reminder") {
-    const userId = await getActiveUserId();
-    if (!userId) return "You need to be signed in to manage reminders.";
+    const userId = await getActiveUserId() || 'local-user';
     activity.set("writing_reminder");
     const tool = getReminderTool(userId);
     const res = await tool.listReminders();
@@ -681,7 +672,7 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
             name: "DELETE_REMINDER",
             isMutation: true,
             error: delRes.error || { message: "Failed to delete reminder" },
-            logicalKey: singleKey,
+            logicalKeys: [singleKey],
           });
         }
       } catch (err: any) {
@@ -690,16 +681,18 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
           name: "DELETE_REMINDER",
           isMutation: true,
           error: err || { message: "unknown error" },
-          logicalKey: singleKey,
+          logicalKeys: [singleKey],
         });
       }
     }
 
     if (successfulIds.length === 0) {
+      const failedKeys = intendedIds.map((id) => getCanonicalReminderDeleteKey({ targetIds: [id] }));
       lifecycle?.recordFailure({
         name: "CLEAR_ALL_REMINDERS",
         isMutation: true,
-        error: { message: "Failed to clear reminders" },
+        error: { message: "Failed to clear reminders", failedIds: intendedIds },
+        logicalKeys: failedKeys,
       });
       return "Could not clear reminders.";
     }
@@ -713,12 +706,6 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
       });
       return `Cleared ${successfulIds.length} reminders.`;
     } else {
-      lifecycle?.recordSuccess({
-        name: "CLEAR_ALL_REMINDERS_PARTIAL",
-        isMutation: true,
-        result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
-        logicalKeys: [...successfulKeys],
-      });
       return `Cleared ${successfulIds.length} out of ${intendedIds.length} reminders (${failedIds.length} failed).`;
     }
   }
@@ -778,16 +765,18 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
         name: `DELETE_${kind.toUpperCase()}`,
         isMutation: true,
         error: err || { message: "unknown error" },
-        logicalKey: singleKey,
+        logicalKeys: [singleKey],
       });
     }
   }
 
   if (successfulIds.length === 0) {
+    const failedKeys = intendedIds.map((id) => getCanonicalDeleteKey(kind, id));
     lifecycle?.recordFailure({
       name: `CLEAR_ALL_${kind.toUpperCase()}S`,
       isMutation: true,
-      error: { message: `Failed to clear ${kind}s` },
+      error: { message: `Failed to clear ${kind}s`, failedIds: intendedIds },
+      logicalKeys: failedKeys,
     });
     return `Could not clear ${kind}s.`;
   }
@@ -801,12 +790,6 @@ async function bulkClear(kind: string, lifecycle?: RequestActionLifecycle): Prom
     });
     return `Cleared ${successfulIds.length} ${kind}${successfulIds.length === 1 ? "" : "s"}.`;
   } else {
-    lifecycle?.recordSuccess({
-      name: `CLEAR_ALL_${kind.toUpperCase()}S_PARTIAL`,
-      isMutation: true,
-      result: { count: successfulIds.length, targetIds: intendedIds, successfulIds, failedIds },
-      logicalKeys: [...successfulKeys],
-    });
     return `Cleared ${successfulIds.length} out of ${intendedIds.length} ${kind}s (${failedIds.length} failed).`;
   }
 }
@@ -816,8 +799,7 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
   const lc = q.toLowerCase();
   if (kind === "reminder") {
     activity.set("writing_reminder");
-    const userId = await getActiveUserId();
-    if (!userId) return "You need to be signed in to manage reminders.";
+    const userId = await getActiveUserId() || 'local-user';
     const tool = getReminderTool(userId);
     const res = await tool.deleteReminder(q);
     if (!res.success || !res.data) {
@@ -845,9 +827,9 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple notes match "${q}" — which one? (${matches.map((m) => m.title || m.body.slice(0, 20)).join(", ")})`;
     const target = matches[0];
+    const key = getCanonicalDeleteKey("note", target.id);
     try {
       await alphaStore.deleteNote(target.id);
-      const key = getCanonicalDeleteKey("note", target.id);
       lifecycle?.recordSuccess({
         name: "DELETE_NOTE",
         isMutation: true,
@@ -860,6 +842,7 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
         name: "DELETE_NOTE",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `Could not delete note: ${err?.message || "unknown error"}`;
     }
@@ -873,9 +856,9 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple memories match "${q}" — which? (${matches.map((m) => m.topic).join(", ")})`;
     const target = matches[0];
+    const key = getCanonicalDeleteKey("memory", target.id);
     try {
       await alphaStore.deleteMemory(target.id);
-      const key = getCanonicalDeleteKey("memory", target.id);
       lifecycle?.recordSuccess({
         name: "DELETE_MEMORY",
         isMutation: true,
@@ -888,6 +871,7 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
         name: "DELETE_MEMORY",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `Could not delete memory: ${err?.message || "unknown error"}`;
     }
@@ -899,9 +883,9 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple tasks match "${q}" — which one? (${matches.map((p) => p.title).join(", ")})`;
     const target = matches[0];
+    const key = getCanonicalDeleteKey("task", target.id);
     try {
       await alphaStore.deleteTask(target.id);
-      const key = getCanonicalDeleteKey("task", target.id);
       lifecycle?.recordSuccess({
         name: "DELETE_TASK",
         isMutation: true,
@@ -914,6 +898,7 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
         name: "DELETE_TASK",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `Could not delete task: ${err?.message || "unknown error"}`;
     }
@@ -925,9 +910,9 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
     if (matches.length > 1)
       return `Multiple bills match "${q}" — which one? (${matches.map((b) => b.name).join(", ")})`;
     const target = matches[0];
+    const key = getCanonicalDeleteKey("bill", target.id);
     try {
       await alphaStore.deleteBill(target.id);
-      const key = getCanonicalDeleteKey("bill", target.id);
       lifecycle?.recordSuccess({
         name: "DELETE_BILL",
         isMutation: true,
@@ -940,6 +925,7 @@ async function deleteFuzzy(kind: string, q: string, lifecycle?: RequestActionLif
         name: "DELETE_BILL",
         isMutation: true,
         error: err || { message: "unknown error" },
+        logicalKeys: [key],
       });
       return `Could not delete bill: ${err?.message || "unknown error"}`;
     }

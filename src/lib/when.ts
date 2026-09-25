@@ -41,7 +41,11 @@ export function parseWhen(raw: string | number, now: Date = new Date()): number 
     }
   }
 
-  const s = input.toLowerCase().replace(/\s+/g, " ").replace(/^(?:on|at)\s+/, "");
+  const s = input
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/^(?:yes,? ?)?(?:on|at)\s+/, "")
+    .replace(/\s+(am|pm)\s+(am|pm)\b/gi, " $1");
 
   // Absolute ISO / Date-parsable strings first (e.g. 2026-03-25T14:00:00Z, 2026-03-25, 03/25/2026)
   const iso = Date.parse(input);
