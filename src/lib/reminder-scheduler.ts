@@ -209,6 +209,24 @@ export class ReminderScheduler {
       const reminders = await this.repo.listReminders(activeUser);
       const dueReminders = await this.evaluateDueReminders(reminders, now, activeUser);
 
+      // Handle Repetition
+      for (const reminder of reminders) {
+        if (
+          reminder.reminderState === 'active' &&
+          reminder.notificationState === 'accepted' &&
+          reminder.nextRepeatAt &&
+          now >= reminder.nextRepeatAt
+        ) {
+          // Schedule repetition
+          await this.repo.updateReminder(activeUser, reminder.id, {
+            notificationState: 'pending',
+            nextRepeatAt: undefined, // Clear, to be set again by consumer if still unacknowledged
+            updatedAt: now,
+          });
+          dueReminders.push(reminder);
+        }
+      }
+
       for (const reminder of dueReminders) {
         if (this.processingIds.has(reminder.id)) continue;
         this.processingIds.add(reminder.id);
@@ -250,6 +268,12 @@ export class ReminderScheduler {
               } else {
                 fireAlarm(evt.title, reminder.notes || "");
               }
+
+              // Set next repeat after successful delivery
+              await this.repo!.updateReminder(activeUser, reminder.id, {
+                nextRepeatAt: Date.now() + 10000, // 10 seconds
+                repetitionCount: (reminder.repetitionCount || 0) + 1,
+              });
             };
 
             const delivery = this.getEventDelivery();

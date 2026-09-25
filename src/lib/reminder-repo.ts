@@ -42,6 +42,8 @@ export interface FirestoreReminder {
   proactiveEventId?: string;
   proactiveHandledAt?: number;
   proactiveMessageId?: string;
+  nextRepeatAt?: number;
+  repetitionCount?: number;
 }
 
 export type LocalReminder = FirestoreReminder;
@@ -176,6 +178,20 @@ function validateAndParseReminder(item: unknown, effectiveUserId: string, key: s
     );
   }
 
+  if (item.nextRepeatAt !== undefined && !isFiniteNumber(item.nextRepeatAt)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "nextRepeatAt" must be a finite number on reminder ${item.id}`)
+    );
+  }
+
+  if (item.repetitionCount !== undefined && !isFiniteNumber(item.repetitionCount)) {
+    throw new PersistenceError(
+      key,
+      new Error(`Invalid reminder record in storage: "repetitionCount" must be a finite number on reminder ${item.id}`)
+    );
+  }
+
   const result: FirestoreReminder = {
     id: item.id,
     userId: item.userId,
@@ -191,6 +207,8 @@ function validateAndParseReminder(item: unknown, effectiveUserId: string, key: s
     ...(item.proactiveEventId !== undefined ? { proactiveEventId: item.proactiveEventId } : {}),
     ...(item.proactiveHandledAt !== undefined ? { proactiveHandledAt: item.proactiveHandledAt } : {}),
     ...(item.proactiveMessageId !== undefined ? { proactiveMessageId: item.proactiveMessageId } : {}),
+    ...(item.nextRepeatAt !== undefined ? { nextRepeatAt: item.nextRepeatAt } : {}),
+    ...(item.repetitionCount !== undefined ? { repetitionCount: item.repetitionCount } : {}),
   };
 
   return result;
