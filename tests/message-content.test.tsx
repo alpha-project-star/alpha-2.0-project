@@ -16,10 +16,21 @@ describe("MessageContent & RichText Renderer Component", () => {
     expect(screen.getByText(/Box/)).toBeDefined();
   });
 
-  it("renders callout notices with title badge and body", () => {
-    render(<MessageContent text={"> [!WARNING]\n> High latency detected on server."} />);
-    expect(screen.getAllByText(/Warning/i)[0]).toBeDefined();
-    expect(screen.getByText(/High latency detected on server/i)).toBeDefined();
+  it("renders callout notices with title badge and body preserving rich inner formatting", () => {
+    render(<MessageContent text={"> [!NOTE]\n> Please review **important parameters** and [docs](https://example.com)."} />);
+    expect(screen.getAllByText(/Note/i)[0]).toBeDefined();
+    expect(screen.getByText(/important parameters/i)).toBeDefined();
+    expect(screen.getByRole("link", { name: /docs/i })).toBeDefined();
+  });
+
+  it("handles malformed math gracefully without crashing the component", () => {
+    render(<MessageContent text={"Broken math equation: $\\invalid\\latex\\broken{"} />);
+    expect(screen.getByText(/Broken math equation/i)).toBeDefined();
+  });
+
+  it("renders fallback placeholder for broken images using SafeImage", () => {
+    render(<MessageContent text={"![Sample Diagram]()"} />);
+    expect(screen.getByText(/Image unavailable/i)).toBeDefined();
   });
 
   it("renders external links with target=_blank and rel=noopener noreferrer", () => {

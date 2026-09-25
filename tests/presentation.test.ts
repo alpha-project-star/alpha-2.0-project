@@ -125,26 +125,57 @@ describe("Presentation Normalization Layer (src/lib/presentation.ts)", () => {
     expect(segments[2].type).toBe("text");
   });
 
-  it("handles streaming partial content safely and converges to final content", () => {
-    const partials = [
-      "# Head",
-      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.",
-      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():",
-      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():\n    return 42\n```\n\n| Col A | Col B |",
-      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():\n    return 42\n```\n\n| Col A | Col B |\n| Val A | Val B |"
-    ];
+  it("handles streaming partial content safely and converges exactly to final normalized presentation", () => {
+    const completeFullText = `# Architecture Overview
 
-    for (const p of partials) {
-      const normalized = normalizePresentation(p);
-      expect(typeof normalized).toBe("string");
-      expect(normalized.length).toBeGreaterThan(0);
+Here is a summary with a [Documentation Link](https://example.com/docs/alpha/v2/deep/path/index.html?ref=123).
+
+- Key Component 1
+- Key Component 2
+
+\`\`\`typescript
+// Markdown inside code fence should NOT be normalized
+# Fake Heading Inside Code
+> [!NOTE]
+// Fake callout inside code
+const table = '| A | B |';
+\`\`\`
+
+| Service | Status |
+| Auth | Active |
+| Storage | Ready |
+
+Here is a math equation:
+\\[
+E = mc^2
+\\]
+
+And a structured diagram:
+┌─────────┐
+│ Service │
+└─────────┘`;
+
+    // Simulate progressive streaming accumulation chunk by chunk
+    let accumulated = "";
+    const chunks = completeFullText.split(" ");
+
+    for (const chunk of chunks) {
+      accumulated += (accumulated ? " " : "") + chunk;
+      const normalizedChunk = normalizePresentation(accumulated);
+      expect(typeof normalizedChunk).toBe("string");
+      expect(normalizedChunk.length).toBeGreaterThan(0);
     }
 
-    const final = partials[partials.length - 1];
-    const finalNormalized = normalizePresentation(final);
-    expect(finalNormalized).toContain("## Heading");
-    expect(finalNormalized).toContain("```python");
-    expect(finalNormalized).toContain("| Col A | Col B |");
-    expect(finalNormalized).toContain("|---|---|");
+    // Final convergence test: normalized accumulated stream MUST equal normalized complete text
+    const finalStreamNormalized = normalizePresentation(accumulated);
+    const completeDirectNormalized = normalizePresentation(completeFullText);
+
+    expect(finalStreamNormalized).toBe(completeDirectNormalized);
+    expect(finalStreamNormalized).toContain("## Architecture Overview");
+    expect(finalStreamNormalized).toContain("```typescript\n// Markdown inside code fence should NOT be normalized");
+    expect(finalStreamNormalized).toContain("| Service | Status |");
+    expect(finalStreamNormalized).toContain("|---|---|");
+    expect(finalStreamNormalized).toContain("$$\nE = mc^2\n$$");
+    expect(finalStreamNormalized).toContain("```diagram\n┌─────────┐");
   });
 });

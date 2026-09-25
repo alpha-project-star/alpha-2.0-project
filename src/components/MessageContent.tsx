@@ -263,10 +263,10 @@ function SafeImage({ src, alt }: { src?: string; alt?: string }) {
 
   if (error || !src) {
     return (
-      <div className="my-4 p-4 rounded-xl border border-muted/40 bg-card flex items-center gap-3 text-muted-foreground text-xs">
+      <span className="block my-4 p-4 rounded-xl border border-muted/40 bg-card flex items-center gap-3 text-muted-foreground text-xs">
         <ImageIcon className="w-5 h-5 shrink-0" />
         <span>[Image unavailable: {alt || "visual asset"}]</span>
-      </div>
+      </span>
     );
   }
 
