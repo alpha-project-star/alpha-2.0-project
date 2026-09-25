@@ -216,6 +216,12 @@ export class ReminderTool {
         }
         const dueAt = interpretReminderDate(rawDue, temporal.now());
         if (dueAt === null) return this.fail('INVALID_INPUT', `Invalid time: ${rawDue}`, op);
+        
+        const nowTime = temporal.now().getTime();
+        if (dueAt < nowTime - 60000) { // Allow 1 minute grace
+          return this.fail('INVALID_INPUT', `The time ${formatReminderDate(dueAt)} is in the past.`, op);
+        }
+        
         updatedPatch.dueAt = dueAt;
       }
 
