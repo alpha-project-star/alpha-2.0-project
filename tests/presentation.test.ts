@@ -124,4 +124,27 @@ describe("Presentation Normalization Layer (src/lib/presentation.ts)", () => {
     expect(segments[1].type).toBe("code");
     expect(segments[2].type).toBe("text");
   });
+
+  it("handles streaming partial content safely and converges to final content", () => {
+    const partials = [
+      "# Head",
+      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.",
+      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():",
+      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():\n    return 42\n```\n\n| Col A | Col B |",
+      "# Heading\n\nSome paragraph with [Link](https://example.com/a/very/long/url) and `code`.\n\n```python\ndef test():\n    return 42\n```\n\n| Col A | Col B |\n| Val A | Val B |"
+    ];
+
+    for (const p of partials) {
+      const normalized = normalizePresentation(p);
+      expect(typeof normalized).toBe("string");
+      expect(normalized.length).toBeGreaterThan(0);
+    }
+
+    const final = partials[partials.length - 1];
+    const finalNormalized = normalizePresentation(final);
+    expect(finalNormalized).toContain("## Heading");
+    expect(finalNormalized).toContain("```python");
+    expect(finalNormalized).toContain("| Col A | Col B |");
+    expect(finalNormalized).toContain("|---|---|");
+  });
 });
