@@ -1851,21 +1851,20 @@ ${transcript}
 
 LATEST REPLY:
 ${lastAssistant.slice(0, 500)}`;
-    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${groqKey}` },
-      body: JSON.stringify({
+
+    const response = await sendChatOpenAICompat(
+      [{ id: uid(), role: "user", text: prompt, ts: Date.now() }],
+      "You are a precise summarization engine that outputs state matrices.",
+      {
+        baseUrl: "https://api.groq.com/openai/v1",
+        apiKey: groqKey,
         model: GROQ_EMERGENCY_MODEL,
-        messages: [{ role: "user", content: prompt }],
         temperature: 0.2,
-        stream: false,
         max_tokens: 800,
-      }),
-    });
-    if (!res.ok) return;
-    const j: any = await res.json();
-    let out = j?.choices?.[0]?.message?.content?.trim() || "";
-    out = stripLeakedThinking(out);
+      }
+    );
+
+    const out = (response.finalText || "").trim();
     if (out && alphaStore.get().chat.length >= 10) conversationSummary.set(out);
   } catch {
     /* swallow — background */
