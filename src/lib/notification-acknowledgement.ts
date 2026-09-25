@@ -1,6 +1,7 @@
 import { getStorage, PersistenceError } from './alpha-store';
 import { withCrossContextLock } from './cross-context-lock';
 import { ReminderRepository } from './reminder-repo';
+import { reminderContextManager, ActiveReminderContext } from './reminder-context';
 
 export type AcknowledgementStatus = 'pending' | 'delivered' | 'acknowledged' | 'failed';
 
@@ -95,6 +96,38 @@ export class LocalAcknowledgementRepository implements AcknowledgementRepository
   async getAcknowledgementByEventId(userId: string, eventId: string): Promise<AcknowledgementRecord | null> {
     const list = await this.listAcknowledgements(userId);
     return list.find(a => a.eventId === eventId) || null;
+  }
+}
+
+export class InMemoryAcknowledgementRepository implements AcknowledgementRepository {
+  private store = new Map<string, AcknowledgementRecord>();
+
+  async getAcknowledgement(userId: string, ackId: string): Promise<AcknowledgementRecord | null> {
+    const record = this.store.get(ackId);
+    return record && record.userId === userId ? { ...record } : null;
+  }
+
+  async saveAcknowledgement(userId: string, record: AcknowledgementRecord): Promise<void> {
+    this.store.set(record.ackId, { ...record });
+  }
+
+  async updateAcknowledgement(userId: string, ackId: string, patch: Partial<AcknowledgementRecord>): Promise<void> {
+    const record = this.store.get(ackId);
+    if (!record || record.userId !== userId) throw new Error('Acknowledgement record not found');
+    this.store.set(ackId, { ...record, ...patch, updatedAt: Date.now() });
+  }
+
+  async listAcknowledgements(userId: string): Promise<AcknowledgementRecord[]> {
+    return Array.from(this.store.values()).filter(r => r.userId === userId);
+  }
+
+  async getAcknowledgementByEventId(userId: string, eventId: string): Promise<AcknowledgementRecord | null> {
+    const list = await this.listAcknowledgements(userId);
+    return list.find(a => a.eventId === eventId) || null;
+  }
+
+  clear(): void {
+    this.store.clear();
   }
 }
 
@@ -484,9 +517,9 @@ export class NotificationAcknowledgementManager {
 
       this.inFlightAcks.add(lockKey);
 
+      let record: AcknowledgementRecord | null = null;
       try {
         // READ AUTHORITATIVE CURRENT ACKNOWLEDGEMENT STATE INSIDE LOCK
-        let record: AcknowledgementRecord | null = null;
         try {
           if (ackId) {
             record = await this.repo.getAcknowledgement(userId, ackId);
@@ -583,7 +616,21 @@ export class NotificationAcknowledgementManager {
 
         await this.repo.saveAcknowledgement(userId, updatedRecord);
         if (this.reminderRepo) {
-          await this.reminderRepo.updateReminder(userId, updatedRecord.reminderId, { reminderState: 'acknowledged' });
+          try {
+            await this.reminderRepo.updateReminder(userId, updatedRecord.reminderId, {
+              reminderState: 'acknowledged',
+              nextRepeatAt: undefined,
+              repetitionCount: 0,
+            });
+          } catch (reminderErr: any) {
+            // Roll back the saved acknowledgement record to maintain transactional integrity
+            try {
+              await this.repo.saveAcknowledgement(userId, record);
+            } catch (rollbackErr) {
+              // Ignore rollback error to preserve original error
+            }
+            throw reminderErr;
+          }
         }
         this.notify(updatedRecord);
 
