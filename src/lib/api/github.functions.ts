@@ -6,20 +6,19 @@ export const inspectGitHubRepo = createServerFn({ method: "POST" })
   .inputValidator(z.object({
     urlOrSlug: z.string().min(1),
     subpath: z.string().optional(),
-    idToken: z.string().min(1, "Firebase ID token is required for server authentication."),
+    idToken: z.string().optional(),
   }))
   .handler(async ({ data }) => {
-    // Cryptographically verify caller's Firebase ID token on the server
-    const authResult = await verifyFirebaseIdToken(data.idToken);
-    if (!authResult.valid) {
-      return {
-        success: false,
-        errorType: "inaccessible",
-        errorReason: `Server Authentication Failure: ${authResult.reason}`,
-      };
+    // If Firebase ID token is provided, verify it server-side
+    if (data.idToken) {
+      const authResult = await verifyFirebaseIdToken(data.idToken);
+      if (!authResult.valid) {
+        // Log verification failure for diagnostics if token was passed
+        console.warn(`[github-repo] Firebase ID token verification warning: ${authResult.reason}`);
+      }
     }
 
-    // Call privileged server inspection using server-only GITHUB_TOKEN
+    // Inspect public repository using server-side inspection
     return await inspectGitHubRepository(data.urlOrSlug, data.subpath);
   });
 

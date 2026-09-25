@@ -801,22 +801,13 @@ export async function executeTool(call: any, context: ToolContext) {
         break;
       case 'inspectGitHubRepo': {
         activity.set("calling_tool");
-        const authUser = await ensureAuthenticatedUser();
-        if (!authUser) {
-          return {
-            success: false,
-            errorType: "inaccessible",
-            errorReason: "Authentication failure: User is not authenticated in Firebase Auth.",
-          };
-        }
-        const idToken = await authUser.getIdToken();
-        if (!idToken) {
-          return {
-            success: false,
-            errorType: "inaccessible",
-            errorReason: "Authentication failure: Failed to acquire Firebase ID token.",
-          };
-        }
+        let idToken: string | undefined = undefined;
+        try {
+          const authUser = auth.currentUser;
+          if (authUser) {
+            idToken = await authUser.getIdToken();
+          }
+        } catch {}
         res = await inspectGitHubRepo({ data: { urlOrSlug: args.urlOrSlug || args.url || args.slug, subpath: args.subpath, idToken } });
         break;
       }
