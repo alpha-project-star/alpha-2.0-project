@@ -3,6 +3,7 @@ import { Bell } from "lucide-react";
 import { SimpleCrud } from "../components/SimpleCrud";
 import { uid } from "../lib/alpha-store";
 import { requestAlarmPermission } from "../lib/alarm-engine";
+import { isBrowserNotificationSupported, getBrowserNotificationPermission } from "../lib/browser-notification-channel";
 import { useState, useEffect, useMemo } from "react";
 import { ToolHeader } from "../components/ToolHeader";
 import { useAuth } from "../lib/auth";
@@ -76,8 +77,21 @@ function RemindersRoute() {
   };
 
   async function enableAlarms() {
+    if (!isBrowserNotificationSupported()) {
+      setPermMsg("⚠️ System notifications are unavailable in this environment.");
+      return;
+    }
     const ok = await requestAlarmPermission();
-    setPermMsg(ok ? "✅ Alarms enabled." : "⚠️ Notification permission denied — alarms will still speak, but no system pop-ups.");
+    if (ok) {
+      setPermMsg("✅ Alarms enabled.");
+    } else {
+      const perm = getBrowserNotificationPermission();
+      if (perm === "denied") {
+        setPermMsg("⚠️ Notification permission denied/blocked in browser settings. Alarms will still speak, but no system pop-ups.");
+      } else {
+        setPermMsg("⚠️ Notification permission was not granted. Alarms will still speak, but no system pop-ups.");
+      }
+    }
   }
 
   const handleSave = async (r: UIReminder) => {

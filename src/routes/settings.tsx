@@ -23,6 +23,7 @@ import {
   getBrowserNotificationPermission,
   requestBrowserNotificationPermission,
   isBrowserNotificationSupported,
+  getCanonicalNotificationStatus,
 } from "../lib/browser-notification-channel";
 import { registerPushSubscription, unregisterPushSubscription, isPushSupported } from "../lib/push-subscription";
 import { useAuth } from "../lib/auth";
@@ -744,13 +745,26 @@ function SettingsRoute() {
 
               {alarmStatus && <div className="text-xs text-muted-foreground">{alarmStatus}</div>}
 
-              <div className="text-xs text-muted-foreground border-t border-border/40 pt-2 flex items-center gap-1.5">
-                <span>System Notification Status:</span>
-                <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-background/50 border border-border">
-                  {typeof window === "undefined" || !isBrowserNotificationSupported()
-                    ? "unsupported"
-                    : getBrowserNotificationPermission()}
-                </span>
+              <div className="text-xs text-muted-foreground border-t border-border/40 pt-2 space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span>System Notification Status:</span>
+                  {(() => {
+                    if (typeof window === "undefined") {
+                      return <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-background/50 border border-border text-muted-foreground">Browser notifications unavailable</span>;
+                    }
+                    const status = getCanonicalNotificationStatus();
+                    if (!status.browserSupported) {
+                      return <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-background/50 border border-border text-muted-foreground">Browser notifications unavailable</span>;
+                    }
+                    if (status.livePermission === "granted") {
+                      return <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 font-medium">Notifications granted</span>;
+                    }
+                    if (status.livePermission === "denied") {
+                      return <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-destructive/10 border border-destructive/30 text-destructive font-medium">Notifications blocked/denied</span>;
+                    }
+                    return <span className="font-mono text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-amber-500 font-medium">Permission not yet granted</span>;
+                  })()}
+                </div>
               </div>
             </div>
           </Section>

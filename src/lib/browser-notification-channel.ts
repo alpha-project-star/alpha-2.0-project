@@ -79,6 +79,25 @@ export function getBrowserNotificationPermission(): PermissionState {
   }
 }
 
+export interface CanonicalNotificationStatus {
+  browserSupported: boolean;
+  livePermission: PermissionState;
+  browserDeliveryAvailable: boolean;
+  inAppDeliveryAvailable: boolean;
+}
+
+export function getCanonicalNotificationStatus(userId?: string): CanonicalNotificationStatus {
+  const supported = isBrowserNotificationSupported();
+  const perm = getBrowserNotificationPermission();
+  const browserAvail = supported && perm === 'granted';
+  return {
+    browserSupported: supported,
+    livePermission: perm,
+    browserDeliveryAvailable: browserAvail,
+    inAppDeliveryAvailable: true,
+  };
+}
+
 export interface RequestPermissionResult {
   state: PermissionState;
   requested: boolean;
