@@ -1,4 +1,4 @@
-import { useState, Component, type ErrorInfo, type ReactNode } from "react";
+import { useState, Component, type ErrorInfo, type ReactNode, isValidElement, cloneElement } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkMath from "remark-math";
 import remarkGfm from "remark-gfm";
@@ -15,7 +15,7 @@ import {
   Workflow,
   ImageIcon,
 } from "lucide-react";
-import { normalizePresentation } from "../lib/presentation";
+import { normalizePresentation, type CalloutType } from "../lib/presentation";
 
 function prettyHost(url: string): string {
   try {
@@ -145,31 +145,54 @@ function CodePre({ children }: { children?: React.ReactNode }) {
   );
 }
 
-/** Callout Card Renderer */
-function CalloutBlock({ children }: { children: React.ReactNode }) {
-  // Extract text content from children
-  const getTextContent = (node: React.ReactNode): string => {
-    if (typeof node === "string") return node;
-    if (typeof node === "number") return String(node);
-    if (Array.isArray(node)) return node.map(getTextContent).join("");
-    if (node && typeof node === "object" && "props" in (node as any)) {
-      return getTextContent((node as any).props?.children);
+/** Processes blockquote children to strip callout header tag while retaining rich React nodes */
+function processCalloutChildren(children: ReactNode): { type: CalloutType | null; content: ReactNode } {
+  let foundType: CalloutType | null = null;
+
+  const removeHeaderTag = (node: ReactNode): ReactNode => {
+    if (typeof node === "string") {
+      const match = node.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|ERROR|SUCCESS)\]\s*/i);
+      if (match) {
+        foundType = match[1].toUpperCase() as CalloutType;
+        return node.slice(match[0].length);
+      }
+      return node;
     }
-    return "";
+
+    if (Array.isArray(node)) {
+      return node.map((child, idx) => {
+        if (idx === 0 && !foundType) {
+          return removeHeaderTag(child);
+        }
+        return child;
+      });
+    }
+
+    if (isValidElement(node)) {
+      const props = (node as any).props;
+      if (props && props.children) {
+        const newChildren = removeHeaderTag(props.children);
+        return cloneElement(node, { ...props, children: newChildren });
+      }
+    }
+
+    return node;
   };
 
-  const rawText = getTextContent(children).trim();
-  const match = rawText.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|ERROR|SUCCESS)\]\s*([\s\S]*)$/i);
+  const content = removeHeaderTag(children);
+  return { type: foundType, content };
+}
 
-  if (!match) {
+/** Callout Card Renderer */
+function CalloutBlock({ children }: { children?: React.ReactNode }) {
+  const { type, content } = processCalloutChildren(children);
+
+  if (!type) {
     return <blockquote className="alpha-blockquote">{children}</blockquote>;
   }
 
-  const type = match[1].toUpperCase();
-  const bodyText = match[2];
-
   const configMap: Record<
-    string,
+    CalloutType,
     { icon: any; title: string; containerCls: string; iconCls: string; titleCls: string }
   > = {
     NOTE: {
@@ -228,7 +251,7 @@ function CalloutBlock({ children }: { children: React.ReactNode }) {
         <div className={`text-xs uppercase tracking-wider mb-1 ${cfg.titleCls}`}>
           {cfg.title}
         </div>
-        <div className="callout-body">{bodyText || children}</div>
+        <div className="callout-body">{content}</div>
       </div>
     </div>
   );
