@@ -804,15 +804,47 @@
 
 .alpha-prose blockquote {
   margin: 16px 0;
-  padding: 2px 0 2px 16px;
-  border-left: 2px solid oklch(0.7 0.2 258 / 0.5);
+  padding: 4px 0 4px 16px;
+  border-left: 3px solid oklch(0.7 0.2 258 / 0.6);
   color: var(--color-muted-foreground);
+  background: oklch(0.12 0.03 260 / 0.3);
+  border-radius: 0 8px 8px 0;
 }
 .alpha-prose blockquote p {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 .alpha-prose blockquote p:last-child {
   margin-bottom: 0;
+}
+
+/* Callouts & Notices */
+.alpha-prose .alpha-callout {
+  margin: 16px 0;
+  border-radius: 12px;
+  transition: all 0.15s ease-in-out;
+}
+.alpha-prose .alpha-callout .callout-body p {
+  margin-bottom: 8px;
+}
+.alpha-prose .alpha-callout .callout-body p:last-child {
+  margin-bottom: 0;
+}
+
+/* Diagrams & Visual Text */
+.alpha-prose .alpha-diagram-container {
+  margin: 16px 0;
+  border-radius: 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+}
+.alpha-prose .alpha-diagram-pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  white-space: pre;
+  word-break: normal;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .alpha-prose .alpha-link {

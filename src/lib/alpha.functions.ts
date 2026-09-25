@@ -457,8 +457,14 @@ Maths:
 Code:
 - Fenced blocks with a language tag for real code, commands, configuration, JSON, SQL, or regex. Inline backticks for single identifiers, variables, or commands. Explain before or after the code block, never inside it.
 
+Diagrams & Visual Text:
+- Use fenced blocks with language "diagram", "ascii", or "mermaid" for structured visual diagrams, arrow flows, state transitions, architecture maps, or sequence flows. Keep characters aligned in monospace.
+
+Callouts & Structured Notices:
+- Use GFM blockquote callouts for notices: > [!NOTE], > [!TIP], > [!IMPORTANT], > [!WARNING], > [!ERROR], > [!SUCCESS]. Keep notices concise and high-priority.
+
 Quotes & Links:
-- Block quotes are reserved for genuinely quoted material.
+- Block quotes are reserved for quoted material or structured notices.
 - Write links as "[label](url)", never a bare URL in prose.
 - A "**Sources:**" section appears ONLY when a real live search happened this turn.
 
