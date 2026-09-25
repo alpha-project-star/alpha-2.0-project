@@ -6,7 +6,7 @@ import { requestAlarmPermission } from "../lib/alarm-engine";
 import { useState, useEffect, useMemo } from "react";
 import { ToolHeader } from "../components/ToolHeader";
 import { useAuth } from "../lib/auth";
-import { LocalReminderRepository, type ReminderState, type NotificationState } from "../lib/reminder-repo";
+import { LocalReminderRepository, reminderRepository, type ReminderState, type NotificationState } from "../lib/reminder-repo";
 import { normalizeWhen } from "../lib/when";
 
 export const Route = createFileRoute("/reminders")({
@@ -28,7 +28,7 @@ function RemindersRoute() {
   const [reminders, setReminders] = useState<UIReminder[]>([]);
   const [permMsg, setPermMsg] = useState("");
   const [timeError, setTimeError] = useState("");
-  const repo = useMemo(() => new LocalReminderRepository(), []);
+  const repo = reminderRepository;
 
   useEffect(() => {
     const loadReminders = () => {

@@ -488,3 +488,5 @@ export class InMemoryReminderRepository extends LocalReminderRepository {
  * Reminders are strictly local-first and do not persist to Firestore.
  */
 export const FirestoreReminderRepository = LocalReminderRepository;
+
+export const reminderRepository = new LocalReminderRepository();

@@ -1,5 +1,5 @@
 import { ReminderTool } from './reminder-tool';
-import { LocalReminderRepository } from './reminder-repo';
+import { reminderRepository } from './reminder-repo';
 
 /**
  * ToolContext provides the necessary environment for a tool to execute,
@@ -16,8 +16,7 @@ export interface ToolContext {
  */
 export const toolRegistry = {
   reminders: (ctx: ToolContext) => {
-    const repo = new LocalReminderRepository();
-    return new ReminderTool(ctx.userId || 'local-user', repo);
+    return new ReminderTool(ctx.userId || 'local-user', reminderRepository);
   },
   listAvailable: () => [
     { id: "reminders.create", riskLevel: "WRITE" },

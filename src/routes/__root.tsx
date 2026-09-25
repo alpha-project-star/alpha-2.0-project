@@ -17,7 +17,7 @@ import { AlphaLock } from "../components/AlphaLock";
 import { registerAlphaPWA } from "../lib/pwa";
 import { backgroundRuntime } from "../lib/background-runtime";
 import { AuthProvider, useAuth } from "../lib/auth";
-import { LocalReminderRepository } from "../lib/reminder-repo";
+import { LocalReminderRepository, reminderRepository } from "../lib/reminder-repo";
 
 function NotFoundComponent() {
   return (
@@ -153,7 +153,7 @@ function AppContent() {
 
   useEffect(() => {
     const effectiveUid = user?.uid || "local-user";
-    backgroundRuntime.setUser(effectiveUid, new LocalReminderRepository());
+    backgroundRuntime.setUser(effectiveUid, reminderRepository);
   }, [auth.status, user]);
 
   return (

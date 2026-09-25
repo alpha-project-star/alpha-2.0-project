@@ -23,7 +23,7 @@ import {
   ResultSchema
 } from "./execution";
 import { sanitizeUserPersonalization } from "./alpha-identity";
-import { LocalReminderRepository, FirestoreReminder } from "./reminder-repo";
+import { LocalReminderRepository, FirestoreReminder, reminderRepository } from "./reminder-repo";
 import { withCrossContextLock } from "./cross-context-lock";
 
 const STORE_SCHEMAS: Record<string, z.ZodType<any>> = {
@@ -153,7 +153,7 @@ export async function exportAlphaData(): Promise<AlphaDataExport> {
     console.warn("Music export skipped:", e);
   }
 
-  const reminderRepo = new LocalReminderRepository();
+  const reminderRepo = reminderRepository;
   const currentUid = auth.currentUser?.uid || "local-user";
   let exportedReminders: FirestoreReminder[] = [];
   try {
@@ -379,7 +379,7 @@ export async function importAlphaData(fileOrJson: File | string): Promise<{ rest
     }
   }
 
-  const reminderRepo = new LocalReminderRepository();
+  const reminderRepo = reminderRepository;
   let previousReminders: FirestoreReminder[];
   try {
     previousReminders = await reminderRepo.listReminders("local-user");
@@ -532,7 +532,7 @@ export async function wipeAlphaData() {
 
     // 2. Clear canonical reminders
     try {
-      const reminderRepo = new LocalReminderRepository();
+      const reminderRepo = reminderRepository;
       await reminderRepo.replaceReminders("local-user", []);
     } catch (err: unknown) {
       errors.push(`Failed to clear canonical reminders: ${err instanceof Error ? err.message : String(err)}`);

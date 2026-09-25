@@ -1,6 +1,6 @@
 import { getStorage, PersistenceError } from './alpha-store';
 import { withCrossContextLock } from './cross-context-lock';
-import { ReminderRepository } from './reminder-repo';
+import { ReminderRepository, reminderRepository } from './reminder-repo';
 import { reminderContextManager, ActiveReminderContext } from './reminder-context';
 
 export type AcknowledgementStatus = 'pending' | 'delivered' | 'acknowledged' | 'failed';
@@ -853,3 +853,4 @@ export class NotificationAcknowledgementManager {
 export const notificationAcknowledgementManager = new NotificationAcknowledgementManager({
   repo: new LocalAcknowledgementRepository()
 });
+notificationAcknowledgementManager.setReminderRepository(reminderRepository);

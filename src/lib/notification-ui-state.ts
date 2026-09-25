@@ -10,11 +10,10 @@ import {
   OutstandingAcknowledgementRecord,
 } from './notification-recovery';
 import { formatReminderDate } from './reminder-date-utils';
-import { LocalReminderRepository } from './reminder-repo';
+import { reminderRepository } from './reminder-repo';
 
-const defaultReminderRepo = new LocalReminderRepository();
 const getReminderRepo = () => {
-  return (notificationAcknowledgementManager.getReminderRepository() || defaultReminderRepo);
+  return reminderRepository;
 };
 
 export type NotificationDisplayStatus =

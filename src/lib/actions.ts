@@ -37,6 +37,7 @@ import { auth } from "./firebase";
 import { reminderContextManager } from "./reminder-context";
 import {
   LocalReminderRepository,
+  reminderRepository,
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
@@ -250,7 +251,7 @@ export async function executeActionTagsAsync(
   }
 
   const effectiveUserId = options?.userId ?? (auth.currentUser?.uid || "local-user");
-  const repo = options?.repo ?? new LocalReminderRepository();
+  const repo = options?.repo ?? reminderRepository;
 
   async function findReminderHits(query: string): Promise<FirestoreReminder[]> {
     const list = await repo.listReminders(effectiveUserId);

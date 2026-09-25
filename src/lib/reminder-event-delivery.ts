@@ -1,7 +1,7 @@
 // src/lib/reminder-event-delivery.ts
 
 import { ReminderDueEvent, validateReminderDueEvent } from './reminder-events';
-import { ReminderRepository, FirestoreReminder } from './reminder-repo';
+import { ReminderRepository, FirestoreReminder, reminderRepository } from './reminder-repo';
 import { temporal } from './temporal';
 import { withCrossContextLock } from './cross-context-lock';
 import { notificationAcknowledgementManager } from './notification-acknowledgement';
@@ -28,9 +28,9 @@ export class ReminderEventDelivery {
 
   constructor(repoOrOptions?: ReminderRepository | { repo?: ReminderRepository }) {
     if (repoOrOptions && 'repo' in repoOrOptions && typeof (repoOrOptions as any).getReminder !== 'function') {
-      this.repo = (repoOrOptions as any).repo;
+      this.repo = (repoOrOptions as any).repo || reminderRepository;
     } else {
-      this.repo = repoOrOptions as ReminderRepository | undefined;
+      this.repo = (repoOrOptions as ReminderRepository | undefined) || reminderRepository;
     }
   }
 

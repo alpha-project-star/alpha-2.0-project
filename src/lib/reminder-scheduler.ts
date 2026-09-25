@@ -1,6 +1,6 @@
 // src/lib/reminder-scheduler.ts
 
-import { FirestoreReminder, ReminderRepository, InMemoryReminderRepository } from './reminder-repo';
+import { FirestoreReminder, ReminderRepository, InMemoryReminderRepository, reminderRepository } from './reminder-repo';
 import { temporal } from './temporal';
 import { alphaStore } from './alpha-store';
 import { ReminderDueEvent, generateReminderEventId } from './reminder-events';
@@ -36,29 +36,31 @@ export class ReminderScheduler {
     repo?: ReminderRepository,
     options: SchedulerOptions = {},
   ) {
+    this.repo = reminderRepository;
+    this.eventDelivery = reminderEventDelivery;
     if (typeof userIdOrOptions === 'string') {
       if (userIdOrOptions === '') throw new Error('userId is required for ReminderScheduler');
       this.userId = userIdOrOptions;
-      this.repo = repo;
+      if (repo) this.repo = repo;
       this.options = {
         pollingIntervalMs: 5000,
         ...options,
       };
-      this.eventDelivery = options.eventDelivery;
+      if (options.eventDelivery) this.eventDelivery = options.eventDelivery;
     } else if (typeof userIdOrOptions === 'object' && userIdOrOptions !== null) {
       this.options = {
         pollingIntervalMs: 5000,
         ...userIdOrOptions,
       };
-      this.repo = userIdOrOptions.repo || repo;
-      this.eventDelivery = userIdOrOptions.eventDelivery;
+      this.repo = userIdOrOptions.repo || repo || reminderRepository;
+      this.eventDelivery = userIdOrOptions.eventDelivery || reminderEventDelivery;
     } else {
       this.options = {
         pollingIntervalMs: 5000,
         ...options,
       };
-      this.repo = repo;
-      this.eventDelivery = options.eventDelivery;
+      if (repo) this.repo = repo;
+      if (options.eventDelivery) this.eventDelivery = options.eventDelivery;
     }
   }
 
@@ -68,6 +70,9 @@ export class ReminderScheduler {
       this.repo = repo;
       this.getEventDelivery().setRepo(repo);
       notificationAcknowledgementManager.setReminderRepository(repo);
+    } else if (this.repo) {
+      this.getEventDelivery().setRepo(this.repo);
+      notificationAcknowledgementManager.setReminderRepository(this.repo);
     }
   }
 

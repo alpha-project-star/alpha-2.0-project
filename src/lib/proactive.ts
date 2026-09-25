@@ -3,6 +3,7 @@ import { speakWith, prepareUtterance } from "./voice";
 import { auth } from "./firebase";
 import {
   LocalReminderRepository,
+  reminderRepository,
   type FirestoreReminder,
   type ReminderRepository,
 } from "./reminder-repo";
@@ -85,7 +86,7 @@ export async function buildMorningBrief(options?: MorningBriefOptions): Promise<
     })();
     const userId = options?.userId ?? (currentUid || "local-user");
     try {
-      const repo = options?.repo ?? new LocalReminderRepository();
+      const repo = options?.repo ?? reminderRepository;
       remindersList = await repo.listReminders(userId);
     } catch (err) {
       reminderRepoFailed = true;
