@@ -12,7 +12,10 @@ import {
 import { formatReminderDate } from './reminder-date-utils';
 import { LocalReminderRepository } from './reminder-repo';
 
-const reminderRepo = new LocalReminderRepository();
+const defaultReminderRepo = new LocalReminderRepository();
+const getReminderRepo = () => {
+  return (notificationAcknowledgementManager.getReminderRepository() || defaultReminderRepo);
+};
 
 export type NotificationDisplayStatus =
   | 'awaiting_acknowledgement'
@@ -53,7 +56,7 @@ export async function resolveNotificationStatus(
   // 1. Check if underlying reminder is completed in authoritative repository
   if (reminderId) {
     try {
-      const repoMatch = await reminderRepo.getReminder(cleanUid, reminderId);
+      const repoMatch = await getReminderRepo().getReminder(cleanUid, reminderId);
       if (repoMatch && repoMatch.reminderState === 'completed') {
         return 'completed';
       }
@@ -167,7 +170,7 @@ export function useNotificationUIState() {
       return;
     }
     try {
-      const allReminders = await reminderRepo.listReminders(targetUid);
+      const allReminders = await getReminderRepo().listReminders(targetUid);
       const doneIds = new Set(
         allReminders
           .filter((r) => r.reminderState === 'completed')

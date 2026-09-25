@@ -66,9 +66,7 @@ export class ReminderScheduler {
     this.userId = userId;
     if (repo) {
       this.repo = repo;
-      if (this.eventDelivery) {
-        this.eventDelivery.setRepo(repo);
-      }
+      this.getEventDelivery().setRepo(repo);
       notificationAcknowledgementManager.setReminderRepository(repo);
     }
   }

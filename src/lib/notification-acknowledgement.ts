@@ -350,6 +350,10 @@ export class NotificationAcknowledgementManager {
     this.reminderRepo = repo;
   }
 
+  public getReminderRepository(): ReminderRepository | null {
+    return this.reminderRepo;
+  }
+
   public subscribe(listener: (record: AcknowledgementRecord) => void): () => void {
     this.listeners.add(listener);
     return () => {
