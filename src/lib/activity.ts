@@ -15,6 +15,7 @@ export type ActivityKind =
   | "preparing"
   | "searching"
   | "reading_image"
+  | "reading_file"
   | "reading_article"
   | "search_deciding"
   | "processing_attachment"
@@ -48,6 +49,7 @@ const LABELS: Record<ActivityKind, string> = {
   preparing: "Preparing response…",
   searching: "Searching the web…",
   reading_image: "Reading image…",
+  reading_file: "Reading file..",
   reading_article: "Reading article…",
   search_deciding: "Deciding to search…",
   processing_attachment: "Processing attachment…",

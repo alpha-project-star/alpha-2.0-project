@@ -36,7 +36,14 @@ export interface NormalizedChatResponse {
 
 export type ChatResponse = NormalizedChatResponse;
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number, signal?: AbortSignal) => 
+  new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new Error("Aborted"));
+    }, { once: true });
+  });
 
 /** Retry-After may be seconds or an HTTP date; also parse "try again in 4.5s". */
 function retryAfterMs(res: Response, body: string): number | null {
@@ -191,21 +198,34 @@ export async function sendChatOpenAICompat(
     const keepImages = idx === lastImageIdx;
 
     const msg: any = { role };
+    let textContent = m.text || "";
+    if (m.attachments && m.attachments.length > 0) {
+      const fileContexts = m.attachments
+        .map(
+          (a: any) =>
+            `[ATTACHED FILE: "${a.name}" (${Math.round((a.size || 0) / 1024)} KB, format: ${a.format || "doc"})]\n${a.text || ""}\n[END OF FILE "${a.name}"]`
+        )
+        .join("\n\n");
+      textContent = textContent
+        ? `${fileContexts}\n\nUser Message:\n${textContent}`
+        : `${fileContexts}\n\nPlease analyze and explain this attached document.`;
+    }
+
     if (role === "tool") {
       msg.tool_call_id = m.tool_call_id;
-      msg.content = m.text || "";
+      msg.content = textContent;
     } else if (role === "user" && m.images?.length && opts.allowImages && keepImages) {
       const parts: any[] = [];
-      if (m.text) parts.push({ type: "text", text: m.text });
+      if (textContent) parts.push({ type: "text", text: textContent });
       for (const img of m.images) parts.push({ type: "image_url", image_url: { url: img } });
       msg.content = parts;
     } else if (role === "user" && m.images?.length && keepImages) {
       const note = `[user attached ${m.images.length} image${m.images.length > 1 ? "s" : ""} — not visible to this text-only model]`;
-      msg.content = m.text ? `${m.text}\n\n${note}` : note;
+      msg.content = textContent ? `${textContent}\n\n${note}` : note;
     } else if (role === "user" && m.images?.length) {
-      msg.content = m.text || "[image]";
+      msg.content = textContent || "[image]";
     } else {
-      msg.content = m.text || "";
+      msg.content = textContent;
     }
 
     if (m.tool_calls) {
@@ -293,7 +313,7 @@ export async function sendChatOpenAICompat(
           throw err;
         }
         lastErr = err;
-        await sleep(backoff);
+        await sleep(backoff, opts.signal);
         continue;
       }
       throw err;

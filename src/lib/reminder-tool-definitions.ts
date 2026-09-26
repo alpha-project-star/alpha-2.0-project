@@ -1,7 +1,8 @@
 /**
- * OpenAI-compatible tool definitions for the ReminderTool.
+ * OpenAI-compatible tool definitions for Alpha.
+ * Includes reminders, weather, knowledge lookup, math sandbox, and GitHub inspection.
  */
-export const REMINDER_TOOLS = [
+export const ALPHA_TOOLS = [
   {
     type: "function",
     function: {
@@ -104,6 +105,64 @@ export const REMINDER_TOOLS = [
           subpath: { type: "string", description: "Optional file or directory path within the repository to inspect (e.g., 'src/index.ts' or 'README.md')." },
         },
         required: ["urlOrSlug"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "getWeather",
+      description: "Get real-time current weather conditions and daily forecasts for any city or location worldwide using Open-Meteo.",
+      parameters: {
+        type: "object",
+        properties: {
+          location: { type: "string", description: "The city, region, or location name (e.g., 'Tokyo', 'London', 'New York', 'Paris, France')." },
+        },
+        required: ["location"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "lookupKnowledge",
+      description: "Lookup encyclopedia summaries from Wikipedia or search scientific research papers from arXiv.",
+      parameters: {
+        type: "object",
+        properties: {
+          topic: { type: "string", description: "The subject, concept, person, scientific topic, or paper search query." },
+          source: { type: "string", enum: ["wikipedia", "arxiv"], description: "The knowledge source to query ('wikipedia' for general encyclopedia, 'arxiv' for academic/scientific research papers). Defaults to 'wikipedia'." },
+        },
+        required: ["topic"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "evaluateMath",
+      description: "Evaluate complex mathematical, scientific, financial, or statistical expressions deterministically in a secure sandbox (supports arithmetic, trigonometry, logarithms, power, sqrt, constants pi, e).",
+      parameters: {
+        type: "object",
+        properties: {
+          expression: { type: "string", description: "The mathematical expression or formula to evaluate (e.g., '2^10 + sqrt(144)', 'sin(pi/4)', '1500 * (1 + 0.05)^10')." },
+        },
+        required: ["expression"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "controlMusic",
+      description: "Control the local music playback (play, stop, next, previous).",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["play", "stop", "next", "previous"], description: "The music action to perform." },
+          query: { type: "string", description: "Optional track name to search for when action is 'play'." },
+        },
+        required: ["action"],
       },
     },
   },

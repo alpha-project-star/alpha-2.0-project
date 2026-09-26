@@ -3,6 +3,8 @@ import { createContext, useContext, useEffect, useState } from "react";
 import {
   onAuthStateChanged,
   signInAnonymously,
+  signInWithPopup,
+  GoogleAuthProvider,
   signOut,
   User,
 } from "firebase/auth";
@@ -20,6 +22,15 @@ const AuthContext = createContext<AuthState>({ status: 'loading' });
 
 let bootstrapPromise: Promise<User | null> | null = null;
 let bootstrapAttempted = false;
+
+/**
+ * Signs in user with Google OAuth popup.
+ */
+export async function signInWithGoogle(): Promise<User | null> {
+  const provider = new GoogleAuthProvider();
+  const res = await signInWithPopup(auth, provider);
+  return res.user;
+}
 
 /**
  * Signs out the current Firebase user.

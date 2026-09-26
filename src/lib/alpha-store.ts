@@ -16,13 +16,22 @@ import {
 export type ChatRole = "user" | "model" | "system" | "tool";
 export type MessageOrigin = "user" | "model" | "system" | "proactive";
 
+export interface ChatAttachment {
+  name: string;
+  size: number;
+  format: string;
+  text?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: ChatRole;
   origin?: MessageOrigin;
   proactiveEventId?: string;
   text: string;
+  name?: string;
   images?: string[];
+  attachments?: ChatAttachment[];
   ts: number;
   error?: boolean;
   /** OpenAI tool call ID for 'tool' role or 'model' role responding with tools. */
@@ -123,9 +132,25 @@ export interface Settings {
   taskModels: { fast: string; thinking: string; coding: string };
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export const ChatSessionSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  createdAt: z.number(),
+  updatedAt: z.number(),
+});
+
 export interface AlphaState {
   chat: ChatMessage[];
   internalHistory?: ChatMessage[];
+  sessions: ChatSession[];
+  activeSessionId: string;
   notes: Note[];
   bills: Bill[];
   tasks: Task[];
@@ -137,11 +162,14 @@ export interface AlphaState {
   memories: Memory[];
   profile: Profile;
   settings: Settings;
+  composerText: string;
 }
 
 export const K = {
   chat: "alpha.chat.v1",
   internalHistory: "alpha.internalHistory.v1",
+  sessions: "alpha.sessions.v1",
+  activeSessionId: "alpha.activeSessionId.v1",
   notes: "alpha.notes.v1",
   bills: "alpha.bills.v1",
   goals: "alpha.goals.v1",
@@ -154,6 +182,7 @@ export const K = {
   profile: "alpha.profile.v1",
   settings: "alpha.settings.v1",
   summary: "alpha.summary.v1",
+  composerText: "alpha.composerText.v1",
 };
 
 const DEFAULT_SETTINGS: Settings = {
@@ -234,6 +263,13 @@ export const ProfileSchema = z.object({
   bio: z.string().default(""),
 }) as z.ZodType<Profile>;
 
+export const ChatAttachmentSchema = z.object({
+  name: z.string(),
+  size: z.number(),
+  format: z.string().optional().default(""),
+  text: z.string().optional().default(""),
+});
+
 export const ChatMessageSchema = z.object({
   id: z.string(),
   role: z.enum(["user", "model", "system", "tool"]),
@@ -242,6 +278,7 @@ export const ChatMessageSchema = z.object({
   text: z.string().optional().default(""),
   name: z.string().optional(),
   images: z.array(z.string()).optional(),
+  attachments: z.array(ChatAttachmentSchema).optional(),
   ts: z.number(),
   error: z.boolean().optional(),
   tool_call_id: z.string().optional(),
@@ -474,15 +511,25 @@ export function writeLS<T>(key: string, v: T): { status: "success" | "unavailabl
   try {
     let serialized = "";
     if (key === K.chat || targetKey.startsWith(K.chat)) {
-      // Clean/strip/replace giant base64 images from ChatMessages to prevent QuotaExceededError
+      // Clean/strip/replace giant base64 images and cap oversized attachment texts to prevent QuotaExceededError
       const cleaned = (v as any).map((m: any) => {
+        let msg = m;
         if (m.images && m.images.length > 0) {
-          return {
-            ...m,
+          msg = {
+            ...msg,
             images: m.images.map((img: string) => img.startsWith("data:") && img.length > 200 ? "[image_transient]" : img)
           };
         }
-        return m;
+        if (m.attachments && m.attachments.length > 0) {
+          msg = {
+            ...msg,
+            attachments: m.attachments.map((a: any) => ({
+              ...a,
+              text: a.text && a.text.length > 80000 ? a.text.slice(0, 80000) + "\n[... Truncated for storage]" : a.text,
+            })),
+          };
+        }
+        return msg;
       });
       serialized = JSON.stringify(cleaned);
     } else {
@@ -615,11 +662,38 @@ export function useAlpha<T>(selector: (s: AlphaState) => T): T {
   return selector(fullState);
 }
 
+const activeImageCache = new Map<string, string[]>();
+
+function hydrateImages(msgs: ChatMessage[]): ChatMessage[] {
+  return msgs.map((m) => {
+    if (m.images && m.images.length > 0) {
+      const hasTransient = m.images.some((img) => img === "[image_transient]");
+      if (hasTransient && activeImageCache.has(m.id)) {
+        return { ...m, images: activeImageCache.get(m.id)! };
+      }
+      if (!hasTransient) {
+        activeImageCache.set(m.id, m.images);
+      }
+    } else if (activeImageCache.has(m.id)) {
+      return { ...m, images: activeImageCache.get(m.id)! };
+    }
+    return m;
+  });
+}
+
 function reloadState() {
   migrateLegacyScopedKeys();
+  const rawSessions = parseLS<ChatSession[]>(K.sessions, z.array(ChatSessionSchema), []);
+  const defaultSessions: ChatSession[] = rawSessions.length > 0 ? rawSessions : [
+    { id: "default", title: "Main Conversation", createdAt: Date.now(), updatedAt: Date.now() }
+  ];
+  const activeSessionId = parseLS<string>(K.activeSessionId, z.string(), defaultSessions[0].id);
+
   state = {
-    chat: parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), []),
-    internalHistory: parseLS<ChatMessage[]>(K.internalHistory, z.array(ChatMessageSchema), []),
+    chat: hydrateImages(parseLS<ChatMessage[]>(K.chat, z.array(ChatMessageSchema), [])),
+    internalHistory: hydrateImages(parseLS<ChatMessage[]>(K.internalHistory, z.array(ChatMessageSchema), [])),
+    sessions: defaultSessions,
+    activeSessionId,
     notes: parseLS<Note[]>(K.notes, z.array(NoteSchema), []),
     bills: parseLS<Bill[]>(K.bills, z.array(BillSchema), []),
     tasks: parseLS<Task[]>(K.tasks, z.array(z.any()), []),
@@ -631,6 +705,7 @@ function reloadState() {
     memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
     profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
     settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
+    composerText: parseLS<string>(K.composerText, z.string(), ""),
   };
 }
 
@@ -683,6 +758,9 @@ export const alphaStore = {
     return deduped.sort((a, b) => (a.ts || 0) - (b.ts || 0));
   },
   appendChat(msg: ChatMessage): Promise<void> {
+    if (msg.images?.length && !msg.images.some(img => img === "[image_transient]")) {
+      activeImageCache.set(msg.id, msg.images);
+    }
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
       const isIntermediate = msg.intermediate || msg.role === "tool" || (msg.role === "model" && !msg.text && msg.tool_calls?.length);
@@ -695,11 +773,138 @@ export const alphaStore = {
         const next = [...state.chat, msg].slice(-200);
         writeLS(K.chat, next);
         state = { ...state, chat: next };
+
+        // Auto-title session on first user message if title is default
+        if (msg.role === "user" && msg.text && state.sessions.length > 0) {
+          const activeSession = state.sessions.find((s) => s.id === state.activeSessionId);
+          if (activeSession && (activeSession.title === "Main Conversation" || activeSession.title === "New Conversation")) {
+            const autoTitle = msg.text.trim().slice(0, 35) + (msg.text.length > 35 ? "…" : "");
+            const nextSessions = state.sessions.map((s) =>
+              s.id === activeSession.id ? { ...s, title: autoTitle, updatedAt: Date.now() } : s
+            );
+            writeLS(K.sessions, nextSessions);
+            state = { ...state, sessions: nextSessions };
+          }
+        }
+      }
+      emit();
+    });
+  },
+  createSession(title?: string): Promise<string> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      const currentId = state.activeSessionId || "default";
+      writeLS(`alpha.chat_session.${currentId}.v1`, state.chat);
+      writeLS(`alpha.internal_session.${currentId}.v1`, state.internalHistory || []);
+
+      const newSessionId = uid();
+      const newSession: ChatSession = {
+        id: newSessionId,
+        title: title || "New Conversation",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      const nextSessions = [newSession, ...state.sessions];
+      writeLS(K.sessions, nextSessions);
+      writeLS(K.activeSessionId, newSessionId);
+      writeLS(K.chat, []);
+      writeLS(K.internalHistory, []);
+
+      state = {
+        ...state,
+        sessions: nextSessions,
+        activeSessionId: newSessionId,
+        chat: [],
+        internalHistory: [],
+      };
+      conversationSummary.clear();
+      reminderContextManager.clear();
+      emit();
+      return newSessionId;
+    });
+  },
+  switchSession(sessionId: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      if (sessionId === state.activeSessionId) return;
+
+      const currentId = state.activeSessionId || "default";
+      writeLS(`alpha.chat_session.${currentId}.v1`, state.chat);
+      writeLS(`alpha.internal_session.${currentId}.v1`, state.internalHistory || []);
+
+      const targetChat = hydrateImages(parseLS<ChatMessage[]>(`alpha.chat_session.${sessionId}.v1`, z.array(ChatMessageSchema), []));
+      const targetInternal = hydrateImages(parseLS<ChatMessage[]>(`alpha.internal_session.${sessionId}.v1`, z.array(ChatMessageSchema), []));
+
+      writeLS(K.activeSessionId, sessionId);
+      writeLS(K.chat, targetChat);
+      writeLS(K.internalHistory, targetInternal);
+
+      state = {
+        ...state,
+        activeSessionId: sessionId,
+        chat: targetChat,
+        internalHistory: targetInternal,
+      };
+      conversationSummary.clear();
+      reminderContextManager.clear();
+      emit();
+    });
+  },
+  renameSession(sessionId: string, newTitle: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      const trimmed = newTitle.trim() || "Untitled";
+      const nextSessions = state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, title: trimmed, updatedAt: Date.now() } : s
+      );
+      writeLS(K.sessions, nextSessions);
+      state = { ...state, sessions: nextSessions };
+      emit();
+    });
+  },
+  deleteSession(sessionId: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      const nextSessions = state.sessions.filter((s) => s.id !== sessionId);
+      const remainingSessions = nextSessions.length > 0 ? nextSessions : [
+        { id: "default", title: "Main Conversation", createdAt: Date.now(), updatedAt: Date.now() }
+      ];
+
+      try {
+        localStorage.removeItem(getScopedKey(`alpha.chat_session.${sessionId}.v1`));
+        localStorage.removeItem(getScopedKey(`alpha.internal_session.${sessionId}.v1`));
+      } catch {}
+
+      writeLS(K.sessions, remainingSessions);
+
+      if (state.activeSessionId === sessionId) {
+        const nextActiveId = remainingSessions[0].id;
+        const targetChat = hydrateImages(parseLS<ChatMessage[]>(`alpha.chat_session.${nextActiveId}.v1`, z.array(ChatMessageSchema), []));
+        const targetInternal = hydrateImages(parseLS<ChatMessage[]>(`alpha.internal_session.${nextActiveId}.v1`, z.array(ChatMessageSchema), []));
+
+        writeLS(K.activeSessionId, nextActiveId);
+        writeLS(K.chat, targetChat);
+        writeLS(K.internalHistory, targetInternal);
+
+        state = {
+          ...state,
+          sessions: remainingSessions,
+          activeSessionId: nextActiveId,
+          chat: targetChat,
+          internalHistory: targetInternal,
+        };
+      } else {
+        state = { ...state, sessions: remainingSessions };
       }
       emit();
     });
   },
   setChat(msgs: ChatMessage[]): Promise<void> {
+    for (const m of msgs) {
+      if (m.images?.length && !m.images.some(img => img === "[image_transient]")) {
+        activeImageCache.set(m.id, m.images);
+      }
+    }
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
       const visible: ChatMessage[] = [];
@@ -938,6 +1143,14 @@ export const alphaStore = {
       reloadState();
       writeLS(K.profile, p);
       state = { ...state, profile: p };
+      emit();
+    });
+  },
+  setComposerText(text: string): Promise<void> {
+    return withCrossContextLock("alpha_store_lock", () => {
+      reloadState();
+      writeLS(K.composerText, text);
+      state = { ...state, composerText: text };
       emit();
     });
   },

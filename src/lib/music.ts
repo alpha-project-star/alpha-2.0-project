@@ -96,15 +96,54 @@ export async function playMusicByName(query = ""): Promise<string> {
   if (!rows.length)
     return "No music is stored yet. Upload MP3 files in Settings → Alpha Data → Music Library.";
   const q = query.trim().toLowerCase();
+  const sorted = rows.sort((a, b) => Number(b.addedAt || 0) - Number(a.addedAt || 0));
   const row = q
     ? rows.find((r) =>
         String(r.name || "")
           .toLowerCase()
           .includes(q),
       )
-    : rows.sort((a, b) => Number(b.addedAt || 0) - Number(a.addedAt || 0))[0];
+    : sorted[0];
   if (!row) return `I couldn't find a track matching "${query}".`;
   
-  await MusicManager.getInstance().play(row.blob as Blob, row.name);
+  await MusicManager.getInstance().play(row.blob as Blob, row.name, row.id);
   return `Playing ${row.name}.`;
+}
+
+export async function playNextTrack(): Promise<string> {
+  const rows = await tx<any[]>("readonly", (store) => store.getAll());
+  if (!rows.length) return "No music tracks found.";
+  const sorted = rows.sort((a, b) => Number(a.addedAt || 0) - Number(b.addedAt || 0));
+  const currentId = MusicManager.getInstance().getCurrentTrackId();
+  
+  let nextIndex = 0;
+  if (currentId) {
+    const currentIndex = sorted.findIndex(r => r.id === currentId);
+    if (currentIndex !== -1) {
+      nextIndex = (currentIndex + 1) % sorted.length;
+    }
+  }
+  
+  const nextTrack = sorted[nextIndex];
+  await MusicManager.getInstance().play(nextTrack.blob as Blob, nextTrack.name, nextTrack.id);
+  return `Playing next track: ${nextTrack.name}.`;
+}
+
+export async function playPreviousTrack(): Promise<string> {
+  const rows = await tx<any[]>("readonly", (store) => store.getAll());
+  if (!rows.length) return "No music tracks found.";
+  const sorted = rows.sort((a, b) => Number(a.addedAt || 0) - Number(b.addedAt || 0));
+  const currentId = MusicManager.getInstance().getCurrentTrackId();
+  
+  let prevIndex = sorted.length - 1;
+  if (currentId) {
+    const currentIndex = sorted.findIndex(r => r.id === currentId);
+    if (currentIndex !== -1) {
+      prevIndex = (currentIndex - 1 + sorted.length) % sorted.length;
+    }
+  }
+  
+  const prevTrack = sorted[prevIndex];
+  await MusicManager.getInstance().play(prevTrack.blob as Blob, prevTrack.name, prevTrack.id);
+  return `Playing previous track: ${prevTrack.name}.`;
 }

@@ -295,7 +295,10 @@ async function fetchSingleFileText(owner: string, repo: string, filePath: string
   if (isSensitiveFile(filePath)) return null;
   try {
     const url = `${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${filePath}`;
-    const res = await fetch(url, { headers: getHeaders() });
+    const res = await fetch(url, {
+      headers: getHeaders(),
+      signal: AbortSignal.timeout(5000),
+    });
     if (!res.ok) return null;
     const json = await res.json();
     if (json.type !== "file") return null;
@@ -308,7 +311,7 @@ async function fetchSingleFileText(owner: string, repo: string, filePath: string
         contentStr = json.content;
       }
     } else if (json.download_url) {
-      const rawRes = await fetch(json.download_url);
+      const rawRes = await fetch(json.download_url, { signal: AbortSignal.timeout(5000) });
       if (rawRes.ok) {
         contentStr = await rawRes.text();
       }
@@ -508,20 +511,26 @@ export async function inspectGitHubRepository(inputUrlOrSlug: string, subpath: s
           });
 
         let totalContentBytes = 0;
-        const maxTotalBytes = 100000; // 100KB character budget for model context
-        const maxSourceFiles = 12;
+        const maxSourceFiles = 6;
+        const selectedCandidates = candidateSourcePaths.slice(0, maxSourceFiles);
 
-        for (const candidate of candidateSourcePaths) {
-          if (sourceFiles.length >= maxSourceFiles || totalContentBytes >= maxTotalBytes) break;
-          const fetched = await fetchSingleFileText(owner, repo, candidate.path, 15000);
-          if (fetched) {
-            sourceFiles.push({
+        const fetchResults = await Promise.all(
+          selectedCandidates.map(async (candidate) => {
+            const fetched = await fetchSingleFileText(owner, repo, candidate.path, 15000);
+            if (!fetched) return null;
+            return {
               path: candidate.path,
               size: candidate.size,
               content: fetched.text,
               truncated: fetched.truncated,
-            });
-            totalContentBytes += fetched.text.length;
+            };
+          })
+        );
+
+        for (const item of fetchResults) {
+          if (item) {
+            sourceFiles.push(item);
+            totalContentBytes += item.content.length;
           }
         }
 

@@ -1,16 +1,105 @@
 {
   "entities": {
+    "memory": {
+      "title": "Memory",
+      "description": "Long-term episodic and semantic user memories",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "content": { "type": "string", "maxLength": 5000 },
+        "category": { "type": "string", "maxLength": 100 },
+        "importance": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "content", "createdAt"]
+    },
+    "reminder": {
+      "title": "Reminder",
+      "description": "User scheduled reminders and alarms",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 500 },
+        "dueAt": { "type": "number" },
+        "completed": { "type": "boolean" },
+        "completedAt": { "type": "number" },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" },
+        "channel": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["id", "userId", "title", "dueAt", "completed", "createdAt"]
+    },
+    "note": {
+      "title": "Note",
+      "description": "User created scratchpad and persistent notes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "content": { "type": "string", "maxLength": 10000 },
+        "tags": { "type": "string", "maxLength": 200 },
+        "createdAt": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "content", "createdAt"]
+    },
+    "task": {
+      "title": "Task",
+      "description": "Planning task and milestone items",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 500 },
+        "status": { "type": "string", "maxLength": 50 },
+        "dueDate": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "title", "status", "createdAt"]
+    },
+    "bill": {
+      "title": "Bill",
+      "description": "User financial bills and expense tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "description": { "type": "string", "maxLength": 500 },
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string", "maxLength": 50 },
+        "paid": { "type": "boolean" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "description", "amount", "dueDate", "createdAt"]
+    },
+    "goal": {
+      "title": "Goal",
+      "description": "User goals and progress tracking",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 500 },
+        "targetDate": { "type": "string", "maxLength": 50 },
+        "progress": { "type": "number" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "userId", "title", "createdAt"]
+    },
     "acknowledgement": {
       "title": "Acknowledgement",
       "description": "A user-scoped acknowledgement record for reminder notifications",
       "type": "object",
       "properties": {
-        "ackId": { "type": "string" },
-        "eventId": { "type": "string" },
-        "reminderId": { "type": "string" },
-        "userId": { "type": "string" },
-        "channel": { "type": "string" },
-        "status": { "type": "string" },
+        "ackId": { "type": "string", "maxLength": 128 },
+        "eventId": { "type": "string", "maxLength": 128 },
+        "reminderId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "channel": { "type": "string", "maxLength": 50 },
+        "status": { "type": "string", "maxLength": 50 },
         "createdAt": { "type": "number" },
         "updatedAt": { "type": "number" }
       },
@@ -21,48 +110,41 @@
       "description": "A user-scoped diagnostic historical event for notification pipelines",
       "type": "object",
       "properties": {
-        "diagnosticId": { "type": "string" },
-        "userId": { "type": "string" },
-        "correlationId": { "type": "string" },
-        "stage": { "type": "string" },
-        "action": { "type": "string" },
-        "status": { "type": "string" },
+        "diagnosticId": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "correlationId": { "type": "string", "maxLength": 128 },
+        "stage": { "type": "string", "maxLength": 100 },
+        "action": { "type": "string", "maxLength": 100 },
+        "status": { "type": "string", "maxLength": 50 },
         "timestamp": { "type": "number" }
       },
       "required": ["diagnosticId", "userId", "correlationId", "stage", "action", "status", "timestamp"]
-    },
-    "note": {
-      "title": "Note",
-      "description": "A user-created note",
-      "type": "object",
-      "properties": {
-        "content": { "type": "string" },
-        "createdAt": { "type": "string", "format": "date-time" },
-        "ownerId": { "type": "string" }
-      },
-      "required": ["content", "createdAt", "ownerId"]
-    },
-    "bill": {
-      "title": "Bill",
-      "description": "A tracked bill",
-      "type": "object",
-      "properties": {
-        "amount": { "type": "number" },
-        "dueDate": { "type": "string", "format": "date" },
-        "description": { "type": "string" },
-        "ownerId": { "type": "string" }
-      },
-      "required": ["amount", "dueDate", "description", "ownerId"]
     }
   },
   "firestore": {
-    "/notes/{noteId}": {
-      "schema": "note",
-      "description": "Collection of user notes"
+    "/users/{userId}/memories/{memoryId}": {
+      "schema": "memory",
+      "description": "User-scoped long-term memories"
     },
-    "/bills/{billId}": {
+    "/users/{userId}/reminders/{reminderId}": {
+      "schema": "reminder",
+      "description": "User-scoped reminders and alarms"
+    },
+    "/users/{userId}/notes/{noteId}": {
+      "schema": "note",
+      "description": "User-scoped notes and scratchpads"
+    },
+    "/users/{userId}/tasks/{taskId}": {
+      "schema": "task",
+      "description": "User-scoped planning tasks"
+    },
+    "/users/{userId}/bills/{billId}": {
       "schema": "bill",
-      "description": "Collection of user bills"
+      "description": "User-scoped financial bills"
+    },
+    "/users/{userId}/goals/{goalId}": {
+      "schema": "goal",
+      "description": "User-scoped long-term goals"
     },
     "/users/{userId}/acknowledgements/{ackId}": {
       "schema": "acknowledgement",

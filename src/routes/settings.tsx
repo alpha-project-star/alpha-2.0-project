@@ -4,10 +4,16 @@ import {
   AlertTriangle,
   ArrowLeft,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Cloud,
   Download,
+  HardDrive,
+  LogIn,
+  LogOut,
   Music,
+  Shield,
   Trash2,
   Upload,
   User,
@@ -26,7 +32,7 @@ import {
   getCanonicalNotificationStatus,
 } from "../lib/browser-notification-channel";
 import { registerPushSubscription, unregisterPushSubscription, isPushSupported } from "../lib/push-subscription";
-import { useAuth } from "../lib/auth";
+import { useAuth, signInWithGoogle, signOutUser } from "../lib/auth";
 import { ToolHeader } from "../components/ToolHeader";
 import { KittScanner } from "../components/KittScanner";
 import {
@@ -84,6 +90,34 @@ function SettingsRoute() {
   }, [globalSettings]);
   const profile = useAlpha((x) => x.profile);
   const auth = useAuth();
+  const [authBusy, setAuthBusy] = useState(false);
+  const isFirebaseUser = auth.status === "authenticated" && !auth.user.isAnonymous;
+
+  async function handleGoogleSignIn() {
+    setAuthBusy(true);
+    try {
+      const user = await signInWithGoogle();
+      if (user) {
+        toast.success(`Connected to Firebase Cloud Sync (${user.email || user.uid})`);
+      }
+    } catch (err: any) {
+      toast.error(`Sign in error: ${err?.message || String(err)}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleSignOut() {
+    setAuthBusy(true);
+    try {
+      await signOutUser();
+      toast.success("Switched to Local Mode");
+    } catch (err: any) {
+      toast.error(`Sign out error: ${err?.message || String(err)}`);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [saved, setSaved] = useState(false);
   const [kokoroStatus, setKokoroStatus] = useState<string>("");
@@ -279,32 +313,148 @@ function SettingsRoute() {
           id="account"
           title="Account & Identity"
           hint={
-            auth.status === "authenticated"
-              ? `Local Identity: ${auth.user.uid}`
-              : "Operating in Local Mode (local-user)"
+            isFirebaseUser
+              ? `Firebase Cloud Sync Active (${auth.user.email || auth.user.uid})`
+              : "Operating in Local Device Mode"
           }
           open={openGroup === "account"}
           onToggle={() => setOpenGroup(openGroup === "account" ? null : "account")}
         >
-          <Section
-            title="Local Data Identity"
-            hint="Alpha uses a stable local identity to ensure your data is persistent across restarts."
-          >
-            <div className="space-y-3">
-              <div className="p-3 rounded-lg bg-primary/10 border border-primary/25 text-xs space-y-2">
-                <div className="flex items-center gap-2 text-primary font-medium">
-                  <User className="w-4 h-4" />
-                  <span>Local Mode Active</span>
+          {/* Active Mode Status Indicator */}
+          <div className="mb-3 p-3 rounded-xl border bg-black/30 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              {isFirebaseUser ? (
+                <div className="p-2 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  <Cloud className="w-4 h-4" />
                 </div>
-                <p className="text-muted-foreground text-[11px] leading-relaxed">
-                  Alpha is functioning completely locally. All your reminders, chat history, notes, and preferences are safely saved in this browser under your local profile.
-                </p>
-                <p className="text-muted-foreground text-[11px] leading-relaxed">
-                  Data is stored securely on this device. You do not need an account to use Alpha's full feature set.
-                </p>
+              ) : (
+                <div className="p-2 rounded-lg bg-cyan-500/20 text-cyan-400 border border-cyan-500/30">
+                  <HardDrive className="w-4 h-4" />
+                </div>
+              )}
+              <div>
+                <div className="text-xs font-semibold flex items-center gap-1.5">
+                  <span>Current Active Mode:</span>
+                  <span className={isFirebaseUser ? "text-emerald-400" : "text-cyan-400"}>
+                    {isFirebaseUser ? "Firebase Cloud Sync" : "Local Device Storage"}
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {isFirebaseUser
+                    ? `Authenticated as ${auth.user.email || auth.user.uid}`
+                    : "No cloud account required. Running 100% locally."}
+                </div>
               </div>
             </div>
-          </Section>
+            <div className="shrink-0">
+              <span className={`inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                isFirebaseUser
+                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                  : "bg-cyan-500/10 text-cyan-400 border-cyan-500/30"
+              }`}>
+                <CheckCircle2 className="w-3 h-3" />
+                ACTIVE
+              </span>
+            </div>
+          </div>
+
+          {/* Option 1: Local Device Storage */}
+          <div className={`p-3.5 rounded-xl border transition-all mb-3 ${
+            !isFirebaseUser
+              ? "bg-cyan-500/10 border-cyan-500/40 shadow-sm"
+              : "bg-white/[0.02] border-white/10 opacity-75 hover:opacity-100"
+          }`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <HardDrive className={`w-4 h-4 mt-0.5 ${!isFirebaseUser ? "text-cyan-400" : "text-muted-foreground"}`} />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-foreground">Option 1: Local Device Storage</span>
+                    {!isFirebaseUser && (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 font-mono">
+                        IN USE
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Alpha stores all chats, memories, notes, and reminders solely inside this browser on your device. Complete offline privacy with zero external accounts.
+                  </p>
+                </div>
+              </div>
+              {isFirebaseUser && (
+                <button
+                  onClick={handleSignOut}
+                  disabled={authBusy}
+                  className="shrink-0 flex items-center gap-1 text-xs px-2.5 py-1 rounded-md glass neon-border hover:border-cyan-500/50 text-foreground transition-all active:scale-95"
+                >
+                  <LogOut className="w-3 h-3 text-cyan-400" />
+                  <span>Switch to Local</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Option 2: Firebase Cloud Sync */}
+          <div className={`p-3.5 rounded-xl border transition-all ${
+            isFirebaseUser
+              ? "bg-emerald-500/10 border-emerald-500/40 shadow-sm"
+              : "bg-white/[0.02] border-white/10"
+          }`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <Cloud className={`w-4 h-4 mt-0.5 ${isFirebaseUser ? "text-emerald-400" : "text-muted-foreground"}`} />
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-foreground">Option 2: Firebase Cloud Sync</span>
+                    {isFirebaseUser ? (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-mono">
+                        CONNECTED
+                      </span>
+                    ) : (
+                      <span className="text-[9px] px-1.5 py-0.2 rounded bg-white/10 text-muted-foreground font-mono">
+                        STANDBY
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Synchronizes your memories, notes, and sessions to Google Cloud Firestore so Alpha remembers you across all your phones, tablets, and computers.
+                  </p>
+                  {isFirebaseUser && (
+                    <div className="pt-2 flex items-center gap-2 text-xs text-foreground/90">
+                      {auth.user.photoURL ? (
+                        <img src={auth.user.photoURL} alt="" className="w-5 h-5 rounded-full border border-emerald-500/40" />
+                      ) : (
+                        <User className="w-4 h-4 text-emerald-400" />
+                      )}
+                      <span className="font-mono text-[11px] text-emerald-300">{auth.user.email}</span>
+                      <Shield className="w-3 h-3 text-emerald-400 ml-1" />
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="shrink-0">
+                {isFirebaseUser ? (
+                  <button
+                    onClick={handleSignOut}
+                    disabled={authBusy}
+                    className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-md bg-destructive/15 text-destructive border border-destructive/30 hover:bg-destructive/25 transition-all active:scale-95"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    <span>Sign Out</span>
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleGoogleSignIn}
+                    disabled={authBusy}
+                    className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-all active:scale-95 shadow-sm"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>{authBusy ? "Connecting..." : "Sign in with Google"}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </Group>
 
         {/* ONLINE ================================================== */}

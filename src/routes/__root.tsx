@@ -18,6 +18,7 @@ import { registerAlphaPWA } from "../lib/pwa";
 import { backgroundRuntime } from "../lib/background-runtime";
 import { AuthProvider, useAuth } from "../lib/auth";
 import { LocalReminderRepository, reminderRepository } from "../lib/reminder-repo";
+import { initCloudSync } from "../lib/cloud-sync";
 
 function NotFoundComponent() {
   return (
@@ -150,6 +151,10 @@ function RootComponent() {
 function AppContent() {
   const auth = useAuth();
   const user = auth.status === 'authenticated' ? auth.user : null;
+
+  useEffect(() => {
+    return initCloudSync();
+  }, []);
 
   useEffect(() => {
     const effectiveUid = user?.uid || "local-user";

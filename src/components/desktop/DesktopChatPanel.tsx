@@ -1,19 +1,41 @@
 import { useEffect, useRef, useState } from "react";
-import { ImagePlus, Send, Sparkles, X, ArrowDown, ArrowUp, Zap } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import {
+  ImagePlus,
+  Send,
+  Sparkles,
+  X,
+  ArrowDown,
+  ArrowUp,
+  Zap,
+  Menu,
+  Paperclip,
+  FileText,
+  Camera,
+  Eye,
+  EyeOff,
+  Square,
+} from "lucide-react";
 import { alphaStore, uid, useAlpha } from "../../lib/alpha-store";
-import { sendChat, type TaskType } from "../../lib/alpha.functions";
+import { sendChat, stopAlphaGeneration, type TaskType } from "../../lib/alpha.functions";
 import { MessageContent } from "../MessageContent";
 import { MessageActions } from "../MessageActions";
-import { prepareUtterance, speakWith } from "../../lib/voice";
+import { prepareUtterance, speakWith, stopSpeaking } from "../../lib/voice";
 import { fileToShrunkDataUrl } from "../../lib/image-utils";
 import { captureLiveFrame, handleEyeCommand, isVisionCommand, shouldCaptureFrame } from "../../lib/vision-command";
-import { isActive as eyeIsActive } from "../../lib/vision-stream";
+import { isActive as eyeIsActive, startEye, stopEye, subscribeActive as subEyeActive } from "../../lib/vision-stream";
+import { parseUploadedFile, formatUserBubbleContent, type ParsedDocument } from "../../lib/file-parser";
+import { toast } from "sonner";
 import { HudPanel } from "./HudPanel";
 import { HudBubble } from "./HudBubble";
 import { LiveClock } from "../LiveClock";
 import { useActivity, activity } from "../../lib/activity";
 import { NotificationCard } from "../NotificationCard";
 import { OutstandingRemindersAffordance } from "../OutstandingRemindersAffordance";
+import { SessionDrawer } from "../SessionDrawer";
+import { CHAT_NAV_ITEMS } from "../../lib/navigation";
+
+const NAV = CHAT_NAV_ITEMS;
 
 /** Full HUD chat panel rendered inside the desktop shell right column. */
 export function DesktopChatPanel() {
@@ -26,15 +48,58 @@ export function DesktopChatPanel() {
     )
   );
   const act = useActivity();
-  const [text, setText] = useState("");
+  const text = useAlpha((s) => s.composerText);
   const [images, setImages] = useState<string[]>([]);
+  const [attachedFiles, setAttachedFiles] = useState<ParsedDocument[]>([]);
   const [busy, setBusy] = useState(false);
   const [showJump, setShowJump] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [task, setTask] = useState<TaskType>("auto");
+  const [eyeOn, setEyeOn] = useState(false);
+  const [eyeError, setEyeError] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const busyRef = useRef(false);
   const lastSubmissionRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
+
+  useEffect(() => subEyeActive(setEyeOn), []);
+
+  async function toggleEye() {
+    setEyeError("");
+    if (eyeOn) {
+      stopEye();
+      return;
+    }
+    try {
+      await startEye();
+    } catch (e: any) {
+      setEyeError(e?.message || "Camera unavailable.");
+    }
+  }
+
+  async function pickFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const fileList = Array.from(files);
+    for (const f of fileList) {
+      try {
+        const parsed = await parseUploadedFile(f);
+        setAttachedFiles((prev) => [...prev, parsed]);
+        toast.success(`Attached "${parsed.name}"`);
+      } catch (err: any) {
+        toast.error(`Could not read "${f.name}": ${err?.message || err}`);
+      }
+    }
+  }
+
+  function stopCurrentProcess() {
+    stopAlphaGeneration();
+    stopSpeaking();
+    busyRef.current = false;
+    setBusy(false);
+    activity.set("idle");
+    toast.info("Process stopped.");
+  }
 
   function autoGrow() {
     const el = taRef.current;
@@ -75,7 +140,7 @@ export function DesktopChatPanel() {
   async function send(overrideText?: string) {
     if (busyRef.current || busy) return;
     const t = (overrideText ?? text).trim();
-    if (!t && images.length === 0) return;
+    if (!t && images.length === 0 && attachedFiles.length === 0) return;
 
     // Discard rapid double-clicks (identical text within 1000ms)
     const now = Date.now();
@@ -84,17 +149,31 @@ export function DesktopChatPanel() {
     }
     lastSubmissionRef.current = { text: t, ts: now };
 
+    const userPromptText = t || (attachedFiles.length > 0 ? "Please analyze and explain this attached document." : "");
+    const filesToAttach = attachedFiles.map((f) => ({
+      name: f.name,
+      size: f.size,
+      format: f.type || (f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".") + 1) : "file"),
+      text: f.text,
+    }));
+
     // Synchronous guard immediately before any async execution
     busyRef.current = true;
     setBusy(true);
 
     const currentImages = images;
-    setText("");
+    const hasFiles = filesToAttach.length > 0;
+    alphaStore.setComposerText("");
     setImages([]);
+    setAttachedFiles([]);
 
     prepareUtterance();
     let outImages = currentImages;
     try {
+      if (hasFiles) {
+        activity.set("reading_file");
+        await new Promise((r) => setTimeout(r, 450));
+      }
       if (t && shouldCaptureFrame(t, eyeIsActive(), currentImages.length > 0)) {
         const frame = await captureLiveFrame(eyeIsActive());
         if (frame) outImages = [...outImages, frame].slice(0, 4);
@@ -102,7 +181,8 @@ export function DesktopChatPanel() {
       await alphaStore.appendChat({
         id: uid(),
         role: "user",
-        text: t,
+        text: userPromptText,
+        attachments: filesToAttach.length > 0 ? filesToAttach : undefined,
         images: outImages.length ? outImages : undefined,
         ts: Date.now(),
       });
@@ -110,6 +190,9 @@ export function DesktopChatPanel() {
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {
+      if (e?.name === "AbortError" || e?.message?.includes("aborted")) {
+        return;
+      }
       await alphaStore.appendChat({
         id: uid(),
         role: "system",
@@ -132,14 +215,14 @@ export function DesktopChatPanel() {
 
   return (
     <HudPanel className="flex-1 min-h-0 flex flex-col p-4">
-      <div className="flex items-center justify-between mb-3 pr-16">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between mb-3 pr-16 gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <LiveClock />
-          <div className="text-[10px] wordmark opacity-70">Conversation</div>
+          <SessionDrawer />
         </div>
         <button
           onClick={() => alphaStore.clearChat()}
-          className="text-[10px] wordmark opacity-70 hover:opacity-100"
+          className="text-[10px] wordmark opacity-70 hover:opacity-100 shrink-0"
         >
           Clear
         </button>
@@ -197,11 +280,50 @@ export function DesktopChatPanel() {
               </NotificationCard>
             );
           }
+          if (m.role === "user") {
+            const { attachments, displayText } = formatUserBubbleContent(m);
+            return (
+              <HudBubble
+                key={m.id}
+                side="user"
+                label="YOU"
+              >
+                {attachments.map((att, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-background/60 border border-primary/40 text-xs text-primary mb-2 shadow-sm font-mono"
+                  >
+                    <FileText className="w-3.5 h-3.5 shrink-0 text-primary" />
+                    <span className="font-semibold text-foreground truncate max-w-[200px]">
+                      {att.name}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground font-mono">
+                      [{att.sizeFormatted}, {att.format}]
+                    </span>
+                  </div>
+                ))}
+                {m.images?.map((src, i) => (
+                  <img key={i} src={src} className="rounded-lg max-h-40 mb-2 max-w-full" alt="" />
+                ))}
+                {displayText && (
+                  <div className="whitespace-pre-wrap">{displayText}</div>
+                )}
+                <div className="mt-1">
+                  <MessageActions
+                    text={displayText || m.text}
+                    compact
+                    onDelete={() => alphaStore.deleteChatMessage(m.id)}
+                  />
+                </div>
+              </HudBubble>
+            );
+          }
+
           return (
             <HudBubble
               key={m.id}
-              side={m.role === "user" ? "user" : "assistant"}
-              label={m.role === "user" ? "YOU" : "ALPHA"}
+              side="assistant"
+              label="ALPHA"
             >
               {m.images?.map((src, i) => (
                 <img key={i} src={src} className="rounded-lg max-h-40 mb-2 max-w-full" alt="" />
@@ -270,6 +392,56 @@ export function DesktopChatPanel() {
         </div>
       )}
 
+      {attachedFiles.length > 0 && (
+        <div className="pt-2 flex gap-2 overflow-x-auto">
+          {attachedFiles.map((doc, i) => (
+            <div
+              key={i}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl hud-bubble text-xs text-primary shrink-0"
+            >
+              <FileText className="w-4 h-4 text-primary" />
+              <span className="max-w-[130px] truncate text-foreground font-medium">{doc.name}</span>
+              <span className="text-[10px] text-muted-foreground font-mono">
+                ({Math.round(doc.size / 1024)} KB)
+              </span>
+              <button
+                onClick={() => setAttachedFiles((prev) => prev.filter((_, j) => j !== i))}
+                className="ml-1 p-0.5 hover:text-destructive text-muted-foreground transition-colors"
+                aria-label="Remove file"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {toolsOpen && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setToolsOpen(false)} />
+          <div className="absolute bottom-20 left-4 right-4 mb-2 z-40 glass neon-border rounded-2xl p-2 grid grid-cols-4 gap-2 bg-background/95 backdrop-blur-md shadow-2xl border border-primary/30">
+            {NAV.map(({ to, icon: Icon, label }) => (
+              <Link
+                key={to}
+                to={to as any}
+                onClick={() => setToolsOpen(false)}
+                className="flex flex-col items-center gap-1 px-2 py-2 rounded-xl bg-background/40 hover:bg-primary/20 transition-colors active:scale-95"
+              >
+                <Icon className="w-5 h-5 text-primary" />
+                <span className="text-[10px] text-foreground/80">{label}</span>
+              </Link>
+            ))}
+          </div>
+        </>
+      )}
+
+      {eyeError && <div className="pt-1 text-xs text-destructive">{eyeError}</div>}
+      {eyeOn && (
+        <div className="pt-1 text-[10px] text-primary/80">
+          Live Eye on — just point and ask
+        </div>
+      )}
+
       <div className="pt-2 flex items-center gap-1.5 overflow-x-auto">
         <Zap className="w-3.5 h-3.5 text-primary shrink-0" />
         {(["auto", "fast", "thinking", "coding"] as const).map((t) => (
@@ -288,11 +460,11 @@ export function DesktopChatPanel() {
           </button>
         ))}
       </div>
-      <div className="pt-2 flex flex-col gap-2">
+      <div className="pt-2 flex flex-col gap-2 relative">
         <textarea
           ref={taRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => alphaStore.setComposerText(e.target.value)}
           onInput={autoGrow}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
@@ -305,27 +477,121 @@ export function DesktopChatPanel() {
           className="w-full min-w-0 bg-input/60 rounded-2xl px-4 py-3 border border-primary/40 outline-none focus:border-primary resize-none min-h-[56px] max-h-44 overflow-y-auto text-sm leading-6 break-words [overflow-wrap:anywhere]"
         />
         <div className="flex items-center gap-1.5">
-          <label
-            className="cursor-pointer p-2 rounded-lg hud-bubble shrink-0"
-            aria-label="Upload image"
-          >
-            <ImagePlus className="w-5 h-5 text-primary" />
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              hidden
-              onChange={(e) => pickImages(e.target.files)}
-            />
-          </label>
+          {/* Item 1: Burger icon for tools menu */}
           <button
-            onClick={() => send()}
-            disabled={busy || busyRef.current || (!text.trim() && images.length === 0)}
-            className="ml-auto p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50 shrink-0"
-            aria-label="Send"
+            onClick={() => {
+              setToolsOpen((v) => !v);
+              setAttachmentsOpen(false);
+            }}
+            className={`p-2 rounded-lg hud-bubble shrink-0 transition-colors ${toolsOpen ? "border-primary text-primary" : "text-primary hover:text-primary/80"}`}
+            aria-label="Tools Menu"
+            title="Tools Menu"
           >
-            <Send className="w-5 h-5" />
+            <Menu className="w-5 h-5 text-primary" />
           </button>
+
+          {/* Item 2: Paperclip for all attachments */}
+          <div className="relative shrink-0">
+            <button
+              onClick={() => {
+                setAttachmentsOpen((v) => !v);
+                setToolsOpen(false);
+              }}
+              className={`p-2 rounded-lg hud-bubble shrink-0 transition-colors ${attachmentsOpen || attachedFiles.length > 0 || images.length > 0 ? "border-primary text-primary" : "text-primary hover:text-primary/80"}`}
+              aria-label="Attach File, Image, or Camera"
+              title="Attach File, Image, or Camera"
+            >
+              <Paperclip className="w-5 h-5 text-primary" />
+            </button>
+
+            {attachmentsOpen && (
+              <>
+                <div
+                  className="fixed inset-0 z-30"
+                  onClick={() => setAttachmentsOpen(false)}
+                />
+                <div className="absolute bottom-full left-0 mb-2 z-40 glass neon-border rounded-2xl p-1.5 flex flex-col gap-1 min-w-[210px] shadow-2xl bg-background/95 border border-primary/30 backdrop-blur-md animate-fade-in">
+                  <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                    <ImagePlus className="w-4 h-4 text-primary" />
+                    <span>Upload Image</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        pickImages(e.target.files);
+                        setAttachmentsOpen(false);
+                      }}
+                    />
+                  </label>
+
+                  <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                    <Camera className="w-4 h-4 text-primary" />
+                    <span>Take Photo</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      hidden
+                      onChange={(e) => {
+                        pickImages(e.target.files);
+                        setAttachmentsOpen(false);
+                      }}
+                    />
+                  </label>
+
+                  <button
+                    onClick={() => {
+                      toggleEye();
+                      setAttachmentsOpen(false);
+                    }}
+                    className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors text-left"
+                  >
+                    {eyeOn ? <EyeOff className="w-4 h-4 text-destructive" /> : <Eye className="w-4 h-4 text-primary" />}
+                    <span>{eyeOn ? "Stop Live Eye" : "Live Cyber-Eye"}</span>
+                  </button>
+
+                  <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                    <FileText className="w-4 h-4 text-primary" />
+                    <span>Attach Document (.pdf, .docx, .txt...)</span>
+                    <input
+                      type="file"
+                      accept=".pdf,.docx,.doc,.txt,.md,.csv,.json,.py,.ts,.js,.html"
+                      multiple
+                      hidden
+                      onChange={(e) => {
+                        void pickFiles(e.target.files);
+                        setAttachmentsOpen(false);
+                      }}
+                    />
+                  </label>
+                </div>
+              </>
+            )}
+          </div>
+
+          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+            {busy ? (
+              <button
+                onClick={stopCurrentProcess}
+                className="p-2.5 rounded-xl bg-black text-primary border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
+                aria-label="Stop Generation"
+                title="Stop process"
+              >
+                <Square className="w-5 h-5 fill-primary text-primary" />
+              </button>
+            ) : (
+              <button
+                onClick={() => send()}
+                disabled={busy || busyRef.current || (!text.trim() && images.length === 0 && attachedFiles.length === 0)}
+                className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50 shrink-0"
+                aria-label="Send"
+              >
+                <Send className="w-5 h-5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </HudPanel>

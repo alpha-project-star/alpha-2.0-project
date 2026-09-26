@@ -16,7 +16,10 @@ import {
   Map,
   Brain,
   Settings as SettingsIcon,
-  Grid3x3,
+  Menu,
+  Paperclip,
+  FileText,
+  Square,
   Volume2,
   Copy,
   Check,
@@ -29,7 +32,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { alphaStore, uid, useAlpha } from "../lib/alpha-store";
-import { sendChat, type TaskType } from "../lib/alpha.functions";
+import { sendChat, stopAlphaGeneration, type TaskType } from "../lib/alpha.functions";
+import { parseUploadedFile, formatUserBubbleContent, type ParsedDocument } from "../lib/file-parser";
+import { toast } from "sonner";
 import { MessageContent } from "../components/MessageContent";
 import { recognizer, prepareUtterance, speakWith, stopSpeaking } from "../lib/voice";
 import { MiniOrb } from "../components/MiniOrb";
@@ -44,6 +49,7 @@ import { useActivity, activity } from "../lib/activity";
 import { NotificationCard } from "../components/NotificationCard";
 import { OutstandingRemindersAffordance } from "../components/OutstandingRemindersAffordance";
 import { MessageActions } from "../components/MessageActions";
+import { SessionDrawer } from "../components/SessionDrawer";
 import { CHAT_NAV_ITEMS } from "../lib/navigation";
 
 export const Route = createFileRoute("/chat")({
@@ -65,7 +71,7 @@ function ChatRoute() {
     )
   );
   const act = useActivity();
-  const [text, setText] = useState("");
+  const text = useAlpha((s) => s.composerText);
   const [images, setImages] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [listening, setListening] = useState(false);
@@ -73,6 +79,8 @@ function ChatRoute() {
   const [showJump, setShowJump] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
+  const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [attachedFiles, setAttachedFiles] = useState<ParsedDocument[]>([]);
   const [task, setTask] = useState<TaskType>("auto");
   const [eyeOn, setEyeOn] = useState(false);
   const [eyeError, setEyeError] = useState("");
@@ -80,7 +88,31 @@ function ChatRoute() {
   const lastFinalRef = useRef("");
   const lastFinalAtRef = useRef(0);
   const busyRef = useRef(false);
+  const baseTextRef = useRef("");
   const lastSubmissionRef = useRef<{ text: string; ts: number }>({ text: "", ts: 0 });
+
+  async function pickFiles(files: FileList | null) {
+    if (!files || files.length === 0) return;
+    const fileList = Array.from(files);
+    for (const f of fileList) {
+      try {
+        const parsed = await parseUploadedFile(f);
+        setAttachedFiles((prev) => [...prev, parsed]);
+        toast.success(`Attached "${parsed.name}"`);
+      } catch (err: any) {
+        toast.error(`Could not read "${f.name}": ${err?.message || err}`);
+      }
+    }
+  }
+
+  function stopCurrentProcess() {
+    stopAlphaGeneration();
+    stopSpeaking();
+    busyRef.current = false;
+    setBusy(false);
+    activity.set("idle");
+    toast.info("Process stopped.");
+  }
 
   function autoGrow() {
     const el = taRef.current;
@@ -152,7 +184,7 @@ function ChatRoute() {
   async function send(overrideText?: string, opts?: { skipAppend?: boolean }) {
     if (busyRef.current || busy) return;
     const t = (overrideText ?? text).trim();
-    if (!t && images.length === 0) return;
+    if (!t && images.length === 0 && attachedFiles.length === 0) return;
 
     // Discard rapid double-clicks (identical text within 1000ms)
     const now = Date.now();
@@ -161,17 +193,31 @@ function ChatRoute() {
     }
     lastSubmissionRef.current = { text: t, ts: now };
 
+    const userPromptText = t || (attachedFiles.length > 0 ? "Please analyze and explain this attached document." : "");
+    const filesToAttach = attachedFiles.map((f) => ({
+      name: f.name,
+      size: f.size,
+      format: f.type || (f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".") + 1) : "file"),
+      text: f.text,
+    }));
+
     // Synchronous guard immediately before any async execution
     busyRef.current = true;
     setBusy(true);
 
     const currentImages = images;
-    setText("");
+    const hasFiles = filesToAttach.length > 0;
+    alphaStore.setComposerText("");
     setImages([]);
+    setAttachedFiles([]);
 
     prepareUtterance();
     let outImages = currentImages;
     try {
+      if (hasFiles) {
+        activity.set("reading_file");
+        await new Promise((r) => setTimeout(r, 450));
+      }
       if (t && shouldCaptureFrame(t, eyeOn, currentImages.length > 0)) {
         const frame = await captureLiveFrame(eyeOn);
         if (frame) outImages = [...outImages, frame].slice(0, 4);
@@ -180,7 +226,8 @@ function ChatRoute() {
         await alphaStore.appendChat({
           id: uid(),
           role: "user",
-          text: t,
+          text: userPromptText,
+          attachments: filesToAttach.length > 0 ? filesToAttach : undefined,
           images: outImages.length ? outImages : undefined,
           ts: Date.now(),
         });
@@ -189,6 +236,9 @@ function ChatRoute() {
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {
+      if (e?.name === "AbortError" || e?.message?.includes("aborted")) {
+        return;
+      }
       await alphaStore.appendChat({
         id: uid(),
         role: "system",
@@ -218,23 +268,39 @@ function ChatRoute() {
       return;
     }
     setMicError("");
+    baseTextRef.current = alphaStore.get().composerText;
+
     recognizer.setHandlers({
-      onInterim: (t) => setText(t),
+      onInterim: (t) => {
+        const combined = baseTextRef.current + (baseTextRef.current ? " " : "") + t;
+        alphaStore.setComposerText(combined);
+      },
       onFinal: (t) => {
         const trimmed = t.trim();
-        setText(trimmed);
-        recognizer.stop();
-        setListening(false);
         if (!trimmed) return;
         // Guard against the recogniser emitting the same final twice.
         if (trimmed === lastFinalRef.current && Date.now() - lastFinalAtRef.current < 4000) return;
         lastFinalRef.current = trimmed;
         lastFinalAtRef.current = Date.now();
-        if (alphaStore.get().settings.autoSubmitVoice === false) return;
-        send(trimmed);
+
+        const combined = baseTextRef.current + (baseTextRef.current ? " " : "") + trimmed;
+        alphaStore.setComposerText(combined);
+        baseTextRef.current = combined;
+
+        // CRITICAL: Explicitly ensure NO auto-send in the chat transcriber.
+        // We do NOT call recognizer.stop() here so it stays listening (continuous).
+        console.log("[chat] Transcription segment committed:", trimmed);
       },
-      onStart: () => setListening(true),
-      onStop: () => setListening(false),
+      onStart: () => {
+        setListening(true);
+        // Refresh base text on every start to handle seamless Android restarts
+        baseTextRef.current = alphaStore.get().composerText;
+      },
+      onStop: () => {
+        if (!recognizer.isWanted) {
+          setListening(false);
+        }
+      },
       onError: (e) => {
         setListening(false);
         setMicError(e);
@@ -260,10 +326,10 @@ function ChatRoute() {
             <div className="flex items-center justify-center">
               <MiniOrb size={56} />
             </div>
-            <div className="flex items-center gap-2 min-w-0 justify-end">
+            <div className="flex items-center gap-1.5 min-w-0 justify-end">
               <button
                 onClick={() => alphaStore.clearChat()}
-                className="text-[10px] text-muted-foreground px-1.5"
+                className="text-[10px] text-muted-foreground px-1.5 hover:text-foreground"
               >
                 Clear
               </button>
@@ -273,6 +339,11 @@ function ChatRoute() {
             <KittScanner state={listening ? "scanning" : "idle"} bars={22} height={10} />
           </div>
         </header>
+
+        {/* Floating Session / History Drawer at the spot marked in red */}
+        <div className="fixed left-3 top-28 z-40 pointer-events-auto">
+          <SessionDrawer />
+        </div>
 
         <div className="px-3 pt-2">
           <OutstandingRemindersAffordance />
@@ -294,9 +365,24 @@ function ChatRoute() {
             if (m.role === "model" && !m.text && m.tool_calls?.length) return null;
             
             if (m.role === "user") {
+              const { attachments, displayText } = formatUserBubbleContent(m);
               return (
                 <div key={m.id} className="flex w-full min-w-0 justify-end">
                   <div className="max-w-[85%] min-w-0 overflow-hidden rounded-2xl px-4 py-2 bg-primary/20 border border-primary/40 break-words [overflow-wrap:anywhere] [word-break:break-word]">
+                    {attachments.map((att, i) => (
+                      <div
+                        key={i}
+                        className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-background/60 border border-primary/40 text-xs text-primary mb-2 shadow-sm font-mono"
+                      >
+                        <FileText className="w-3.5 h-3.5 shrink-0 text-primary" />
+                        <span className="font-semibold text-foreground truncate max-w-[200px]">
+                          {att.name}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                          [{att.sizeFormatted}, {att.format}]
+                        </span>
+                      </div>
+                    ))}
                     {m.images?.map((src, i) => (
                       <img
                         key={i}
@@ -305,11 +391,13 @@ function ChatRoute() {
                         alt=""
                       />
                     ))}
-                    <div className="whitespace-pre-wrap text-sm break-words [overflow-wrap:anywhere]">
-                      {m.text}
-                    </div>
+                    {displayText && (
+                      <div className="whitespace-pre-wrap text-sm break-words [overflow-wrap:anywhere]">
+                        {displayText}
+                      </div>
+                    )}
                     <MessageActions
-                      text={m.text}
+                      text={displayText || m.text}
                       compact
                       onDelete={() => alphaStore.deleteChatMessage(m.id)}
                     />
@@ -421,6 +509,30 @@ function ChatRoute() {
           </div>
         )}
 
+        {attachedFiles.length > 0 && (
+          <div className="px-3 pb-2 flex gap-2 overflow-x-auto">
+            {attachedFiles.map((doc, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl glass neon-border text-xs text-primary shrink-0"
+              >
+                <FileText className="w-4 h-4 text-primary" />
+                <span className="max-w-[130px] truncate text-foreground font-medium">{doc.name}</span>
+                <span className="text-[10px] text-muted-foreground font-mono">
+                  ({Math.round(doc.size / 1024)} KB)
+                </span>
+                <button
+                  onClick={() => setAttachedFiles((prev) => prev.filter((_, j) => j !== i))}
+                  className="ml-1 p-0.5 hover:text-destructive text-muted-foreground transition-colors"
+                  aria-label="Remove file"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div className="p-3 glass border-t border-primary/20 relative shrink-0 z-20">
           {toolsOpen && (
             <>
@@ -470,7 +582,10 @@ function ChatRoute() {
             <textarea
               ref={taRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                alphaStore.setComposerText(e.target.value);
+                if (listening) baseTextRef.current = e.target.value;
+              }}
               onInput={autoGrow}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -483,47 +598,104 @@ function ChatRoute() {
               className="w-full min-w-0 bg-input rounded-2xl px-4 py-3 border border-border outline-none focus:border-primary resize-none min-h-[56px] max-h-44 overflow-y-auto text-base leading-6 break-words [overflow-wrap:anywhere]"
             />
             <div className="flex items-center gap-1.5">
+              {/* Item 1: Burger menu for tools */}
               <button
-                onClick={() => setToolsOpen((v) => !v)}
-                className="p-2 rounded-lg glass shrink-0"
-                aria-label="Tools"
+                onClick={() => {
+                  setToolsOpen((v) => !v);
+                  setAttachmentsOpen(false);
+                }}
+                className={`p-2 rounded-lg glass shrink-0 transition-colors ${toolsOpen ? "border-primary text-primary" : "text-primary hover:text-primary/80"}`}
+                aria-label="Tools Menu"
+                title="Tools Menu"
               >
-                <Grid3x3 className="w-5 h-5 text-primary" />
+                <Menu className="w-5 h-5 text-primary" />
               </button>
-              <label
-                className="cursor-pointer p-2 rounded-lg glass shrink-0"
-                aria-label="Upload image"
-              >
-                <ImagePlus className="w-5 h-5 text-primary" />
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  hidden
-                  onChange={(e) => pickImages(e.target.files)}
-                />
-              </label>
-              <label className="cursor-pointer p-2 rounded-lg glass shrink-0" aria-label="Camera">
-                <Camera className="w-5 h-5 text-primary" />
-                <input
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  hidden
-                  onChange={(e) => pickImages(e.target.files)}
-                />
-              </label>
-              <button
-                onClick={toggleEye}
-                className={`p-2 rounded-lg glass shrink-0 ${eyeOn ? "neon-border" : ""}`}
-                aria-label={eyeOn ? "Stop Live Eye" : "Live Eye"}
-              >
-                {eyeOn ? (
-                  <EyeOff className="w-5 h-5 text-destructive" />
-                ) : (
-                  <Eye className="w-5 h-5 text-primary" />
+
+              {/* Item 2: Paperclip for all attachments */}
+              <div className="relative shrink-0">
+                <button
+                  onClick={() => {
+                    setAttachmentsOpen((v) => !v);
+                    setToolsOpen(false);
+                  }}
+                  className={`p-2 rounded-lg glass shrink-0 transition-colors ${attachmentsOpen || attachedFiles.length > 0 || images.length > 0 ? "border-primary text-primary" : "text-primary hover:text-primary/80"}`}
+                  aria-label="Attach File, Image, or Camera"
+                  title="Attach File, Image, or Camera"
+                >
+                  <Paperclip className="w-5 h-5 text-primary" />
+                </button>
+
+                {attachmentsOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-30"
+                      onClick={() => setAttachmentsOpen(false)}
+                    />
+                    <div className="absolute bottom-full left-0 mb-2 z-40 glass neon-border rounded-2xl p-1.5 flex flex-col gap-1 min-w-[210px] shadow-2xl bg-background/95 border border-primary/30 backdrop-blur-md animate-fade-in">
+                      {/* 1. Upload Image */}
+                      <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                        <ImagePlus className="w-4 h-4 text-primary" />
+                        <span>Upload Image</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            pickImages(e.target.files);
+                            setAttachmentsOpen(false);
+                          }}
+                        />
+                      </label>
+
+                      {/* 2. Take Photo */}
+                      <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                        <Camera className="w-4 h-4 text-primary" />
+                        <span>Take Photo</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          capture="environment"
+                          hidden
+                          onChange={(e) => {
+                            pickImages(e.target.files);
+                            setAttachmentsOpen(false);
+                          }}
+                        />
+                      </label>
+
+                      {/* 3. Live Cyber-Eye */}
+                      <button
+                        onClick={() => {
+                          toggleEye();
+                          setAttachmentsOpen(false);
+                        }}
+                        className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors text-left"
+                      >
+                        {eyeOn ? <EyeOff className="w-4 h-4 text-destructive" /> : <Eye className="w-4 h-4 text-primary" />}
+                        <span>{eyeOn ? "Stop Live Eye" : "Live Cyber-Eye"}</span>
+                      </button>
+
+                      {/* 4. Attach Document / File */}
+                      <label className="flex items-center gap-2.5 px-3 py-2 rounded-xl hover:bg-primary/15 cursor-pointer text-xs text-foreground transition-colors">
+                        <FileText className="w-4 h-4 text-primary" />
+                        <span>Attach Document (.pdf, .docx, .txt...)</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.docx,.doc,.txt,.md,.csv,.json,.py,.ts,.js,.html"
+                          multiple
+                          hidden
+                          onChange={(e) => {
+                            void pickFiles(e.target.files);
+                            setAttachmentsOpen(false);
+                          }}
+                        />
+                      </label>
+                    </div>
+                  </>
                 )}
-              </button>
+              </div>
+
               <div className="ml-auto flex items-center gap-1.5 shrink-0">
                 <button
                   onClick={toggleMic}
@@ -536,14 +708,25 @@ function ChatRoute() {
                     <Mic className="w-5 h-5 text-primary" />
                   )}
                 </button>
-                <button
-                  onClick={() => send()}
-                  disabled={busy || busyRef.current || (!text.trim() && images.length === 0)}
-                  className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50"
-                  aria-label="Send"
-                >
-                  <Send className="w-5 h-5" />
-                </button>
+                {busy ? (
+                  <button
+                    onClick={stopCurrentProcess}
+                    className="p-2.5 rounded-xl bg-black text-primary border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
+                    aria-label="Stop Generation"
+                    title="Stop process"
+                  >
+                    <Square className="w-5 h-5 fill-primary text-primary" />
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => send()}
+                    disabled={busy || busyRef.current || (!text.trim() && images.length === 0 && attachedFiles.length === 0)}
+                    className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50"
+                    aria-label="Send"
+                  >
+                    <Send className="w-5 h-5" />
+                  </button>
+                )}
               </div>
             </div>
           </div>

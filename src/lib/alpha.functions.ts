@@ -6,6 +6,11 @@ import { handleEyeCommand } from "./vision-command";
 import { sendChatOllama } from "./ollama";
 import { sendChatOpenAICompat, stripLeakedThinking, type ChatResponse } from "./openai-compat";
 import { inspectGitHubRepo } from "./api/github.functions";
+import { fetchWeather } from "./tools/weather";
+import { lookupWikipedia, lookupArxiv } from "./tools/knowledge";
+import { evaluateMathExpression } from "./tools/math-sandbox";
+import { playMusicByName, stopMusic, playNextTrack, playPreviousTrack } from "./music";
+import { stopSpeaking } from "./voice";
 import type { ReminderDueEvent } from "./reminder-events";
 import {
   executeActionTagsAsync,
@@ -47,7 +52,7 @@ import {
 import { getReminderTool } from "./tool-registry";
 import { auth } from "./firebase";
 import type { FirestoreReminder } from "./reminder-repo";
-import { REMINDER_TOOLS } from "./reminder-tool-definitions";
+import { ALPHA_TOOLS } from "./reminder-tool-definitions";
 import { reminderContextManager } from "./reminder-context";
 import { RequestActionLifecycle } from "./request-lifecycle";
 import { notificationAcknowledgementManager } from "./notification-acknowledgement";
@@ -486,6 +491,12 @@ You are fully aware of your own toolkit inside this app:
 - /image — image generation dashboard.
 - /settings — provider keys, model routing, voice prefs, Alpha data.
 - Live Web Search Tool — Integrated real-time web search engine (DuckDuckGo + live web scrapers + Wikipedia). You have active web search capabilities whenever online. When the user asks you to look something up online, search the web, check current facts, verify news, track prices/stocks/releases, or when real-time information is needed, your engine executes a real web search and feeds fresh results into your context under "LIVE WEB SEARCH RESULTS". If asked whether you have a web search ability or tool, confirm clearly and affirmatively that YES, you have a real live web search tool wired into your system and can search the web whenever asked.
+- Weather Tool — Real-time weather and forecasts for any location via Open-Meteo.
+- Calculator (evaluateMath) — Secure sandbox for deterministic mathematical, scientific, and financial calculations.
+- Knowledge Lookup — Wikipedia and arXiv research paper search.
+- GitHub Inspection — Inspect repositories, view metadata, and fetch file contents directly from GitHub.
+- File Reading & Analysis — You have an integrated file viewing and extraction capability. When a user attaches a file (PDF, Word, Text, Code, etc.), the application automatically extracts its text content and places it directly into your conversation context inside "[ATTACHED FILE: ...]" and "[END OF FILE ...]" blocks. You DO NOT need a separate tool to read these files; the data is already present in your active context. If asked whether you can read or view files, confirm affirmatively that YES, you have an integrated file-viewer and can analyze any document attached by the user.
+- Music Tool — You can play, stop, and skip music tracks stored in the user's local Alpha library. The application automatically handles music commands like "play my music", "stop music", "play next track", "play previous track", "skip this song", and "go back to previous track" via optimized local intent handlers. If the user asks about your music capabilities, confirm clearly that YOU can control their local music library. You recognize commands like "next track", "previous song", "stop the music", etc.
 
 You ALWAYS have live context of the user's data and may proactively reference it when relevant.
 
@@ -752,7 +763,8 @@ export interface NativeToolExecutionSummary {
   executedLogicalKeys?: string[];
 }
 
-export async function executeTool(call: any, context: ToolContext) {
+export async function executeTool(call: any, context: ToolContext, signal?: AbortSignal) {
+  if (signal?.aborted) throw new Error("Aborted");
   const { name, arguments: argsRaw } = call.function;
   let args: any = {};
   try {
@@ -809,6 +821,43 @@ export async function executeTool(call: any, context: ToolContext) {
           }
         } catch {}
         res = await inspectGitHubRepo({ data: { urlOrSlug: args.urlOrSlug || args.url || args.slug, subpath: args.subpath, idToken } });
+        break;
+      }
+      case 'getWeather': {
+        activity.set("calling_tool");
+        res = await fetchWeather(args.location || args.city || args.query || "");
+        break;
+      }
+      case 'lookupKnowledge': {
+        activity.set("calling_tool");
+        const source = args.source === "arxiv" ? "arxiv" : "wikipedia";
+        if (source === "arxiv") {
+          res = await lookupArxiv(args.topic || args.query || "");
+        } else {
+          res = await lookupWikipedia(args.topic || args.query || "");
+        }
+        break;
+      }
+      case 'evaluateMath': {
+        activity.set("calling_tool");
+        res = evaluateMathExpression(args.expression || args.formula || args.math || "");
+        break;
+      }
+      case 'controlMusic': {
+        activity.set("calling_tool");
+        const action = args.action;
+        if (action === 'play') {
+          res = { success: true, message: await playMusicByName(args.query) };
+        } else if (action === 'stop') {
+          stopMusic();
+          res = { success: true, message: "Music stopped." };
+        } else if (action === 'next') {
+          res = { success: true, message: await playNextTrack() };
+        } else if (action === 'previous') {
+          res = { success: true, message: await playPreviousTrack() };
+        } else {
+          res = { success: false, error: "Invalid music action" };
+        }
         break;
       }
       default:
@@ -1110,6 +1159,20 @@ export function determineInitialActivity(
   return "thinking";
 }
 
+let currentAbortController: AbortController | null = null;
+
+export function stopAlphaGeneration(): void {
+  if (currentAbortController) {
+    try {
+      currentAbortController.abort();
+    } catch {}
+    currentAbortController = null;
+  }
+  inFlight = null;
+  activity.clear();
+  stopSpeaking();
+}
+
 export async function sendChat(
   _passedHistory: ChatMessage[],
   opts: { task?: TaskType; signal?: AbortSignal; disableTools?: boolean } = {},
@@ -1126,7 +1189,14 @@ export async function sendChat(
   lastLogicalKey = key;
   lastLogicalTime = now;
 
-  const promise = runChat(history, task, opts.signal, opts.disableTools).finally(() => {
+  const controller = new AbortController();
+  currentAbortController = controller;
+  if (opts.signal) {
+    opts.signal.addEventListener("abort", () => controller.abort());
+  }
+
+  const promise = runChat(history, task, controller.signal, opts.disableTools).finally(() => {
+    if (currentAbortController === controller) currentAbortController = null;
     if (inFlight?.key === key) inFlight = null;
   });
   inFlight = { key, promise };
@@ -1142,6 +1212,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
   const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
   const hasImages = !!lastUserMsg?.images?.length;
+  const hasFiles = !!lastUserMsg?.attachments?.length;
   const userText = lastUserMsg?.text || "";
 
   // Detect whether user is answering a prior assistant clarification/question authoritatively
@@ -1151,8 +1222,8 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     lifecycle.setClarificationSupplied(true);
   }
 
-  // Local intents answer instantly with no model request at all.
-  if (userText && !hasImages) {
+  // Local intents answer instantly with no model request at all (unless attachments or images are present).
+  if (userText && !hasImages && !lastUserMsg?.attachments?.length) {
     const eyeRes = await handleEyeCommand(userText);
     if (eyeRes) {
       lifecycle.recordSuccess({ name: "handleEyeCommand", isMutation: false, result: eyeRes });
@@ -1236,6 +1307,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
   }
   
   const hasEvidence = /^\[1\]/m.test(webContext);
+  const evidenceType = (hasEvidence && hasFiles) ? "live-search and file" : hasEvidence ? "live-search" : hasFiles ? "file" : "none";
   const priorAssistantMsg = [...history].reverse().find((m) => m.role === "model" && m.text);
   const priorAssistantText = (priorAssistantMsg?.text || "").trim();
   const clarificationGuidance = pendingClarif
@@ -1253,7 +1325,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     }) +
     REMINDER_INSTRUCTIONS +
     clarificationGuidance +
-    `\n\nEVIDENCE: ${hasEvidence ? "live-search" : "none"}\n${searchHint}` +
+    `\n\nEVIDENCE: ${evidenceType}\n${searchHint}` +
     (webContext ? `\n\n${webContext}` : "");
 
   if (routes.length) {
@@ -1290,6 +1362,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     let model = routes[0].model;
 
     while (loopCount < 5 && currentRouteIndex < routes.length) {
+      if (signal?.aborted) throw new Error("Aborted");
       prov = routes[currentRouteIndex].prov;
       model = routes[currentRouteIndex].model;
 
@@ -1301,7 +1374,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           allowImages: hasImages,
           maxTokens,
           historyTurns,
-          tools: disableTools ? [] : REMINDER_TOOLS,
+          tools: disableTools ? [] : ALPHA_TOOLS,
           signal,
         });
       } catch (err: any) {
@@ -1351,12 +1424,15 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);
 
+      if (signal?.aborted) break;
+
       let hasNewMutation = false;
       let hasNewRead = false;
       let hasFailure = false;
       let allToolsAlreadyCompleted = true;
 
       for (const call of response.toolCalls) {
+        if (signal?.aborted) throw new Error("Aborted");
         const invocationKey = getCanonicalExecutionKey(call);
         const stableCallId = call.id;
         const logicalKey = getLogicalMutationKey(call);
@@ -1403,7 +1479,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
           };
 
           try {
-            result = await executeTool(call, context);
+            result = await executeTool(call, context, signal);
           } catch (execErr: any) {
             if (isMutation) {
               result = await reconcileAmbiguousMutation(call, context, execErr);
@@ -1488,9 +1564,11 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         };
         currentHistory.push(toolMsg);
         await alphaStore.appendChat(toolMsg);
+        if (signal?.aborted) break;
       }
 
       loopCount++;
+      if (signal?.aborted) break;
 
       // Action Completion & Multi-Round Boundary Control: Set continuation needs FIRST, then evaluate fulfillment
       if (hasNewMutation && !hasNewRead && !hasFailure) {
