@@ -183,7 +183,7 @@ function ChatRoute() {
 
   async function send(overrideText?: string, opts?: { skipAppend?: boolean }) {
     if (busyRef.current || busy) return;
-    const t = (overrideText ?? text).trim();
+    const t = (overrideText ?? text ?? "").trim();
     if (!t && images.length === 0 && attachedFiles.length === 0) return;
 
     // Discard rapid double-clicks (identical text within 1000ms)
@@ -276,7 +276,7 @@ function ChatRoute() {
         alphaStore.setComposerText(combined);
       },
       onFinal: (t) => {
-        const trimmed = t.trim();
+        const trimmed = (t || "").trim();
         if (!trimmed) return;
         // Guard against the recogniser emitting the same final twice.
         if (trimmed === lastFinalRef.current && Date.now() - lastFinalAtRef.current < 4000) return;
@@ -711,16 +711,16 @@ function ChatRoute() {
                 {busy ? (
                   <button
                     onClick={stopCurrentProcess}
-                    className="p-2.5 rounded-xl bg-black text-primary border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
+                    className="p-2.5 rounded-xl bg-black border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
                     aria-label="Stop Generation"
                     title="Stop process"
                   >
-                    <Square className="w-5 h-5 fill-primary text-primary" />
+                    <Square className="w-5 h-5 fill-[var(--hud-cyan)] text-[var(--hud-cyan)]" />
                   </button>
                 ) : (
                   <button
                     onClick={() => send()}
-                    disabled={busy || busyRef.current || (!text.trim() && images.length === 0 && attachedFiles.length === 0)}
+                    disabled={busy || busyRef.current || (!(text || "").trim() && images.length === 0 && attachedFiles.length === 0)}
                     className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50"
                     aria-label="Send"
                   >

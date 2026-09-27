@@ -139,7 +139,7 @@ export function DesktopChatPanel() {
 
   async function send(overrideText?: string) {
     if (busyRef.current || busy) return;
-    const t = (overrideText ?? text).trim();
+    const t = (overrideText ?? text ?? "").trim();
     if (!t && images.length === 0 && attachedFiles.length === 0) return;
 
     // Discard rapid double-clicks (identical text within 1000ms)
@@ -575,16 +575,16 @@ export function DesktopChatPanel() {
             {busy ? (
               <button
                 onClick={stopCurrentProcess}
-                className="p-2.5 rounded-xl bg-black text-primary border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
+                className="p-2.5 rounded-xl bg-black border border-black hover:bg-black/90 transition-all active:scale-95 shadow-none"
                 aria-label="Stop Generation"
                 title="Stop process"
               >
-                <Square className="w-5 h-5 fill-primary text-primary" />
+                <Square className="w-5 h-5 fill-[var(--hud-cyan)] text-[var(--hud-cyan)]" />
               </button>
             ) : (
               <button
                 onClick={() => send()}
-                disabled={busy || busyRef.current || (!text.trim() && images.length === 0 && attachedFiles.length === 0)}
+                disabled={busy || busyRef.current || (!(text || "").trim() && images.length === 0 && attachedFiles.length === 0)}
                 className="p-2.5 rounded-xl bg-primary text-primary-foreground neon-border disabled:opacity-50 shrink-0"
                 aria-label="Send"
               >

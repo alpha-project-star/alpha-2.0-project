@@ -408,6 +408,7 @@ export class ContinuousRecognizer {
   private interimBuf = "";
   private handlers: RecHandlers = {};
   private sessionId = 0;
+  private watchdogTimer: number | null = null;
 
   get isActive() {
     return this.active;
@@ -450,38 +451,52 @@ export class ContinuousRecognizer {
       this.active = false;
       if (speechManager.getState() === 'LISTENING') speechManager.setState('IDLE');
       if (activity.get().kind === "listening") activity.clear();
-      if (!this.wantOn || this.paused) {
-        if (!this.wantOn) this.handlers.onStop?.();
-        return;
-      }
-      this.restartTimer = window.setTimeout(
-        () => {
-          this.restartTimer = null;
-          if (mySessionId !== this.sessionId) return;
-          if (!this.wantOn || this.paused) return;
-          try {
-            rec.start();
-          } catch (err: any) {
-            // try with a fresh instance
-            this.rec = this.build();
+      
+      // If we still want it on but it's not paused, trigger restart
+      if (this.wantOn && !this.paused) {
+        this.restartTimer = window.setTimeout(
+          () => {
+            this.restartTimer = null;
+            if (mySessionId !== this.sessionId) return;
+            if (!this.wantOn || this.paused) return;
             try {
-              this.rec?.start();
-            } catch (e: any) {
-              this.wantOn = false;
-              this.handlers.onError?.(
-                e?.message || err?.message || "Could not restart recognition",
-              );
-              this.handlers.onStop?.();
+              rec.start();
+            } catch (err: any) {
+              // try with a fresh instance
+              this.rec = this.build();
+              try {
+                this.rec?.start();
+              } catch (e: any) {
+                this.handlers.onError?.(
+                  e?.message || err?.message || "Could not restart recognition",
+                );
+              }
             }
-          }
-        },
-        isAndroid ? 250 : 50,
-      );
+          },
+          isAndroid ? 250 : 50,
+        );
+      } else if (!this.wantOn) {
+        this.handlers.onStop?.();
+      }
     };
     rec.onerror = (e: any) => {
       if (mySessionId !== this.sessionId) return;
       const err = String(e?.error || "speech error");
-      if (err === "no-speech" || err === "aborted") return;
+      if (err === "aborted") return;
+      if (err === "no-speech") {
+        // Recognition timed out without hearing anything. 
+        // Restart automatically if we still want it on.
+        if (this.wantOn && !this.paused) {
+          try {
+            this.restartTimer = window.setTimeout(() => {
+              if (mySessionId === this.sessionId && this.wantOn && !this.paused) {
+                this.rec?.start();
+              }
+            }, 100);
+          } catch {}
+        }
+        return;
+      }
       if (err === "not-allowed" || err === "service-not-allowed") {
         this.wantOn = false;
         this.handlers.onError?.("Microphone permission denied or blocked");
@@ -525,6 +540,16 @@ export class ContinuousRecognizer {
     if (typeof window === "undefined") return;
     this.wantOn = true;
     this.paused = false;
+    
+    if (!this.watchdogTimer) {
+      this.watchdogTimer = window.setInterval(() => {
+        if (this.wantOn && !this.paused && !this.active && !this.restartTimer) {
+          console.log("[voice] Watchdog: recognition stalled while wanted. Restarting...");
+          this.resume();
+        }
+      }, 4000);
+    }
+
     if (this.active) return;
     this.sessionId++;
     this.rec = this.build();
@@ -587,6 +612,12 @@ export class ContinuousRecognizer {
     this.wantOn = false;
     this.paused = false;
     this.sessionId++;
+    
+    if (this.watchdogTimer) {
+      window.clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+
     if (this.restartTimer) {
       window.clearTimeout(this.restartTimer);
       this.restartTimer = null;

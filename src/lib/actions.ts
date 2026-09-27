@@ -190,6 +190,7 @@ function verify(kind: Kind, id: string, check?: (x: any) => boolean): boolean {
 export interface ExecuteActionTagsOptions {
   userId?: string | null;
   repo?: ReminderRepository;
+  signal?: AbortSignal;
   toolSummary?: {
     hasMutation: boolean;
     allMutationsSucceeded: boolean;
@@ -284,6 +285,7 @@ export async function executeActionTagsAsync(
       addNoteRe.lastIndex = 0;
       continue;
     }
+    if (options?.signal?.aborted) throw new Error("Aborted");
     const id = uid();
     try {
       await upsert("note", { id, title, body, updatedAt: Date.now() } satisfies Note);
@@ -330,6 +332,7 @@ export async function executeActionTagsAsync(
       addMemRe.lastIndex = 0;
       continue;
     }
+    if (options?.signal?.aborted) throw new Error("Aborted");
     const id = uid();
     try {
       await upsert("memory", {

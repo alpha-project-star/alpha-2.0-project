@@ -564,6 +564,7 @@ let state: AlphaState = {
   memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
   profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
   settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
+  composerText: parseLS<string>(K.composerText, z.string(), ""),
 };
 
 // One-shot migration: users still on the old task-model defaults get moved to

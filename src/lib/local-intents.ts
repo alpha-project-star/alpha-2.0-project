@@ -93,15 +93,15 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
   }
 
   // ---- MUSIC -------------------------------------------------------------
-  if (/^(?:stop|pause|halt)\s+(?:the\s+)?music\b/.test(lower)) {
+  if (/^(?:stop|pause|halt|terminate)\s+(?:the\s+)?music\b/.test(lower)) {
     stopMusic();
     return "Music stopped.";
   }
-  if (/^(?:play\s+|skip\s+)?next\s+(?:track|song|music)\b/.test(lower) || /^skip\s+(?:track|song|this|music)\b/.test(lower)) {
+  if (/^(?:play\s+|skip\s+|go\s+to\s+)?next\s+(?:track|song|music)\b/.test(lower) || /^skip\s+(?:track|song|this|music)\b/.test(lower)) {
     void playNextTrack().catch(() => {});
     return "Playing next track.";
   }
-  if (/^(?:play\s+)?previous\s+(?:track|song|music)\b/.test(lower) || /^(?:go\s+)?back\s+(?:to\s+)?(?:the\s+)?previous\s+(?:track|song|music)\b/.test(lower)) {
+  if (/^(?:play\s+|go\s+back\s+to\s+)?previous\s+(?:track|song|music)\b/.test(lower) || /^(?:go\s+)?back\s+(?:to\s+)?(?:the\s+)?previous\s+(?:track|song|music)\b/.test(lower)) {
     void playPreviousTrack().catch(() => {});
     return "Playing previous track.";
   }

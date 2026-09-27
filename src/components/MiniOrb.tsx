@@ -26,7 +26,7 @@ export function MiniOrb({ size = 56 }: { size?: number }) {
 
   async function handleFinal(text: string) {
     if (busyRef.current) return;
-    const trimmed = text.trim();
+    const trimmed = (text || "").trim();
     if (!trimmed) return;
 
     // Discard rapid double voice submissions

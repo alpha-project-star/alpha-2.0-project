@@ -484,7 +484,8 @@ export class BoundedResearchService {
     this.provider = provider;
   }
 
-  async research(query: string): Promise<ResearchResult> {
+  async research(query: string, signal?: AbortSignal): Promise<ResearchResult> {
+    if (signal?.aborted) throw new Error("Aborted");
     const receipt: WebToolReceipt = {
       toolSelected: true,
       querySent: null,
@@ -499,6 +500,7 @@ export class BoundedResearchService {
     try {
       receipt.querySent = query;
       const rawResults = await this.provider.search(query, 10);
+      if (signal?.aborted) throw new Error("Aborted");
       results = rankResults(rawResults, query);
       receipt.resultCount = results.length;
       if (results.length === 0) {
@@ -506,7 +508,8 @@ export class BoundedResearchService {
         return { query, results: [], articles: [], evidence: [], sources: [], status: "failed", receipt };
       }
       receipt.status = "usable";
-    } catch {
+    } catch (e: any) {
+      if (e?.message === "Aborted") throw e;
       receipt.status = "error";
       receipt.errorClass = "provider_unavailable";
       return { query, results: [], articles: [], evidence: [], sources: [], status: "failed", receipt };
@@ -519,6 +522,7 @@ export class BoundedResearchService {
 
     // Pass 1: Fetch and identify
     for (const result of results) {
+      if (signal?.aborted) throw new Error("Aborted");
       if (openedPages >= this.maxPages) {
         break;
       }
@@ -585,6 +589,7 @@ export class BoundedResearchService {
     // Pass 2: Fetch specific candidate articles if we need more depth
     if (evidence.length < 3 && articleLinks.length > 0) {
       for (const link of articleLinks) {
+        if (signal?.aborted) throw new Error("Aborted");
         if (openedPages >= 8) break;
         activity.set("reading_article");
         const page = await this.provider.readPage(link);

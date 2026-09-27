@@ -67,21 +67,32 @@ function retryAfterMs(res: Response, body: string): number | null {
  * Some free reasoning models leak their scratchpad into `content`
  * ("Thinking Process: 1. Analyse the request…"). Strip a leading thinking
  * preamble and any <think> blocks so the user only sees the answer.
- * Now supports all common reasoning and thinking header patterns recursively.
+ * Now supports all common reasoning, thinking, and tool-call header patterns recursively.
  */
 export function stripLeakedThinking(text: string): string {
   if (!text) return "";
   let t = text;
   
-  // Remove known XML tags containing thinking
-  t = t.replace(/<(think|thinking|reasoning|analysis)>[\s\S]*?<\/\1>/gi, "").trim();
-  t = t.replace(/^<(think|thinking|reasoning|analysis)>[\s\S]*$/i, "").trim();
+  // 1. Remove known XML tags containing thinking or tool calls
+  const tagsToStrip = [
+    "think", "thinking", "reasoning", "analysis", "thought", "internal_monologue",
+    "thought_process", "tool_call", "call", "function_call", "scratchpad"
+  ];
+  for (const tag of tagsToStrip) {
+    const rx = new RegExp(`<${tag}>[\\s\\S]*?<\\/${tag}>`, "gi");
+    t = t.replace(rx, "");
+    // Also remove unclosed tags at the very start/end
+    const startRx = new RegExp(`^<${tag}>[\\s\\S]*$`, "i");
+    const endRx = new RegExp(`^[\\s\\S]*?<\\/${tag}>$`, "i");
+    t = t.replace(startRx, "").replace(endRx, "");
+  }
   
-  // Remove block patterns with clear final headers
+  // 2. Remove block patterns with clear final headers
   const blockRegexes = [
     /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result)\s*:?\s*)/i,
     /^(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
     /^(?:thinking|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
+    /^<ctrl94>\s*(?:thinking|thought|reasoning)[\s\S]*?(?:\n\n|$)/im, // Blockquote thinking
   ];
 
   for (const rx of blockRegexes) {
@@ -111,10 +122,11 @@ export function extractNormalizedResponse(
 ): NormalizedChatResponse {
   let finalText = (content || "").trim();
   let internalReasoning = (reasoningContent || "").trim();
+  const extractedToolCalls: any[] = toolCalls ? [...toolCalls] : [];
 
-  // Extract from tags in content if present
-  const tags = ["think", "thinking", "reasoning", "analysis"];
-  for (const tag of tags) {
+  // 1. Extract from tags in content if present (Thinking & XML Tool Calls)
+  const thinkingTags = ["think", "thinking", "reasoning", "analysis", "thought", "internal_monologue", "thought_process"];
+  for (const tag of thinkingTags) {
     const startTag = `<${tag}>`;
     const endTag = `</${tag}>`;
     let startIndex = finalText.toLowerCase().indexOf(startTag);
@@ -122,13 +134,13 @@ export function extractNormalizedResponse(
       const endIndex = finalText.toLowerCase().indexOf(endTag, startIndex + startTag.length);
       if (endIndex !== -1) {
         const block = finalText.slice(startIndex + startTag.length, endIndex).trim();
-        if (block) {
+        if (block && !internalReasoning.includes(block)) {
           internalReasoning += (internalReasoning ? "\n" : "") + block;
         }
         finalText = finalText.slice(0, startIndex) + finalText.slice(endIndex + endTag.length);
       } else {
         const block = finalText.slice(startIndex + startTag.length).trim();
-        if (block) {
+        if (block && !internalReasoning.includes(block)) {
           internalReasoning += (internalReasoning ? "\n" : "") + block;
         }
         finalText = finalText.slice(0, startIndex);
@@ -137,7 +149,33 @@ export function extractNormalizedResponse(
     }
   }
 
-  // Extract text-headers in content
+  // 2. Fallback: Parse XML tool calls if native tool calls are missing (fixes Screenshot 7 leakage)
+  if (extractedToolCalls.length === 0) {
+    // Regex to find <tool_call><function=NAME><parameter=KEY>VALUE</parameter></function></tool_call>
+    // or similar variants used by non-native-tool models
+    const toolCallMatch = finalText.match(/<tool_call>[\s\S]*?<\/tool_call>/gi);
+    if (toolCallMatch) {
+      for (const rawCall of toolCallMatch) {
+        const fnNameMatch = rawCall.match(/<function=([^>]+)>/i);
+        if (fnNameMatch) {
+          const fnName = fnNameMatch[1].trim();
+          const args: any = {};
+          const paramMatches = rawCall.matchAll(/<parameter=([^>]+)>([\s\S]*?)<\/parameter>/gi);
+          for (const pm of paramMatches) {
+            args[pm[1].trim()] = pm[2].trim();
+          }
+          extractedToolCalls.push({
+            id: `call_xml_${Math.random().toString(36).slice(2, 11)}`,
+            type: "function",
+            function: { name: fnName, arguments: JSON.stringify(args) }
+          });
+        }
+        finalText = finalText.replace(rawCall, "");
+      }
+    }
+  }
+
+  // 3. Extract text-headers in content
   const headers = [
     /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result)\s*:?\s*)/i,
     /^(?:thinking process|reasoning|thought process|internal monologue|analysis)\s*:?[\s\S]*$/i,
@@ -160,9 +198,9 @@ export function extractNormalizedResponse(
 
   return {
     finalText,
-    toolCalls: toolCalls && toolCalls.length > 0 ? toolCalls : undefined,
+    toolCalls: extractedToolCalls.length > 0 ? extractedToolCalls : undefined,
     internalReasoning: internalReasoning || undefined,
-    hasToolCalls: !!(toolCalls && toolCalls.length > 0),
+    hasToolCalls: extractedToolCalls.length > 0,
     modelIdentity: model,
   };
 }
@@ -267,7 +305,7 @@ export async function sendChatOpenAICompat(
         body: JSON.stringify({
           model: opts.model,
           messages,
-          temperature: 0.8,
+          temperature: 0.4, // Lower temperature for consistent Alpha presentation and identity
           stream: false,
           ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
           ...(opts.tools ? { tools: opts.tools } : {}),

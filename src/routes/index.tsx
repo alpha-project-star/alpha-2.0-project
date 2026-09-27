@@ -90,7 +90,7 @@ function OrbHome() {
 
   async function handleFinal(text: string) {
     if (thinkingRef.current) return;
-    const trimmed = text.trim();
+    const trimmed = (text || "").trim();
     if (!trimmed) return;
 
     // Discard rapid double voice submissions

@@ -12,6 +12,7 @@ import { evaluateMathExpression } from "./tools/math-sandbox";
 import { playMusicByName, stopMusic, playNextTrack, playPreviousTrack } from "./music";
 import { stopSpeaking } from "./voice";
 import type { ReminderDueEvent } from "./reminder-events";
+import { normalizePresentation } from "./presentation";
 import {
   executeActionTagsAsync,
   type ExecuteActionTagsOptions,
@@ -403,6 +404,27 @@ CONVERSATION HANDLING & CONTEXT HIERARCHY
 - Recognize when the user is venting versus requesting a factual answer.
 - Match the user's desired level of detail: give a direct, simple answer first; provide depth when requested.
 
+ALPHA DESIGN CONSTITUTION & PRESENTATION SEMANTICS (STRICT):
+You MUST adhere to these exact presentation rules. Your identity is constant across all models.
+1. HIERARCHY:
+   - Use "## " for main sections and "### " for sub-sections.
+   - NEVER use a single "# ".
+   - NEVER use "#### " or deeper. Flat hierarchy only.
+2. SPACING & PARAGRAPHS:
+   - Every response block MUST be a paragraph of 2–4 concise sentences.
+   - Every block (paragraph, list, heading) MUST be separated by exactly one blank line.
+   - NEVER output a single uninterrupted wall of text.
+3. BOLDING & EMPHASIS:
+   - Use bolding (**like this**) ONLY for: (1) key terms on their first mention, (2) final conclusions, (3) dates, or (4) exact results.
+   - Use bolding sparingly (max 3-5 per response). NEVER bold entire sentences or every line of a list.
+4. LISTS:
+   - Use bullets ("- ") for unordered items.
+   - Use numbers ("1.") ONLY for strict sequential steps.
+   - NEVER nest lists more than one level deep.
+5. NO LEAKAGE:
+   - NEVER output XML tags, tool-call syntax, reasoning headers, or internal monologues to the user.
+   - If a LIVE WEB SEARCH RESULTS block is present, use it for context but NEVER call a 'web_search' or 'search' tool yourself — those are handled by the orchestrator before you are called.
+
 RESPONSE STRATEGY
 General order:
 1. Answer first.
@@ -490,7 +512,7 @@ You are fully aware of your own toolkit inside this app:
 - /memories — long-term memory the user wants you to keep (topic, detail).
 - /image — image generation dashboard.
 - /settings — provider keys, model routing, voice prefs, Alpha data.
-- Live Web Search Tool — Integrated real-time web search engine (DuckDuckGo + live web scrapers + Wikipedia). You have active web search capabilities whenever online. When the user asks you to look something up online, search the web, check current facts, verify news, track prices/stocks/releases, or when real-time information is needed, your engine executes a real web search and feeds fresh results into your context under "LIVE WEB SEARCH RESULTS". If asked whether you have a web search ability or tool, confirm clearly and affirmatively that YES, you have a real live web search tool wired into your system and can search the web whenever asked.
+- Live Web Search Context — Integrated real-time web search engine (DuckDuckGo + live web scrapers + Wikipedia). Your orchestrator automatically handles web search whenever needed. You have active web search context whenever online. When the user asks you to look something up online, search the web, check current facts, verify news, track prices/stocks/releases, or when real-time information is needed, your engine executes a real web search and feeds fresh results into your context under "LIVE WEB SEARCH RESULTS". If asked whether you have a web search ability or tool, confirm clearly and affirmatively that YES, you have a real live web search capability wired into your system and can search the web whenever asked. You are scrupulously honest: if you don't know something and haven't searched for it, say so and offer to search.
 - Weather Tool — Real-time weather and forecasts for any location via Open-Meteo.
 - Calculator (evaluateMath) — Secure sandbox for deterministic mathematical, scientific, and financial calculations.
 - Knowledge Lookup — Wikipedia and arXiv research paper search.
@@ -672,11 +694,11 @@ function planRoutes(
 // Multi-engine Live Web Search (DuckDuckGo + Jina Reader + Wikipedia)
 // ---------------------------------------------------------------------------
 
-export async function fetchLiveWebContext(query: string): Promise<string> {
+export async function fetchLiveWebContext(query: string, signal?: AbortSignal): Promise<string> {
   if (!query) return "";
 
   const researchService = new BoundedResearchService();
-  const research = await researchService.research(query);
+  const research = await researchService.research(query, signal);
 
   const sources: CanonicalWebSource[] =
     research.sources && research.sources.length > 0
@@ -1169,6 +1191,9 @@ export function stopAlphaGeneration(): void {
     currentAbortController = null;
   }
   inFlight = null;
+  lastLogicalPromise = null;
+  lastLogicalKey = null;
+  lastLogicalTime = 0;
   activity.clear();
   stopSpeaking();
 }
@@ -1189,6 +1214,9 @@ export async function sendChat(
   lastLogicalKey = key;
   lastLogicalTime = now;
 
+  if (currentAbortController) {
+    currentAbortController.abort();
+  }
   const controller = new AbortController();
   currentAbortController = controller;
   if (opts.signal) {
@@ -1293,7 +1321,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     const decision = decideSearch(userText);
     if (decision.search) {
       activity.set("searching");
-      webContext = await fetchLiveWebContext(decision.query || "");
+      webContext = await fetchLiveWebContext(decision.query || "", signal);
       if (!activity.isActionActive()) {
         activity.set(determineInitialActivity(hasImages, task, userText));
       }
@@ -1370,6 +1398,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
 
       let response: ChatResponse;
       try {
+        if (signal?.aborted) throw new Error("Aborted");
         response = await callProvider(prov, model, currentHistory, sys, {
           allowImages: hasImages,
           maxTokens,
@@ -1616,7 +1645,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (finalResponse) {
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
-      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle });
+      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal });
       void maybeCompactSummary(history, finalText);
       activity.clear();
       return finalText;
@@ -1710,6 +1739,7 @@ export async function finalizeReply(
   toolSummary?: NativeToolExecutionSummary,
   options?: ExecuteActionTagsOptions,
 ): Promise<string> {
+  if (options?.signal?.aborted) throw new Error("Aborted");
   const hasTags = /\[\[[A-Z_]+:/.test(raw);
   if (hasTags) {
     const firstTagMatch = raw.match(/\[\[([A-Z_]+):/);
@@ -1725,7 +1755,7 @@ export async function finalizeReply(
     executedLogicalKeys: toolSummary?.executedLogicalKeys,
     lifecycle: options?.lifecycle,
   });
-  let out = text;
+  let out = normalizePresentation(text);
   const report = renderActionReport(results);
   if (report) {
     if (results.some((r) => r.status !== "success")) activity.set("action_failed");

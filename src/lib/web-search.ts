@@ -114,9 +114,9 @@ export function mayBenefitFromSearch(text: string): boolean {
   ) {
     return false;
   }
-  return /\b(latest|breaking news|headlines?|stock price|crypto price|exchange rate|match score|sports score|release date|version number|weather in|weather forecast|who won|election results?|202\d|203\d|(?:news|weather|price|events?|happened|schedule)\s+today|today(?:\x27s|\s+(?:news|weather|price|events?|headlines?)))\b/i.test(
+  return /\b(latest|breaking news|headlines?|stock price|crypto price|exchange rate|match score|sports score|release date|version number|weather in|weather forecast|who won|election results?|intakes?|deadlines?|requirements?|admissions?|university|college|polytechnic|institute|corporation|202\d|203\d|(?:news|weather|price|events?|happened|schedule)\s+today|today(?:\x27s|\s+(?:news|weather|price|events?|headlines?)))\b/i.test(
     t,
-  );
+  ) || (/\b(when|where|who|what)\b/i.test(t) && /[A-Z]/.test(t));
 }
 
 /**

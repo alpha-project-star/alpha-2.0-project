@@ -143,6 +143,12 @@ export function normalizePresentation(input: string): string {
       // 6. Ensure blank lines before lists, blockquotes, and headings for reliable parsing
       text = ensureBlockSpacing(text);
 
+      // 7. Enforce paragraph separation (Double newlines between distinct blocks)
+      text = enforceParagraphSeparation(text);
+
+      // 8. Strip any surviving tool-call or thinking leakage that might have escaped prior filters
+      text = stripPresentationLeakage(text);
+
       normalizedSegments.push(text);
     }
   }
@@ -314,11 +320,12 @@ function ensureBlockSpacing(text: string): string {
 
     const isHeader = /^#{1,6}\s+/.test(line);
     const isCallout = /^>\s*\[!/.test(line);
+    const isListStart = /^\s*[-*]\s+|\s*\d+\.\s+/.test(line);
 
     const prevLine = result.length > 0 ? result[result.length - 1] : "";
     const prevIsEmpty = prevLine.trim() === "";
 
-    if ((isHeader || isCallout) && !prevIsEmpty && result.length > 0) {
+    if ((isHeader || isCallout || isListStart) && !prevIsEmpty && result.length > 0) {
       result.push("");
     }
 
@@ -326,6 +333,72 @@ function ensureBlockSpacing(text: string): string {
   }
 
   return result.join("\n");
+}
+
+/**
+ * Normalizes text to ensure every paragraph (of 2-4 sentences) is separated by exactly one blank line.
+ * Also repairs excessive whitespace and removes trailing/leading blank lines.
+ */
+function enforceParagraphSeparation(text: string): string {
+  if (!text) return "";
+  
+  // First, collapse multiple blank lines into one
+  const t = text.replace(/\n{3,}/g, "\n\n").trim();
+  
+  const blocks = t.split(/\n\n+/);
+  const result: string[] = [];
+  
+  for (const block of blocks) {
+    const trimmedBlock = block.trim();
+    if (!trimmedBlock) continue;
+    
+    // Don't split headings, lists, tables or blockquotes (they are already blocks)
+    if (/^(?:#|>|\||[-*]|\d+\.)/.test(trimmedBlock)) {
+      result.push(trimmedBlock);
+      continue;
+    }
+    
+    // For normal prose blocks, ensure they aren't too long without spacing
+    // If a block has many sentences but no newlines, it might be a "wall of text"
+    const sentences = trimmedBlock.match(/[^.!?]+[.!?]+(?:\s+|$)/g) || [trimmedBlock];
+    if (sentences.length > 5) {
+      // Split into 3-sentence chunks
+      for (let i = 0; i < sentences.length; i += 3) {
+        result.push(sentences.slice(i, i + 3).join("").trim());
+      }
+    } else {
+      result.push(trimmedBlock);
+    }
+  }
+  
+  return result.join("\n\n");
+}
+
+/**
+ * Final safety filter to remove common leakage patterns (XML tags, reasoning headers) 
+ * that might have survived previous passes.
+ */
+function stripPresentationLeakage(text: string): string {
+  if (!text) return "";
+  let t = text;
+  
+  // Strip common internal headers used by models
+  const internalHeaders = [
+    /^(?:Thinking|Reasoning|Thought Process|Analysis|Internal Monologue|Internal Dialogue)\s*:?/im,
+    /^(?:Search Query|Searching for|Running search|Web Search|I will search for)\s*:?/im,
+    /^(?:Tool Call|Calling tool|Function call|I will call)\s*:?/im,
+    /^(?:Okay,? I will|I'll now|Let me)\s+(?:search|look up|check|use the)\b/i,
+  ];
+  
+  for (const rx of internalHeaders) {
+    t = t.replace(rx, "").trim();
+  }
+  
+  // Strip surviving XML tags if they look like leakage
+  t = t.replace(/<(?:think|thinking|thought|reasoning|analysis|thought_process|tool_call|call|function_call)>[\s\S]*?<\/(?:think|thinking|thought|reasoning|analysis|thought_process|tool_call|call|function_call)>/gi, "");
+  t = t.replace(/<(?:search|web_search|query)>[\s\S]*?<\/(?:search|web_search|query)>/gi, "");
+  
+  return t.trim();
 }
 
 /**
