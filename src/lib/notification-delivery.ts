@@ -6,6 +6,7 @@ import { reminderContextManager } from './reminder-context';
 import { notificationAcknowledgementManager } from './notification-acknowledgement';
 import { notificationChannelRegistry } from './notification-channel-registry';
 import { withCrossContextLock } from './cross-context-lock';
+import { alphaGate } from './alpha-gate';
 
 export type NotificationChannel = 'in_app' | string;
 
@@ -497,12 +498,16 @@ export class NotificationDeliveryManager {
             if (existing.status === 'delivered') {
               const inChat = alphaStore.get().chat.some((m) => m.proactiveEventId === rawRecord.eventId);
               if (!inChat) {
+                const gateRes = alphaGate.process({
+                  rawText: rawRecord.text,
+                  origin: 'notification',
+                });
                 const chatMsg: ChatMessage = {
                   id: existing.messageId || rawRecord.messageId,
                   role: 'model',
                   origin: 'proactive',
                   proactiveEventId: rawRecord.eventId,
-                  text: rawRecord.text,
+                  text: gateRes.approvedText,
                   ts: existing.deliveredAt || Date.now(),
                 };
                 alphaStore.appendChat(chatMsg);
@@ -687,12 +692,16 @@ export class NotificationDeliveryManager {
       }
 
       const deliveredAt = Date.now();
+      const gateRes = alphaGate.process({
+        rawText: rawRecord.text,
+        origin: 'notification',
+      });
       const messageToAppend: ChatMessage = {
         id: rawRecord.messageId,
         role: 'model',
         origin: 'proactive',
         proactiveEventId: rawRecord.eventId,
-        text: rawRecord.text,
+        text: gateRes.approvedText,
         ts: deliveredAt,
       };
 

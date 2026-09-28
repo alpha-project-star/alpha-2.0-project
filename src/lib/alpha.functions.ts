@@ -1281,18 +1281,34 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
         const ackResult = await notificationAcknowledgementManager.acknowledgeFromUserUtterance(currentUid, userText);
         if (ackResult.success && ackResult.conversationalReply) {
           activity.clear();
-          return ackResult.conversationalReply;
+          const gateRes = alphaGate.process({
+            rawText: ackResult.conversationalReply,
+            origin: "notification",
+            lifecycle,
+          });
+          return gateRes.approvedText;
         } else if (ackResult.status === 'ambiguous_target') {
           activity.clear();
           const candidateList = ackResult.error.candidates?.map((c) => (c.title ? `"${c.title}"` : 'a reminder')).join(', ');
-          return `Which reminder did you mean? ${candidateList ? `(${candidateList})` : ''}`;
+          const reply = `Which reminder did you mean? ${candidateList ? `(${candidateList})` : ''}`;
+          const gateRes = alphaGate.process({
+            rawText: reply,
+            origin: "notification",
+            lifecycle,
+          });
+          return gateRes.approvedText;
         }
 
         // Notification follow-up & recovery inquiry check
         const inquiryReply = await notificationRecoveryManager.handleConversationalInquiry(currentUid, userText);
         if (inquiryReply) {
           activity.clear();
-          return inquiryReply;
+          const gateRes = alphaGate.process({
+            rawText: inquiryReply,
+            origin: "notification",
+            lifecycle,
+          });
+          return gateRes.approvedText;
         }
       } catch {
         // Fall through cleanly to general chat

@@ -8,6 +8,7 @@ import {
   type ReminderRepository,
 } from "./reminder-repo";
 import { withCrossContextLock } from "./cross-context-lock";
+import { alphaGate } from "./alpha-gate";
 
 /**
  * Proactive daemon — Alpha initiates.
@@ -52,9 +53,15 @@ async function tryClaimOnce(key: string): Promise<boolean> {
 
 function speakAndLog(line: string) {
   if (!line.trim()) return;
+  const gateRes = alphaGate.process({
+    rawText: line,
+    origin: "proactive",
+  });
+  const approved = gateRes.approvedText;
+  if (!approved || !approved.trim()) return;
   prepareUtterance();
-  alphaStore.appendChat({ id: uid(), role: "model", text: line, ts: Date.now() });
-  void speakWith(line);
+  alphaStore.appendChat({ id: uid(), role: "model", text: approved, ts: Date.now() });
+  void speakWith(approved);
 }
 
 export interface MorningBriefOptions {

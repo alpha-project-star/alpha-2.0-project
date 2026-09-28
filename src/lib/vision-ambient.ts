@@ -19,6 +19,7 @@ import { alphaStore, uid, getStorage, getKey, getCurrentStoreUser, isKeyForUid }
 import { captureFrame, isActive as eyeActive, subscribeBrightness } from "./vision-stream";
 import { sendChat } from "./alpha.functions";
 import { speakWith } from "./voice";
+import { alphaGate } from "./alpha-gate";
 
 let running = false;
 let unsub: (() => void) | null = null;
@@ -235,14 +236,19 @@ async function executeAmbientScan(): Promise<void> {
     alphaStore.setSettings({ visionAmbientEnabled: false });
 
     const limitMsg = "Ambient vision has been paused because it reached the hourly limit of 12 scans.";
+    const gateRes = alphaGate.process({
+      rawText: limitMsg,
+      origin: "ambient",
+    });
+    const approvedLimitMsg = gateRes.approvedText;
     alphaStore.appendChat({
       id: uid(),
       role: "system",
-      text: `⚠️ ${limitMsg}`,
+      text: `⚠️ ${approvedLimitMsg}`,
       ts: Date.now(),
     });
 
-    void speakWith(limitMsg, { auto: true });
+    void speakWith(approvedLimitMsg, { auto: true });
     return;
   }
 
@@ -286,10 +292,17 @@ async function executeAmbientScan(): Promise<void> {
     trimmed = trimmed.replace(/\[\[[\s\S]*?\]\]/g, "").trim();
     if (!trimmed || /^nothing\b/i.test(trimmed)) return;
 
-    alphaStore.appendChat({ id: uid(), role: "model", text: `👁 ${trimmed}`, ts: Date.now() });
+    const gateRes = alphaGate.process({
+      rawText: trimmed,
+      origin: "ambient",
+    });
+    const approved = gateRes.approvedText;
+    if (!approved || /^nothing\b/i.test(approved)) return;
+
+    alphaStore.appendChat({ id: uid(), role: "model", text: `👁 ${approved}`, ts: Date.now() });
 
     // Speak using canonical speech manager and respect autoSpeak!
-    void speakWith(trimmed, { auto: true });
+    void speakWith(approved, { auto: true });
   } catch {
     /* silent — ambient */
   }
