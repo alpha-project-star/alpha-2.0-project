@@ -42,9 +42,15 @@ export class AlphaGate {
       };
     }
 
-    // 1. Input Validation
+    // 1. Input Validation & Action Execution Gate
     const raw = candidate?.rawText;
-    if (typeof raw !== "string" || !raw.trim()) {
+    const hasExecution = Boolean(
+      (candidate?.actionResults && candidate.actionResults.length > 0) ||
+      (candidate?.toolSummary && candidate.toolSummary.hasMutation) ||
+      (candidate?.lifecycle && (candidate.lifecycle.hasCompletedMutations() || candidate.lifecycle.hasFailedMutations()))
+    );
+
+    if ((typeof raw !== "string" || !raw.trim()) && !hasExecution) {
       return {
         approvedText: ALPHA_GATE_FALLBACK_TEXT,
         status: "fallback",
