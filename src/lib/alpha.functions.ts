@@ -58,7 +58,7 @@ import { reminderContextManager } from "./reminder-context";
 import { RequestActionLifecycle } from "./request-lifecycle";
 import { notificationAcknowledgementManager } from "./notification-acknowledgement";
 import { notificationRecoveryManager } from "./notification-recovery";
-import { alphaGate } from "./alpha-gate";
+import { alphaGate, type AlphaGateCandidate } from "./alpha-gate";
 import {
   ALPHA_IDENTITY,
   ALPHA_BEHAVIORAL_POLICY,
@@ -1201,7 +1201,12 @@ export function stopAlphaGeneration(): void {
 
 export async function sendChat(
   _passedHistory: ChatMessage[],
-  opts: { task?: TaskType; signal?: AbortSignal; disableTools?: boolean } = {},
+  opts: {
+    task?: TaskType;
+    signal?: AbortSignal;
+    disableTools?: boolean;
+    origin?: AlphaGateCandidate["origin"];
+  } = {},
 ): Promise<string> {
   const history = alphaStore.getCompleteHistory();
   const task: TaskType = opts.task ?? "auto";
@@ -1224,7 +1229,13 @@ export async function sendChat(
     opts.signal.addEventListener("abort", () => controller.abort());
   }
 
-  const promise = runChat(history, task, controller.signal, opts.disableTools).finally(() => {
+  const promise = runChat(
+    history,
+    task,
+    controller.signal,
+    opts.disableTools,
+    opts.origin,
+  ).finally(() => {
     if (currentAbortController === controller) currentAbortController = null;
     if (inFlight?.key === key) inFlight = null;
   });
@@ -1233,7 +1244,13 @@ export async function sendChat(
   return promise;
 }
 
-async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSignal, disableTools?: boolean): Promise<string> {
+async function runChat(
+  history: ChatMessage[],
+  task: TaskType,
+  signal?: AbortSignal,
+  disableTools?: boolean,
+  origin?: AlphaGateCandidate["origin"],
+): Promise<string> {
   const lifecycle = new RequestActionLifecycle();
   const s = alphaStore.get().settings;
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
@@ -1667,7 +1684,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (finalResponse) {
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
-      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal });
+      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal, origin });
       void maybeCompactSummary(history, finalText);
       activity.clear();
       return finalText;
@@ -1693,7 +1710,7 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext);
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
-    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle });
+    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, origin });
     activity.clear();
     return out;
   } catch (e) {
@@ -1759,7 +1776,7 @@ export async function finalizeReply(
   raw: string,
   webContext: string,
   toolSummary?: NativeToolExecutionSummary,
-  options?: ExecuteActionTagsOptions,
+  options?: ExecuteActionTagsOptions & { origin?: AlphaGateCandidate["origin"] },
 ): Promise<string> {
   if (options?.signal?.aborted) throw new Error("Aborted");
   const hasTags = /\[\[[A-Z_]+:/.test(raw);
@@ -1786,7 +1803,7 @@ export async function finalizeReply(
 
   const gateResult = alphaGate.process({
     rawText: text,
-    origin: "model",
+    origin: options?.origin ?? "model",
     toolSummary,
     actionResults: results,
     lifecycle: options?.lifecycle,

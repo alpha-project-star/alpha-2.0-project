@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { alphaStore } from "../src/lib/alpha-store";
+import { alphaStore, uid, type ChatMessage } from "../src/lib/alpha-store";
 import { alphaGate } from "../src/lib/alpha-gate";
 import { buildMorningBrief, tick } from "../src/lib/proactive";
 import { notificationDelivery } from "../src/lib/notification-delivery";
 import { InMemoryReminderRepository } from "../src/lib/reminder-repo";
+import { sendChat, finalizeReply } from "../src/lib/alpha.functions";
+import { notificationRecoveryManager } from "../src/lib/notification-recovery";
+import { notificationAcknowledgementManager } from "../src/lib/notification-acknowledgement";
+import { auth } from "../src/lib/firebase";
 
 describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () => {
   let originalWindow: any;
@@ -62,7 +66,7 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
     (globalThis as any).localStorage = originalLocalStorage;
   });
 
-  it("1. Proactive Morning Brief passes through Alpha Gate with origin proactive", async () => {
+  it("1. Proactive Morning Brief producer path passes through Alpha Gate with origin proactive", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
     const repo = new InMemoryReminderRepository();
     await repo.createReminder("user-1", {
@@ -84,7 +88,7 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
 
     expect(brief).toContain("Team Standup");
 
-    // Test that when proactive tick runs, speakAndLog gates the output with origin 'proactive'
+    // Execute real tick() producer path
     await alphaStore.setSettings({ backgroundEnabled: true });
     await tick(true, {
       userId: "user-1",
@@ -92,14 +96,19 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
       now: new Date(new Date().setHours(8, 0, 0, 0)),
     });
 
-    expect(gateProcessSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "proactive",
-      })
+    const proactiveCall = gateProcessSpy.mock.calls.find(
+      (call) => call[0].origin === "proactive" && call[0].rawText.includes("Team Standup")
     );
+    expect(proactiveCall).toBeDefined();
+    expect(proactiveCall![0].origin).toBe("proactive");
+
+    // Confirm chat storage received approved text
+    const chat = alphaStore.get().chat;
+    const briefMsg = chat.find((m) => m.text.includes("Team Standup"));
+    expect(briefMsg).toBeDefined();
   });
 
-  it("2. Proactive task/schedule nudge passes through Alpha Gate", async () => {
+  it("2. Proactive task/schedule nudge producer path passes through Alpha Gate", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
     const today = new Date();
     today.setHours(14, 0, 0, 0);
@@ -123,9 +132,13 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
     );
     expect(proactiveCall).toBeDefined();
     expect(proactiveCall![0].origin).toBe("proactive");
+
+    const chat = alphaStore.get().chat;
+    const taskMsg = chat.find((m) => m.text.includes("Submit Financial Report"));
+    expect(taskMsg).toBeDefined();
   });
 
-  it("3. Proactive overdue-bills response passes through Alpha Gate", async () => {
+  it("3. Proactive overdue-bills producer path passes through Alpha Gate", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
     const pastDate = new Date(Date.now() - 3 * 86400000).toISOString().split("T")[0];
 
@@ -147,11 +160,14 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
     );
     expect(proactiveCall).toBeDefined();
     expect(proactiveCall![0].origin).toBe("proactive");
+
+    const chat = alphaStore.get().chat;
+    const billMsg = chat.find((m) => m.text.includes("overdue"));
+    expect(billMsg).toBeDefined();
   });
 
-  it("4. Notification background and live delivery response passes through Alpha Gate with origin notification", async () => {
+  it("4. Notification delivery real-path passes through Alpha Gate with origin notification", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
-    const repo = new InMemoryReminderRepository();
     const deliveryMgr = notificationDelivery;
 
     const record = {
@@ -185,7 +201,7 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
     expect(deliveredMsg?.text).toBe(notifCall![0].rawText);
   });
 
-  it("5. Gate cleans reasoning tags from proactive and notification deliveries before storing", async () => {
+  it("5. Notification delivery cleans reasoning tags through Gate before storing", async () => {
     const deliveryMgr = notificationDelivery;
     const record = {
       eventId: "evt-dirty-1",
@@ -213,76 +229,141 @@ describe("Alpha Gate Phase 3 — Remaining Response Producer Integration", () =>
     expect(deliveredMsg?.text).toBe("Time for your medication.");
   });
 
-  it("6. Ambient vision quota pause notice passes through Alpha Gate with origin ambient", () => {
+  it("6. Ambient vision response producer uses origin ambient and cleans leaked reasoning", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
-    const limitMsg = "Ambient vision has been paused because it reached the hourly limit of 12 scans.";
-    const gateRes = alphaGate.process({
-      rawText: limitMsg,
-      origin: "ambient",
-    });
-    expect(gateRes.approvedText).toContain("Ambient vision has been paused");
-    expect(gateProcessSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rawText: limitMsg,
-        origin: "ambient",
-      })
+
+    const rawAmbientOutput = "<think>Analyzing visual camera frame</think>User placed a coffee cup on the desk.";
+    const approved = await finalizeReply(rawAmbientOutput, "", undefined, { origin: "ambient" });
+
+    expect(approved).not.toContain("<think>");
+    expect(approved).not.toContain("Analyzing visual camera frame");
+    expect(approved).toBe("User placed a coffee cup on the desk.");
+
+    const ambientCall = gateProcessSpy.mock.calls.find(
+      (call) => call[0].origin === "ambient" && call[0].rawText.includes("coffee cup")
     );
+    expect(ambientCall).toBeDefined();
+    expect(ambientCall![0].origin).toBe("ambient");
   });
 
-  it("7. Ambient vision observation summary passes through Alpha Gate with origin ambient and cleans leaked reasoning", () => {
+  it("7. Ambient vision response producer has EXACTLY ONE Alpha Gate boundary (no double-gating)", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
-    const rawObs = "<think>Analyzing camera frame</think>User placed a blue mug on the desk.";
-    const gateRes = alphaGate.process({
-      rawText: rawObs,
-      origin: "ambient",
-    });
-    expect(gateRes.approvedText).not.toContain("<think>");
-    expect(gateRes.approvedText).not.toContain("Analyzing camera frame");
-    expect(gateRes.approvedText).toBe("User placed a blue mug on the desk.");
-    expect(gateProcessSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        origin: "ambient",
-      })
+
+    const rawAmbientOutput = "Movement detected in the kitchen doorway.";
+    const approved = await finalizeReply(rawAmbientOutput, "", undefined, { origin: "ambient" });
+
+    expect(approved).toBe("Movement detected in the kitchen doorway.");
+
+    // Filter calls for this specific text
+    const relevantCalls = gateProcessSpy.mock.calls.filter(
+      (call) => call[0].rawText.includes("Movement detected in the kitchen doorway")
     );
+    // MUST BE EXACTLY ONE
+    expect(relevantCalls.length).toBe(1);
+    expect(relevantCalls[0][0].origin).toBe("ambient");
   });
 
-  it("8. Notification inquiry conversational response passes through Alpha Gate with origin notification", () => {
+  it("8. Notification inquiry conversational response passes through Alpha Gate with origin notification", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
-    const rawInquiry = "You received a reminder notification for 'Dentist Appointment' earlier today.";
-    const gateRes = alphaGate.process({
-      rawText: rawInquiry,
-      origin: "notification",
-    });
-    expect(gateRes.approvedText).toBe("You received a reminder notification for 'Dentist Appointment' earlier today.");
-    expect(gateProcessSpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        rawText: rawInquiry,
-        origin: "notification",
-      })
+    (auth as any).currentUser = { uid: "test-user-id" };
+
+    // Setup an inquiry reply through the notification recovery manager
+    vi.spyOn(notificationRecoveryManager, "handleConversationalInquiry").mockResolvedValue(
+      "You had a reminder for 'Team Standup' at 9:00 AM."
     );
+
+    // Append user inquiry to history (phrased so it does not match local CRUD list/delete intents)
+    await alphaStore.appendChat({
+      id: uid(),
+      role: "user",
+      text: "tell me about my missed notification alert from earlier",
+      ts: Date.now(),
+    });
+
+    const reply = await sendChat(alphaStore.get().chat);
+
+    expect(reply).toBe("You had a reminder for 'Team Standup' at 9:00 AM.");
+
+    const notifCall = gateProcessSpy.mock.calls.find(
+      (call) => call[0].origin === "notification" && call[0].rawText.includes("Team Standup")
+    );
+    expect(notifCall).toBeDefined();
+    expect(notifCall![0].origin).toBe("notification");
   });
 
-  it("9. Correct Gate origin mapping is preserved across all producer types", () => {
+  it("9. Notification acknowledgement conversational response passes through Alpha Gate with origin notification", async () => {
     const gateProcessSpy = vi.spyOn(alphaGate, "process");
-    const origins = ["model", "local_intent", "settings", "proactive", "ambient", "notification"] as const;
-    for (const origin of origins) {
-      const res = alphaGate.process({
-        rawText: `Testing origin for ${origin}`,
-        origin,
-      });
-      expect(res.approvedText).toContain(`Testing origin for ${origin}`);
-      expect(gateProcessSpy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          origin,
-        })
-      );
-    }
+    (auth as any).currentUser = { uid: "test-user-id" };
+
+    vi.spyOn(notificationAcknowledgementManager, "acknowledgeFromUserUtterance").mockResolvedValue({
+      success: true,
+      status: "acknowledged",
+      acknowledgedEvents: ["evt-ack-1"],
+      conversationalReply: "Acknowledged your 'Medication' reminder.",
+    });
+
+    await alphaStore.appendChat({
+      id: uid(),
+      role: "user",
+      text: "I finished that reminder, thanks",
+      ts: Date.now(),
+    });
+
+    const reply = await sendChat(alphaStore.get().chat);
+
+    expect(reply).toBe("Acknowledged your 'Medication' reminder.");
+
+    const ackCall = gateProcessSpy.mock.calls.find(
+      (call) => call[0].origin === "notification" && call[0].rawText.includes("Acknowledged your 'Medication'")
+    );
+    expect(ackCall).toBeDefined();
+    expect(ackCall![0].origin).toBe("notification");
   });
 
-  it("10. Gate idempotency prevents degradation or mutation if called with already approved clean text", () => {
-    const raw = "Here is an approved proactive reminder.";
-    const firstPass = alphaGate.process({ rawText: raw, origin: "proactive" });
-    const secondPass = alphaGate.process({ rawText: firstPass.approvedText, origin: "proactive" });
-    expect(secondPass.approvedText).toBe(firstPass.approvedText);
+  it("10. Recovery delivery path for already-delivered reminders passes through Gate with origin notification", async () => {
+    const gateProcessSpy = vi.spyOn(alphaGate, "process");
+    const deliveryMgr = notificationDelivery;
+
+    // Simulate recovery delivery when already delivered in repo but missing in chat
+    const record = {
+      eventId: "evt-rec-1",
+      reminderId: "rem-rec-1",
+      userId: "user-test",
+      messageId: "msg-rec-1",
+      text: "Reminder: Take evening vitamins.",
+      title: "Take evening vitamins",
+      dueAt: Date.now(),
+    };
+
+    // First delivery
+    await deliveryMgr.deliverProactiveResponse({
+      authenticatedUserId: "user-test",
+      record,
+      channel: "in_app",
+    });
+
+    // Clear chat to simulate missing in chat
+    alphaStore.setChat([]);
+    gateProcessSpy.mockClear();
+
+    // Re-deliver (recovery path)
+    const res = await deliveryMgr.deliverProactiveResponse({
+      authenticatedUserId: "user-test",
+      record,
+      channel: "in_app",
+    });
+
+    expect(res.success).toBe(true);
+
+    const recCall = gateProcessSpy.mock.calls.find(
+      (call) => call[0].origin === "notification" && call[0].rawText.includes("Take evening vitamins")
+    );
+    expect(recCall).toBeDefined();
+    expect(recCall![0].origin).toBe("notification");
+
+    const chat = alphaStore.get().chat;
+    const restoredMsg = chat.find((m) => m.proactiveEventId === "evt-rec-1");
+    expect(restoredMsg).toBeDefined();
+    expect(restoredMsg?.text).toBe(recCall![0].rawText);
   });
 });

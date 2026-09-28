@@ -214,7 +214,7 @@ export async function maybeFire(): Promise<void> {
   );
 }
 
-async function executeAmbientScan(): Promise<void> {
+export async function executeAmbientScan(): Promise<void> {
   if (!running || !isLeader || !revalidateLeadership()) return;
 
   const now = Date.now();
@@ -273,7 +273,7 @@ async function executeAmbientScan(): Promise<void> {
         text: "Ambient frame observation: In one short sentence (under 18 words) describe only what MEANINGFULLY changed in view. If nothing important changed, reply exactly: NOTHING.",
         images: [frame],
       },
-    ], { task: "fast", disableTools: true });
+    ], { task: "fast", disableTools: true, origin: "ambient" });
 
     // Stale completion check: if disabled, superseded, or lost leadership while in-flight, discard!
     if (
@@ -292,17 +292,10 @@ async function executeAmbientScan(): Promise<void> {
     trimmed = trimmed.replace(/\[\[[\s\S]*?\]\]/g, "").trim();
     if (!trimmed || /^nothing\b/i.test(trimmed)) return;
 
-    const gateRes = alphaGate.process({
-      rawText: trimmed,
-      origin: "ambient",
-    });
-    const approved = gateRes.approvedText;
-    if (!approved || /^nothing\b/i.test(approved)) return;
-
-    alphaStore.appendChat({ id: uid(), role: "model", text: `👁 ${approved}`, ts: Date.now() });
+    alphaStore.appendChat({ id: uid(), role: "model", text: `👁 ${trimmed}`, ts: Date.now() });
 
     // Speak using canonical speech manager and respect autoSpeak!
-    void speakWith(approved, { auto: true });
+    void speakWith(trimmed, { auto: true });
   } catch {
     /* silent — ambient */
   }
