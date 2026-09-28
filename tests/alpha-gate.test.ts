@@ -169,7 +169,7 @@ describe("Alpha Gate Phase 1 Foundation Suite", () => {
       expect(res.approvedText).toContain("✅ Reminder 'Team Sync' scheduled for 3:00 PM.");
     });
 
-    it("Case B: appends failure notice when claimed action failed execution", () => {
+    it("Case B: appends failure notice and neutralizes false success claim when action failed execution", () => {
       const input = "I deleted your note.";
       const res = alphaGate.process({
         rawText: input,
@@ -180,10 +180,27 @@ describe("Alpha Gate Phase 1 Foundation Suite", () => {
       });
       expect(res.actionStatus).toBe("all_failed");
       expect(res.approvedText).toContain("❌ Note not found.");
+      expect(res.approvedText).not.toContain("I deleted your note.");
       expect(res.diagnostics?.actionRepaired).toBe(true);
     });
 
-    it("Case C: detects unexecuted claimed action and appends NO_ACTION_NOTICE", () => {
+    it("Case B: preserves surrounding legitimate prose while removing false success claim on failure", () => {
+      const input = "Here is your note history. I deleted your note.";
+      const res = alphaGate.process({
+        rawText: input,
+        origin: "model",
+        actionResults: [
+          { status: "failed", message: "Note not found." },
+        ],
+      });
+      expect(res.actionStatus).toBe("all_failed");
+      expect(res.approvedText).toContain("Here is your note history.");
+      expect(res.approvedText).not.toContain("I deleted your note.");
+      expect(res.approvedText).toContain("❌ Note not found.");
+      expect(res.diagnostics?.actionRepaired).toBe(true);
+    });
+
+    it("Case C: detects unexecuted claimed action, neutralizes false claim, and appends NO_ACTION_NOTICE", () => {
       const input = "I deleted your reminder for tomorrow morning.";
       const res = alphaGate.process({
         rawText: input,
@@ -191,6 +208,20 @@ describe("Alpha Gate Phase 1 Foundation Suite", () => {
         // No actionResults, no toolSummary
       });
       expect(res.actionStatus).toBe("unverified_claim");
+      expect(res.approvedText).toContain(NO_ACTION_NOTICE);
+      expect(res.approvedText).not.toContain("I deleted your reminder for tomorrow morning.");
+      expect(res.diagnostics?.actionRepaired).toBe(true);
+    });
+
+    it("Case C: preserves legitimate prose while neutralizing unexecuted action claims", () => {
+      const input = "I am looking into this for you. I created a new reminder.";
+      const res = alphaGate.process({
+        rawText: input,
+        origin: "model",
+      });
+      expect(res.actionStatus).toBe("unverified_claim");
+      expect(res.approvedText).toContain("I am looking into this for you.");
+      expect(res.approvedText).not.toContain("I created a new reminder.");
       expect(res.approvedText).toContain(NO_ACTION_NOTICE);
       expect(res.diagnostics?.actionRepaired).toBe(true);
     });
@@ -253,6 +284,33 @@ describe("Alpha Gate Phase 1 Foundation Suite", () => {
       });
       expect(res.approvedText).not.toContain("https://fake.com");
       expect(res.approvedText).not.toContain("**Sources:**");
+      expect(res.approvedText).not.toContain("[99]");
+      expect(res.approvedText).toBe("Here is some info.");
+    });
+
+    it("filters mixed citations keeping valid ones and removing unsupported markers", () => {
+      const input = "According to docs [1, 99], the system is verified.";
+      const res = alphaGate.process({
+        rawText: input,
+        origin: "model",
+        webContext: sampleWebContext,
+      });
+      expect(res.approvedText).toContain("[1]");
+      expect(res.approvedText).not.toContain("99");
+      expect(res.approvedText).toContain("**Sources:**");
+      expect(res.approvedText).toContain("- [1] [Official Docs](https://docs.example.com/api)");
+    });
+
+    it("strips unsupported citation markers when webContext is entirely missing", () => {
+      const input = "Here is unverified info [1].\n\n**Sources:**\n- [1] Unverified Link (https://example.com)";
+      const res = alphaGate.process({
+        rawText: input,
+        origin: "model",
+        webContext: undefined,
+      });
+      expect(res.approvedText).not.toContain("[1]");
+      expect(res.approvedText).not.toContain("**Sources:**");
+      expect(res.approvedText).toBe("Here is unverified info.");
     });
 
     it("strips sources section when response explicitly admits insufficient evidence", () => {

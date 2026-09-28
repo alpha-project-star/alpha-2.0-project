@@ -70,6 +70,53 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
   return { text: text.trim(), stripped };
 }
 
+const FALSE_MUTATION_CLAIM_REGEX =
+  /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
+
+/**
+ * Strips false or unverified mutation claim sentences/prose from text.
+ * Preserves legitimate surrounding prose.
+ */
+export function stripFalseActionClaims(input: string): { text: string; stripped: boolean } {
+  if (!input) return { text: "", stripped: false };
+
+  const initial = input;
+  const paragraphs = input.split(/\n\n+/);
+  const filteredParagraphs: string[] = [];
+  let strippedAny = false;
+
+  for (const para of paragraphs) {
+    const trimmedPara = para.trim();
+    if (claimsMutationWithoutTag(trimmedPara) || FALSE_MUTATION_CLAIM_REGEX.test(trimmedPara)) {
+      const sentences = para.match(/[^.!?\n]+[.!?]*/g) || [para];
+      if (sentences.length === 1) {
+        strippedAny = true;
+        continue;
+      }
+    }
+
+    const sentences = para.match(/[^.!?\n]+[.!?]*/g) || [para];
+    const keptSentences: string[] = [];
+
+    for (const s of sentences) {
+      const trimmed = s.trim();
+      if (claimsMutationWithoutTag(trimmed) || FALSE_MUTATION_CLAIM_REGEX.test(trimmed)) {
+        strippedAny = true;
+      } else {
+        keptSentences.push(trimmed);
+      }
+    }
+
+    const nextPara = keptSentences.filter(Boolean).join(" ");
+    if (nextPara) {
+      filteredParagraphs.push(nextPara);
+    }
+  }
+
+  const result = filteredParagraphs.join("\n\n").trim();
+  return { text: result, stripped: strippedAny || result !== initial.trim() };
+}
+
 /**
  * Reconciles user-facing prose claims against authoritative execution records (toolSummary, actionResults, lifecycle).
  * Guarantees that no successful action is claimed without verified execution.
@@ -109,19 +156,21 @@ export function verifyAndReconcileActions(
   const hasAnySuccess =
     hasSuccessfulActionResults || hasSuccessfulToolMutations || hasSuccessfulLifecycle;
 
-  const claimsActionInProse = claimsMutationWithoutTag(text);
+  const claimsActionInProse = claimsMutationWithoutTag(text) || FALSE_MUTATION_CLAIM_REGEX.test(text);
 
   // Determine canonical action status
   let actionStatus: AlphaGateActionStatus = "none";
 
   if (!hasAnyExecution) {
     if (claimsActionInProse) {
-      // Case C: Prose claims action, but no execution occurred
+      // Case C: Prose claims action, but no execution occurred -> neutralize false claim
       actionStatus = "unverified_claim";
+      const stripped = stripFalseActionClaims(text);
+      text = stripped.text;
       if (!text.includes(NO_ACTION_NOTICE)) {
         text = (text ? text + "\n\n" : "") + NO_ACTION_NOTICE;
-        repaired = true;
       }
+      repaired = true;
     } else {
       actionStatus = "none";
     }
@@ -143,12 +192,15 @@ export function verifyAndReconcileActions(
       }
     }
   } else if (hasAnyFailure && !hasAnySuccess) {
-    // Case B: All mutations failed
+    // Case B: All mutations failed -> neutralize false claim in prose
     actionStatus = "all_failed";
+    const stripped = stripFalseActionClaims(text);
+    text = stripped.text;
+    repaired = true;
+
     const report = actionResults && actionResults.length > 0 ? renderActionReport(actionResults) : "";
     if (report && !text.includes(report)) {
       text = (text ? text + "\n\n" : "") + report;
-      repaired = true;
     }
     if (toolSummary?.hasFailedMutation) {
       const failedMutations = toolSummary.results.filter((r) => r.isMutation && !r.success);
@@ -156,7 +208,6 @@ export function verifyAndReconcileActions(
       const failureReport = `**Action log — read this over anything I said above:**\n${failureLines.join("\n")}`;
       if (!text.includes(failureReport)) {
         text = (text ? text + "\n\n" : "") + failureReport;
-        repaired = true;
       }
     }
   } else {
@@ -232,8 +283,51 @@ export function parseSourcesFromWebContext(
 }
 
 /**
+ * Strips or filters citation markers [N] or [N, M] in text that are not supported by validNumbers.
+ */
+export function sanitizeCitationMarkers(
+  text: string,
+  validNumbers: Set<number>,
+): { text: string; modified: boolean } {
+  let modified = false;
+
+  // Match citation markers like [1], [99], [1, 2], [1, 99] that are not part of markdown links [1](url)
+  const regex = /(?:(\s*)\[(\d+(?:\s*,\s*\d+)*)\](?!\()(\s*))/g;
+
+  const result = text.replace(regex, (_match, prefix, digitsGroup, suffix) => {
+    const parts = digitsGroup.split(",").map((p: string) => p.trim());
+    const validParts = parts.filter((p: string) => {
+      const num = Number(p);
+      return !isNaN(num) && validNumbers.has(num);
+    });
+
+    if (validParts.length === 0) {
+      modified = true;
+      if (prefix && suffix && suffix.startsWith(" ")) {
+        return " ";
+      }
+      return "";
+    }
+
+    if (validParts.length !== parts.length) {
+      modified = true;
+    }
+
+    return `${prefix}[${validParts.join(", ")}]${suffix}`;
+  });
+
+  // Clean up any spacing before punctuation caused by removal, e.g. "info  ." -> "info."
+  const cleaned = result
+    .replace(/\s+([.,;:!?])/g, "$1")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+
+  return { text: cleaned, modified };
+}
+
+/**
  * Reconciles web sources and citations against verified retrieved context.
- * Strips hallucinated sources; retains only verified, cited references.
+ * Strips hallucinated sources and unsupported citation markers in body; retains only verified, cited references.
  */
 export function verifyAndReconcileSources(
   input: string,
@@ -242,39 +336,45 @@ export function verifyAndReconcileSources(
   if (!input) return { text: "", filtered: false };
 
   const hadSourcesSection = /\n+\*\*Sources:?\*\*[\s\S]*$/i.test(input);
-  const bodyText = input.replace(/\n+\*\*Sources:?\*\*[\s\S]*$/i, "").trim();
+  const rawBodyText = input.replace(/\n+\*\*Sources:?\*\*[\s\S]*$/i, "").trim();
 
-  // If the reply explicitly expresses that search results were insufficient, do not display sources
+  // If the reply explicitly expresses that search results were insufficient, do not display sources or citations
   const admitsInsufficient =
     /\b(?:insufficient (?:evidence|results|details)|returned (?:no usable|mostly general)|couldn\x27t responsibly|cannot responsibly|risking (?:another )?fabricated|could not verify)\b/i.test(
-      bodyText,
+      rawBodyText,
     );
 
   if (admitsInsufficient || !webContext) {
-    const filtered = hadSourcesSection;
-    return { text: bodyText, filtered };
+    const sanitized = sanitizeCitationMarkers(rawBodyText, new Set<number>());
+    const filtered = hadSourcesSection || sanitized.modified;
+    return { text: sanitized.text, filtered };
   }
 
   const sourcesMap = parseSourcesFromWebContext(webContext);
   if (sourcesMap.size === 0) {
-    return { text: bodyText, filtered: hadSourcesSection };
+    const sanitized = sanitizeCitationMarkers(rawBodyText, new Set<number>());
+    return { text: sanitized.text, filtered: hadSourcesSection || sanitized.modified };
   }
 
-  // Extract all citation markers [N] or [N, M] in body
-  const citationMatches = [...bodyText.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)];
+  const validNumbers = new Set<number>(sourcesMap.keys());
+  const sanitized = sanitizeCitationMarkers(rawBodyText, validNumbers);
+  const cleanBody = sanitized.text;
+
+  // Extract all citation markers [N] or [N, M] in cleaned body
+  const citationMatches = [...cleanBody.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)];
   const citedNumbers = new Set<number>();
   for (const m of citationMatches) {
     const parts = m[1].split(",");
     for (const p of parts) {
       const num = Number(p.trim());
-      if (!isNaN(num) && num > 0) {
+      if (!isNaN(num) && validNumbers.has(num)) {
         citedNumbers.add(num);
       }
     }
   }
 
   if (citedNumbers.size === 0) {
-    return { text: bodyText, filtered: hadSourcesSection };
+    return { text: cleanBody, filtered: hadSourcesSection || sanitized.modified };
   }
 
   const validCited = [...citedNumbers]
@@ -283,10 +383,11 @@ export function verifyAndReconcileSources(
     .map((n) => sourcesMap.get(n)!);
 
   if (validCited.length === 0) {
-    return { text: bodyText, filtered: hadSourcesSection };
+    return { text: cleanBody, filtered: hadSourcesSection || sanitized.modified };
   }
 
   const sourcesList = validCited.map((r) => `- [${r.n}] [${r.title}](${r.url})`).join("\n");
-  const resultText = `${bodyText}\n\n**Sources:**\n${sourcesList}`;
-  return { text: resultText, filtered: hadSourcesSection && resultText !== input };
+  const resultText = `${cleanBody}\n\n**Sources:**\n${sourcesList}`;
+  const filtered = hadSourcesSection || sanitized.modified || resultText !== input;
+  return { text: resultText, filtered };
 }
