@@ -58,6 +58,7 @@ import { reminderContextManager } from "./reminder-context";
 import { RequestActionLifecycle } from "./request-lifecycle";
 import { notificationAcknowledgementManager } from "./notification-acknowledgement";
 import { notificationRecoveryManager } from "./notification-recovery";
+import { alphaGate } from "./alpha-gate";
 import {
   ALPHA_IDENTITY,
   ALPHA_BEHAVIORAL_POLICY,
@@ -1194,8 +1195,8 @@ export function stopAlphaGeneration(): void {
   lastLogicalPromise = null;
   lastLogicalKey = null;
   lastLogicalTime = 0;
-  activity.clear();
   stopSpeaking();
+  activity.clear();
 }
 
 export async function sendChat(
@@ -1256,7 +1257,12 @@ async function runChat(history: ChatMessage[], task: TaskType, signal?: AbortSig
     if (eyeRes) {
       lifecycle.recordSuccess({ name: "handleEyeCommand", isMutation: false, result: eyeRes });
       activity.clear();
-      return eyeRes;
+      const gateRes = alphaGate.process({
+        rawText: eyeRes,
+        origin: "local_intent",
+        lifecycle,
+      });
+      return gateRes.approvedText;
     }
     try {
       const local = await tryLocalIntent(userText, lifecycle);
@@ -1731,7 +1737,7 @@ async function callProvider(
 
 /**
  * Post-process a raw model reply: execute action tags, verify them, and make
- * the execution record (not the model's prose) the source of truth.
+ * the execution record (not the model's prose) the source of truth via Alpha Gate.
  */
 export async function finalizeReply(
   raw: string,
@@ -1755,39 +1761,28 @@ export async function finalizeReply(
     executedLogicalKeys: toolSummary?.executedLogicalKeys,
     lifecycle: options?.lifecycle,
   });
-  let out = normalizePresentation(text);
-  const report = renderActionReport(results);
-  if (report) {
-    if (results.some((r) => r.status !== "success")) activity.set("action_failed");
-    out = (out ? out + "\n\n" : "") + report;
-  } else if (claimsMutationWithoutTag(text)) {
-    // If native tool mutations or lifecycle mutations executed and ALL mutations succeeded, the action was actually performed.
-    // In that case, do NOT generate the false NO_ACTION_NOTICE.
-    const nativeMutationsFullySucceeded =
-      Boolean(toolSummary && toolSummary.hasMutation && toolSummary.allMutationsSucceeded && !toolSummary.hasFailedMutation);
-    const lifecycleMutationsSucceeded =
-      Boolean(options?.lifecycle?.hasCompletedMutations() && !options?.lifecycle?.hasFailedMutations());
 
-    if (!nativeMutationsFullySucceeded && !lifecycleMutationsSucceeded) {
-      out = (out ? out + "\n\n" : "") + NO_ACTION_NOTICE;
-    }
-  }
-
-  // If there were failed native mutations, ensure activity and log reflect the failure
-  if (toolSummary?.hasFailedMutation) {
+  if (results && results.some((r) => r.status !== "success")) {
     activity.set("action_failed");
-    const failedMutations = toolSummary.results.filter((r) => r.isMutation && !r.success);
-    const failureLines = failedMutations.map((f) => {
-      const msg = f.error?.message || `Failed to execute ${f.name}.`;
-      return `❌ ${msg}`;
-    });
-    const failureReport = `**Action log — read this over anything I said above:**\n${failureLines.join("\n")}`;
-    if (!out.includes(failureReport)) {
-      out = (out ? out + "\n\n" : "") + failureReport;
-    }
+  } else if (toolSummary?.hasFailedMutation) {
+    activity.set("action_failed");
   }
 
-  return appendSourcesIfWeb(out, webContext);
+  const gateResult = alphaGate.process({
+    rawText: text,
+    origin: "model",
+    toolSummary,
+    actionResults: results,
+    lifecycle: options?.lifecycle,
+    webContext,
+    signal: options?.signal,
+  });
+
+  if (gateResult.actionStatus === "all_failed" || gateResult.actionStatus === "partial_failed") {
+    activity.set("action_failed");
+  }
+
+  return gateResult.approvedText;
 }
 
 /**

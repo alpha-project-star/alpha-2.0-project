@@ -26,6 +26,7 @@ import {
   getCanonicalBulkDeleteKey,
   getCanonicalBillMarkPaidKey,
 } from "./mutation-identity";
+import { alphaGate } from "./alpha-gate";
 
 async function getActiveUserId(): Promise<string | null> {
   const user = await ensureAuthenticatedUser();
@@ -39,6 +40,26 @@ async function getActiveUserId(): Promise<string | null> {
  */
 export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
   const t = raw.trim();
+
+  // Settings / backend / voice flip commands first (already gated with origin: "settings").
+  const settingsHit = await trySettingsIntent(t, lifecycle);
+  if (settingsHit) {
+    return settingsHit;
+  }
+
+  const res = await executeLocalIntent(t, lifecycle);
+  if (res === null) return null;
+
+  const gateResult = alphaGate.process({
+    rawText: res,
+    origin: "local_intent",
+    lifecycle,
+  });
+
+  return gateResult.approvedText;
+}
+
+async function executeLocalIntent(t: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
   const lower = t.toLowerCase();
 
   const userId = await getActiveUserId() || auth.currentUser?.uid || 'local-user';
@@ -84,12 +105,6 @@ export async function tryLocalIntent(raw: string, lifecycle?: RequestActionLifec
         return `I couldn't save your reminder: ${error.message}. Please try again.`;
       }
     }
-  }
-
-  // Settings / backend / voice flip commands first.
-  const settingsHit = await trySettingsIntent(t, lifecycle);
-  if (settingsHit) {
-    return settingsHit;
   }
 
   // ---- MUSIC -------------------------------------------------------------

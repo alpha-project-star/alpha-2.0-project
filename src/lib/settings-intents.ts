@@ -3,12 +3,26 @@ import { GROQ_EMERGENCY_MODEL, MODEL_TRIO, isSupportedModel, ProviderId } from "
 import { activity } from "./activity";
 import type { RequestActionLifecycle } from "./request-lifecycle";
 import { getCanonicalSettingKey, getCanonicalProfileKey } from "./mutation-identity";
+import { alphaGate } from "./alpha-gate";
 
 /**
  * Voice/text intents that flip settings or return a canned answer.
  * Returns confirmation string, or null if no match.
  */
 export async function trySettingsIntent(raw: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
+  const reply = await executeSettingsIntent(raw, lifecycle);
+  if (reply === null) return null;
+
+  const gateResult = alphaGate.process({
+    rawText: reply,
+    origin: "settings",
+    lifecycle,
+  });
+
+  return gateResult.approvedText;
+}
+
+async function executeSettingsIntent(raw: string, lifecycle?: RequestActionLifecycle): Promise<string | null> {
   const original = raw.trim();
   const t = original.toLowerCase();
 
