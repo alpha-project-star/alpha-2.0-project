@@ -15,7 +15,7 @@ import {
   Workflow,
   ImageIcon,
 } from "lucide-react";
-import { normalizePresentation, type CalloutType } from "../lib/presentation";
+import type { CalloutType } from "../lib/presentation";
 
 function prettyHost(url: string): string {
   try {
@@ -287,8 +287,6 @@ function SafeImage({ src, alt }: { src?: string; alt?: string }) {
  * notes, memories, reminders, plans, bills, tool results and search summaries.
  */
 export function RichText({ text, size = "base" }: { text: string; size?: "base" | "compact" }) {
-  const normalizedText = normalizePresentation(text || "");
-
   return (
     <MathErrorBoundary>
       <div className={`alpha-prose${size === "compact" ? " alpha-prose-compact" : ""}`}>
@@ -327,7 +325,7 @@ export function RichText({ text, size = "base" }: { text: string; size?: "base" 
             img: ({ src, alt }) => <SafeImage src={String(src || "")} alt={String(alt || "")} />,
           }}
         >
-          {normalizedText}
+          {text || ""}
         </ReactMarkdown>
       </div>
     </MathErrorBoundary>

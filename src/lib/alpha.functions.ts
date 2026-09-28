@@ -12,7 +12,6 @@ import { evaluateMathExpression } from "./tools/math-sandbox";
 import { playMusicByName, stopMusic, playNextTrack, playPreviousTrack } from "./music";
 import { stopSpeaking } from "./voice";
 import type { ReminderDueEvent } from "./reminder-events";
-import { normalizePresentation } from "./presentation";
 import {
   executeActionTagsAsync,
   type ExecuteActionTagsOptions,

@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, afterEach } from "vitest";
+import { render, screen, cleanup } from "@testing-library/react";
 import { MessageContent, RichText } from "../src/components/MessageContent";
 
 describe("MessageContent & RichText Renderer Component", () => {
+  afterEach(() => {
+    cleanup();
+  });
   it("renders code blocks with language badge and pre container", () => {
     render(<MessageContent text={"```typescript\nconst x = 42;\n```"} />);
     expect(screen.getAllByText(/TYPESCRIPT/i)[0]).toBeDefined();
