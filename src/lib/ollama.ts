@@ -1,5 +1,5 @@
 import { alphaStore, conversationSummary, type ChatMessage } from "./alpha-store";
-import { stripLeakedThinking, extractNormalizedResponse, type NormalizedChatResponse } from "./openai-compat";
+import { stripLeakedThinking, extractNormalizedResponse, getMonotonicTimeMs, type NormalizedChatResponse } from "./openai-compat";
 
 /** Normalise the endpoint the user typed. */
 function base(): string {
@@ -56,6 +56,12 @@ export async function sendChatOllama(
   webContext = "",
   opts?: { signal?: AbortSignal; deadlineMs?: number },
 ): Promise<NormalizedChatResponse> {
+  if (opts?.signal?.aborted) {
+    const err: any = new Error("Aborted");
+    err.name = "AbortError";
+    throw err;
+  }
+
   const model = alphaStore.get().settings.ollamaModel || "llama3.2:3b";
   const url = `${base()}/api/chat`;
 
@@ -64,7 +70,7 @@ export async function sendChatOllama(
     ...toOllamaMessages(history),
   ];
 
-  const now = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  const now = getMonotonicTimeMs();
   const rem = opts?.deadlineMs !== undefined ? Math.max(0, opts.deadlineMs - now) : 60_000;
   if (rem <= 0) {
     const err: any = new Error("Ollama timed out: whole-turn deadline expired.");
@@ -109,6 +115,17 @@ export async function sendChatOllama(
   } catch (e: any) {
     clearTimeout(timer);
     if (opts?.signal?.aborted) {
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    if (ctrl.signal.aborted || e?.name === "AbortError" || /aborted/i.test(e?.message || "")) {
+      if (opts?.deadlineMs !== undefined && getMonotonicTimeMs() >= opts.deadlineMs) {
+        const err: any = new Error(`Ollama timed out after ${Math.round(rem / 1000)}s.`);
+        err.status = 504;
+        err.name = "TimeoutError";
+        throw err;
+      }
       const err: any = new Error("Aborted");
       err.name = "AbortError";
       throw err;

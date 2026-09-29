@@ -1826,7 +1826,7 @@ async function runChat(
     const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext, { signal, deadlineMs });
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
-    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, origin });
+    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, signal, origin });
     activity.clear();
     return out;
   } catch (e) {

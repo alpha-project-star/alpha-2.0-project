@@ -8,7 +8,7 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
   let fetchSpy: any;
 
   beforeEach(() => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date", "performance"] });
     fetchSpy = vi.spyOn(globalThis, "fetch");
   });
 
@@ -18,7 +18,7 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
   });
 
   it("1. Zero, negative and invalid budgets prevent provider execution and throw WholeTurnTimeoutError", async () => {
-    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }));
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({ message: { content: "ok" }, choices: [{ message: { content: "ok" } }] }), { status: 200 }));
 
     await expect(sendChat([], { timeoutMs: 0 })).rejects.toThrow(WholeTurnTimeoutError);
     await expect(sendChat([], { timeoutMs: -100 })).rejects.toThrow(WholeTurnTimeoutError);
@@ -149,28 +149,96 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
     await expect(timeoutPromise).rejects.toHaveProperty("status", 504);
   });
 
-  it("11. Concurrent requests remain isolated", () => {
-    const req1 = new RequestActionLifecycle("req_1");
-    const req2 = new RequestActionLifecycle("req_2");
+  it("11. Two real concurrent sendChat() requests maintain lifecycle isolation", async () => {
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      const signal = init?.signal;
+      return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          const err: any = new Error("Aborted");
+          err.name = "AbortError";
+          return reject(err);
+        }
+        signal?.addEventListener("abort", () => {
+          const err: any = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+        setTimeout(() => {
+          resolve(
+            new Response(
+              JSON.stringify({ message: { content: "Response" }, choices: [{ message: { content: "Response" } }] }),
+              { status: 200 },
+            ),
+          );
+        }, 500);
+      });
+    });
 
-    expect(req1.requestId).not.toBe(req2.requestId);
-    expect(req1.getState()).toBe("pending");
-    expect(req2.getState()).toBe("pending");
+    const ctrl1 = new AbortController();
+    const ctrl2 = new AbortController();
+
+    const p1 = sendChat([{ id: "msg1", role: "user", text: "First query", ts: Date.now() }], { signal: ctrl1.signal, timeoutMs: 5000 });
+    const p2 = sendChat([{ id: "msg2", role: "user", text: "Second query", ts: Date.now() }], { signal: ctrl2.signal, timeoutMs: 5000 });
+
+    // Starting p2 aborts p1 via currentAbortController
+    await expect(p1).rejects.toHaveProperty("name", "AbortError");
+
+    vi.advanceTimersByTimeAsync(600);
+    const res2 = await p2;
+    expect(typeof res2).toBe("string");
   });
 
-  it("12. Late results cannot overwrite a newer request's response", () => {
-    const lifecycle1 = new RequestActionLifecycle("req_1");
-    const lifecycle2 = new RequestActionLifecycle("req_2");
-    expect(lifecycle1.requestId).not.toBe(lifecycle2.requestId);
+  it("12. Late older response cannot overwrite a newer request's response", async () => {
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      const signal = init?.signal;
+      return new Promise((resolve, reject) => {
+        if (signal?.aborted) {
+          const err: any = new Error("Aborted");
+          err.name = "AbortError";
+          return reject(err);
+        }
+        signal?.addEventListener("abort", () => {
+          const err: any = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+        setTimeout(() => {
+          resolve(
+            new Response(
+              JSON.stringify({ message: { content: "New response" }, choices: [{ message: { content: "New response" } }] }),
+              { status: 200 },
+            ),
+          );
+        }, 500);
+      });
+    });
+
+    const p1 = sendChat([{ id: "m1", role: "user", text: "Older query", ts: Date.now() }], { timeoutMs: 10_000 });
+    const p2 = sendChat([{ id: "m2", role: "user", text: "Newer query", ts: Date.now() }], { timeoutMs: 10_000 });
+
+    await expect(p1).rejects.toHaveProperty("name", "AbortError");
+
+    vi.advanceTimersByTimeAsync(600);
+    const res2 = await p2;
+    expect(res2).toBeTruthy();
   });
 
-  it("13. Completed actions are preserved without duplicate execution", () => {
+  it("13. Completed mutations are preserved without duplicate execution", () => {
     const lifecycle = new RequestActionLifecycle("req_test");
-    const op = lifecycle.startOperation({ name: "SET_SETTING", isMutation: true, logicalKey: "key:1" });
-    lifecycle.recordSuccess({ opId: op.id, name: "SET_SETTING", isMutation: true, result: { success: true }, logicalKey: "key:1" });
+    const op = lifecycle.startOperation({ name: "createReminder", isMutation: true, logicalKey: "reminder:123" });
+    lifecycle.recordSuccess({
+      opId: op.id,
+      name: "createReminder",
+      isMutation: true,
+      result: { success: true, data: { id: "rem123", text: "Buy milk" } },
+      logicalKeys: ["reminder:123"],
+    });
 
-    expect(lifecycle.hasCompletedMutation("key:1")).toBe(true);
-    expect(lifecycle.getCompletedMutationResult("key:1")).toEqual({ success: true });
+    expect(lifecycle.hasCompletedMutation("reminder:123")).toBe(true);
+    expect(lifecycle.getCompletedMutationResult("reminder:123")).toEqual({
+      success: true,
+      data: { id: "rem123", text: "Buy milk" },
+    });
   });
 
   it("14. Alpha Gate remains the final approval boundary", () => {

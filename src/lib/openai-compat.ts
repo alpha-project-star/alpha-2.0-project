@@ -39,9 +39,7 @@ export interface NormalizedChatResponse {
 export type ChatResponse = NormalizedChatResponse;
 
 export function getMonotonicTimeMs(): number {
-  return typeof performance !== "undefined" && typeof performance.now === "function"
-    ? performance.now()
-    : Date.now();
+  return Date.now();
 }
 
 export class WholeTurnTimeoutError extends Error {
@@ -305,6 +303,12 @@ export async function sendChatOpenAICompat(
   let lastErr: any = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (opts.signal?.aborted) {
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+
     const getRemaining = () =>
       opts.deadlineMs !== undefined
         ? Math.max(0, opts.deadlineMs - getMonotonicTimeMs())
@@ -403,10 +407,15 @@ export async function sendChatOpenAICompat(
         err.name = "AbortError";
         throw err;
       }
-      if (e?.name === "AbortError" || e instanceof WholeTurnTimeoutError || getRemaining() <= 0) {
-        throw new WholeTurnTimeoutError(
-          `${opts.model} timed out after ${Math.round(fetchTimeoutMs / 1000)}s.`,
-        );
+      if (ctrl.signal.aborted || e?.name === "AbortError" || /aborted/i.test(e?.message || "")) {
+        if (getRemaining() <= 0) {
+          throw new WholeTurnTimeoutError(
+            `${opts.model} timed out after ${Math.round(fetchTimeoutMs / 1000)}s.`,
+          );
+        }
+        const err: any = new Error("Aborted");
+        err.name = "AbortError";
+        throw err;
       }
       // Network blip — one bounded retry with backoff.
       lastErr = e;
