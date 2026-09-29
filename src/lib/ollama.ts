@@ -81,6 +81,7 @@ export async function sendChatOllama(
   }
 
   let res: Response;
+  let j: any;
   try {
     res = await fetch(url, {
       method: "POST",
@@ -97,6 +98,14 @@ export async function sendChatOllama(
         },
       }),
     });
+
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      clearTimeout(timer);
+      throw new Error(`Ollama ${res.status}: ${t.slice(0, 300) || "no body"}`);
+    }
+    j = await res.json();
+    clearTimeout(timer);
   } catch (e: any) {
     clearTimeout(timer);
     if (opts?.signal?.aborted) {
@@ -104,18 +113,12 @@ export async function sendChatOllama(
       err.name = "AbortError";
       throw err;
     }
+    if (e?.message?.startsWith("Ollama ")) throw e;
     const err: any = new Error(`Ollama timed out after ${Math.round(rem / 1000)}s.`);
     err.status = 504;
     err.name = "TimeoutError";
     throw err;
   }
-  clearTimeout(timer);
-
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`Ollama ${res.status}: ${t.slice(0, 300) || "no body"}`);
-  }
-  const j: any = await res.json();
   const content = typeof j?.message?.content === "string" ? j.message.content : "";
   const reasoning = j?.message?.reasoning_content || j?.message?.reasoning || "";
   const tool_calls = j?.message?.tool_calls;

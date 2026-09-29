@@ -55,11 +55,22 @@ export class WholeTurnTimeoutError extends Error {
 
 const sleep = (ms: number, signal?: AbortSignal) => 
   new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    if (signal?.aborted) {
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      return reject(err);
+    }
+    const onAbort = () => {
       clearTimeout(timer);
-      reject(new Error("Aborted"));
-    }, { once: true });
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      reject(err);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 
 /** Retry-After may be seconds or an HTTP date; also parse "try again in 4.5s". */
@@ -339,6 +350,52 @@ export async function sendChatOpenAICompat(
           ...(opts.extraBody || {}),
         }),
       });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        clearTimeout(timer);
+        const err: any = new Error(`${opts.model} ${res.status}: ${body.slice(0, 300)}`);
+        err.status = res.status;
+        err.model = opts.model;
+        err.providerBody = body;
+
+        const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
+        if (retryable && attempt < maxAttempts) {
+          const rem = getRemaining();
+          if (rem <= 0) {
+            throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired.`);
+          }
+          const wait = retryAfterMs(res, body);
+          const backoff = wait ?? Math.min(8000, 700 * 2 ** (attempt - 1)) + Math.random() * 250;
+          if (backoff > 12_000 || backoff > rem) {
+            err.longWaitMs = backoff;
+            throw err;
+          }
+          lastErr = err;
+          await sleep(Math.min(backoff, rem), opts.signal);
+          if (getRemaining() <= 0) {
+            throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired after retry wait.`);
+          }
+          continue;
+        }
+        throw err;
+      }
+
+      const j: any = await res.json();
+      clearTimeout(timer);
+
+      const msg = j?.choices?.[0]?.message;
+      const tool_calls = msg?.tool_calls;
+      const content = typeof msg?.content === "string" ? msg.content : "";
+      const reasoning = msg?.reasoning_content || msg?.reasoning || "";
+      
+      const normalized = extractNormalizedResponse(content, reasoning, tool_calls, opts.model);
+      if (!normalized.finalText && !normalized.hasToolCalls) {
+        const err: any = new Error(`${opts.model} returned an empty response.`);
+        err.status = 502;
+        throw err;
+      }
+      return normalized;
     } catch (e: any) {
       clearTimeout(timer);
       if (opts.signal?.aborted) {
@@ -346,7 +403,7 @@ export async function sendChatOpenAICompat(
         err.name = "AbortError";
         throw err;
       }
-      if (e?.name === "AbortError" || getRemaining() <= 0) {
+      if (e?.name === "AbortError" || e instanceof WholeTurnTimeoutError || getRemaining() <= 0) {
         throw new WholeTurnTimeoutError(
           `${opts.model} timed out after ${Math.round(fetchTimeoutMs / 1000)}s.`,
         );
@@ -359,50 +416,13 @@ export async function sendChatOpenAICompat(
           throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired.`);
         }
         await sleep(Math.min(500 * attempt, rem), opts.signal);
+        if (getRemaining() <= 0) {
+          throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired.`);
+        }
         continue;
       }
       throw e;
     }
-    clearTimeout(timer);
-
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      const err: any = new Error(`${opts.model} ${res.status}: ${body.slice(0, 300)}`);
-      err.status = res.status;
-      err.model = opts.model;
-      err.providerBody = body;
-
-      const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
-      if (retryable && attempt < maxAttempts) {
-        const wait = retryAfterMs(res, body);
-        // Respect Retry-After; otherwise exponential backoff with jitter.
-        // Skip waiting altogether when the provider asks for longer than we
-        // are willing to block — the caller falls back to another model.
-        const backoff = wait ?? Math.min(8000, 700 * 2 ** (attempt - 1)) + Math.random() * 250;
-        if (backoff > 12_000) {
-          err.longWaitMs = backoff;
-          throw err;
-        }
-        lastErr = err;
-        await sleep(backoff, opts.signal);
-        continue;
-      }
-      throw err;
-    }
-
-    const j: any = await res.json();
-    const msg = j?.choices?.[0]?.message;
-    const tool_calls = msg?.tool_calls;
-    const content = typeof msg?.content === "string" ? msg.content : "";
-    const reasoning = msg?.reasoning_content || msg?.reasoning || "";
-    
-    const normalized = extractNormalizedResponse(content, reasoning, tool_calls, opts.model);
-    if (!normalized.finalText && !normalized.hasToolCalls) {
-      const err: any = new Error(`${opts.model} returned an empty response.`);
-      err.status = 502;
-      throw err;
-    }
-    return normalized;
   }
   throw lastErr || new Error("Request failed.");
 }

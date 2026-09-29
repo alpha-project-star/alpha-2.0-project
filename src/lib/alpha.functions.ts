@@ -694,11 +694,46 @@ function planRoutes(
 // Multi-engine Live Web Search (DuckDuckGo + Jina Reader + Wikipedia)
 // ---------------------------------------------------------------------------
 
-export async function fetchLiveWebContext(query: string, signal?: AbortSignal): Promise<string> {
+export async function fetchLiveWebContext(
+  query: string,
+  signal?: AbortSignal,
+  deadlineMs?: number,
+): Promise<string> {
   if (!query) return "";
 
-  const researchService = new BoundedResearchService();
-  const research = await researchService.research(query, signal);
+  if (deadlineMs !== undefined) {
+    const rem = deadlineMs - getMonotonicTimeMs();
+    if (rem <= 0) {
+      throw new WholeTurnTimeoutError("Whole-turn deadline expired before search.");
+    }
+  }
+
+  const ctrl = new AbortController();
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  }
+
+  let searchTimeoutMs = 15_000;
+  if (deadlineMs !== undefined) {
+    const rem = deadlineMs - getMonotonicTimeMs();
+    searchTimeoutMs = Math.min(searchTimeoutMs, rem);
+  }
+  const timer = setTimeout(() => ctrl.abort(), searchTimeoutMs);
+
+  let research: any;
+  try {
+    const researchService = new BoundedResearchService();
+    research = await researchService.research(query, ctrl.signal);
+    clearTimeout(timer);
+  } catch (err: any) {
+    clearTimeout(timer);
+    if (signal?.aborted) throw err;
+    if (deadlineMs !== undefined && deadlineMs - getMonotonicTimeMs() <= 0) {
+      throw new WholeTurnTimeoutError("Whole-turn deadline expired during search.");
+    }
+    return `LIVE WEB SEARCH RESULTS: search timed out for "${query}". Proceed using existing knowledge.`;
+  }
 
   const sources: CanonicalWebSource[] =
     research.sources && research.sources.length > 0
@@ -1208,6 +1243,12 @@ export async function sendChat(
     timeoutMs?: number;
   } = {},
 ): Promise<string> {
+  if (opts.signal?.aborted) {
+    const err: any = new Error("Aborted");
+    err.name = "AbortError";
+    throw err;
+  }
+
   const history = alphaStore.getCompleteHistory();
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
@@ -1404,8 +1445,9 @@ async function runChat(
   if (online && !hasImages) {
     const decision = decideSearch(userText);
     if (decision.search) {
+      checkTurnDeadline();
       activity.set("searching");
-      webContext = await fetchLiveWebContext(decision.query || "", signal);
+      webContext = await fetchLiveWebContext(decision.query || "", signal, deadlineMs);
       if (!activity.isActionActive()) {
         activity.set(determineInitialActivity(hasImages, task, userText));
       }
