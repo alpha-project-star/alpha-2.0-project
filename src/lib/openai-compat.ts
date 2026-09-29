@@ -39,6 +39,12 @@ export interface NormalizedChatResponse {
 export type ChatResponse = NormalizedChatResponse;
 
 export function getMonotonicTimeMs(): number {
+  if (typeof process !== "undefined" && process.hrtime && typeof process.hrtime.bigint === "function") {
+    return Number(process.hrtime.bigint()) / 1000000;
+  }
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
   return Date.now();
 }
 

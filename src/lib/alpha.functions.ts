@@ -1344,9 +1344,10 @@ async function runChat(
     return rem;
   };
 
-  checkTurnDeadline();
+  try {
+    checkTurnDeadline();
 
-  const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
+    const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
   const hasImages = !!lastUserMsg?.images?.length;
   const hasFiles = !!lastUserMsg?.attachments?.length;
   const userText = lastUserMsg?.text || "";
@@ -1361,6 +1362,7 @@ async function runChat(
   // Local intents answer instantly with no model request at all (unless attachments or images are present).
   if (userText && !hasImages && !lastUserMsg?.attachments?.length) {
     const eyeRes = await handleEyeCommand(userText);
+    checkTurnDeadline();
     if (eyeRes) {
       lifecycle.recordSuccess({ name: "handleEyeCommand", isMutation: false, result: eyeRes });
       activity.clear();
@@ -1373,6 +1375,7 @@ async function runChat(
     }
     try {
       const local = await tryLocalIntent(userText, lifecycle);
+      checkTurnDeadline();
       if (local) {
         activity.clear();
         return local;
@@ -1386,6 +1389,7 @@ async function runChat(
     if (currentUid) {
       try {
         const ackResult = await notificationAcknowledgementManager.acknowledgeFromUserUtterance(currentUid, userText);
+        checkTurnDeadline();
         if (ackResult.success && ackResult.conversationalReply) {
           activity.clear();
           const gateRes = alphaGate.process({
@@ -1439,6 +1443,7 @@ async function runChat(
   let authReminders: FirestoreReminder[] = [];
   try {
     authReminders = await getAuthoritativeReminders();
+    checkTurnDeadline();
   } catch (err) {
     console.error("Repository failure reading reminders for context:", err);
   }
@@ -1454,6 +1459,7 @@ async function runChat(
       checkTurnDeadline();
       activity.set("searching");
       webContext = await fetchLiveWebContext(decision.query || "", signal, deadlineMs);
+      checkTurnDeadline();
       if (!activity.isActionActive()) {
         activity.set(determineInitialActivity(hasImages, task, userText));
       }
@@ -1611,6 +1617,7 @@ async function runChat(
       };
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);
+      checkTurnDeadline();
 
       if (signal?.aborted) break;
 
@@ -1662,15 +1669,18 @@ async function runChat(
           });
 
           const authUser = await ensureAuthenticatedUser();
+          checkTurnDeadline();
           const context: ToolContext = {
             userId: authUser?.uid || auth.currentUser?.uid || null,
           };
 
           try {
             result = await executeTool(call, context, signal);
+            checkTurnDeadline();
           } catch (execErr: any) {
             if (isMutation) {
               result = await reconcileAmbiguousMutation(call, context, execErr);
+              checkTurnDeadline();
             } else {
               result = {
                 success: false,
@@ -1752,6 +1762,7 @@ async function runChat(
         };
         currentHistory.push(toolMsg);
         await alphaStore.appendChat(toolMsg);
+        checkTurnDeadline();
         if (signal?.aborted) break;
       }
 
@@ -1805,6 +1816,7 @@ async function runChat(
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
       const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal, origin });
+      checkTurnDeadline();
       void maybeCompactSummary(history, finalText);
       activity.clear();
       return finalText;
@@ -1832,14 +1844,43 @@ async function runChat(
   try {
     checkTurnDeadline();
     const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext, { signal, deadlineMs });
+    checkTurnDeadline();
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
     const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, origin });
+    checkTurnDeadline();
     activity.clear();
     return out;
   } catch (e) {
     activity.set("error");
     throw e;
+  }
+ 
+  } catch (err: any) {
+    activity.clear();
+    if (err instanceof WholeTurnTimeoutError || err?.name === "TimeoutError" || err?.status === 504 || getRemainingMs() <= 0) {
+      if (lifecycle.getCompletedMutations().size > 0 || lifecycle.getAllOperations().some((o) => o.status === "completed")) {
+        const actionResults = Array.from(lifecycle.getAllOperations())
+          .filter((o) => o.status === "completed")
+          .map((o) => ({
+            tag: o.name,
+            status: "success" as const,
+            message: `${o.name} completed.`,
+            logicalKeys: o.logicalKeys,
+          }));
+        const gateRes = alphaGate.process({
+          rawText: "",
+          actionResults,
+          lifecycle,
+          origin,
+        });
+        if (gateRes.approvedText && gateRes.approvedText !== ALPHA_GATE_FALLBACK_TEXT) {
+          return gateRes.approvedText;
+        }
+      }
+      throw err instanceof WholeTurnTimeoutError ? err : new WholeTurnTimeoutError(err?.message || "Whole-turn deadline expired.");
+    }
+    throw err;
   }
 }
 

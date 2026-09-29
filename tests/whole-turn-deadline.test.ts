@@ -253,7 +253,8 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
       timeoutMs: 100,
     });
 
-    vi.advanceTimersByTime(200);
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(150);
     const resultText = await promise;
 
     expect(resultText).toBeDefined();
