@@ -683,6 +683,8 @@ function hydrateImages(msgs: ChatMessage[]): ChatMessage[] {
 }
 
 function reloadState() {
+  const storage = getStorage();
+  if (!storage) return;
   migrateLegacyScopedKeys();
   const rawSessions = parseLS<ChatSession[]>(K.sessions, z.array(ChatSessionSchema), []);
   const defaultSessions: ChatSession[] = rawSessions.length > 0 ? rawSessions : [
@@ -705,7 +707,7 @@ function reloadState() {
     results: parseLS<Result[]>(K.results, z.array(z.any()), []),
     memories: parseLS<Memory[]>(K.memories, z.array(MemorySchema), []),
     profile: parseLS<Profile>(K.profile, ProfileSchema, { name: "", bio: "" }),
-    settings: parseLS<Settings>(K.settings, SettingsSchema, DEFAULT_SETTINGS),
+    settings: parseLS<Settings>(K.settings, SettingsSchema, state?.settings || DEFAULT_SETTINGS),
     composerText: parseLS<string>(K.composerText, z.string(), ""),
   };
 }

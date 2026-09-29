@@ -32,8 +32,8 @@ export interface SearchResult {
 }
 
 export interface SearchProvider {
-  search(query: string, limit?: number): Promise<SearchResult[]>;
-  readPage(url: string): Promise<{ title: string; content: string; status: string }>;
+  search(query: string, limit?: number, opts?: { signal?: AbortSignal }): Promise<SearchResult[]>;
+  readPage(url: string, opts?: { signal?: AbortSignal }): Promise<{ title: string; content: string; status: string }>;
 }
 
 let pendingOffer: { query: string; at: number } | null = null;

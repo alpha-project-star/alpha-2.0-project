@@ -56,12 +56,6 @@ export async function sendChatOllama(
   webContext = "",
   opts?: { signal?: AbortSignal; deadlineMs?: number },
 ): Promise<NormalizedChatResponse> {
-  if (opts?.signal?.aborted) {
-    const err: any = new Error("Aborted");
-    err.name = "AbortError";
-    throw err;
-  }
-
   const model = alphaStore.get().settings.ollamaModel || "llama3.2:3b";
   const url = `${base()}/api/chat`;
 
@@ -81,9 +75,14 @@ export async function sendChatOllama(
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Math.min(rem, 60_000));
+  const onAbort = () => ctrl.abort();
+
   if (opts?.signal) {
-    if (opts.signal.aborted) ctrl.abort();
-    else opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+    if (opts.signal.aborted) {
+      ctrl.abort();
+    } else {
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+    }
   }
 
   let res: Response;
@@ -107,25 +106,11 @@ export async function sendChatOllama(
 
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      clearTimeout(timer);
       throw new Error(`Ollama ${res.status}: ${t.slice(0, 300) || "no body"}`);
     }
     j = await res.json();
-    clearTimeout(timer);
   } catch (e: any) {
-    clearTimeout(timer);
     if (opts?.signal?.aborted) {
-      const err: any = new Error("Aborted");
-      err.name = "AbortError";
-      throw err;
-    }
-    if (ctrl.signal.aborted || e?.name === "AbortError" || /aborted/i.test(e?.message || "")) {
-      if (opts?.deadlineMs !== undefined && getMonotonicTimeMs() >= opts.deadlineMs) {
-        const err: any = new Error(`Ollama timed out after ${Math.round(rem / 1000)}s.`);
-        err.status = 504;
-        err.name = "TimeoutError";
-        throw err;
-      }
       const err: any = new Error("Aborted");
       err.name = "AbortError";
       throw err;
@@ -135,6 +120,11 @@ export async function sendChatOllama(
     err.status = 504;
     err.name = "TimeoutError";
     throw err;
+  } finally {
+    clearTimeout(timer);
+    if (opts?.signal) {
+      opts.signal.removeEventListener("abort", onAbort);
+    }
   }
   const content = typeof j?.message?.content === "string" ? j.message.content : "";
   const reasoning = j?.message?.reasoning_content || j?.message?.reasoning || "";
@@ -180,16 +170,24 @@ ${transcript}
 
 LAST REPLY:
 ${lastAssistant.slice(0, 500)}`;
-    const res = await fetch(`${base()}/api/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [{ role: "user", content: prompt }],
-        options: { temperature: 0.2 },
-      }),
-    });
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(`${base()}/api/chat`, {
+        method: "POST",
+        signal: ctrl.signal,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages: [{ role: "user", content: prompt }],
+          options: { temperature: 0.2 },
+        }),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     if (!res.ok) return;
     const j: any = await res.json();
     let out = (typeof j?.message?.content === "string" ? j.message.content : "").trim();

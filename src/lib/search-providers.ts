@@ -1,14 +1,33 @@
 import { SearchProvider, SearchResult } from "./web-search";
 
 export class DuckDuckGoProvider implements SearchProvider {
-  async search(query: string, limit = 5): Promise<SearchResult[]> {
+  private combineSignal(timeoutMs: number, userSignal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    if (!userSignal) return timeoutSignal;
+    if (typeof (AbortSignal as any).any === "function") {
+      return (AbortSignal as any).any([userSignal, timeoutSignal]);
+    }
+    const ctrl = new AbortController();
+    const onAbort = () => ctrl.abort();
+    if (userSignal.aborted || timeoutSignal.aborted) {
+      ctrl.abort();
+    } else {
+      userSignal.addEventListener("abort", onAbort, { once: true });
+      timeoutSignal.addEventListener("abort", onAbort, { once: true });
+    }
+    return ctrl.signal;
+  }
+
+  async search(query: string, limit = 5, opts?: { signal?: AbortSignal }): Promise<SearchResult[]> {
     const results: SearchResult[] = [];
     try {
       const ddgUrl = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}&kl=wt-wt`;
       const readableUrl = `https://r.jina.ai/${ddgUrl}`;
+      const signal = this.combineSignal(8000, opts?.signal);
+
       const text = await fetch(readableUrl, {
         headers: { "X-No-Cache": "true", "User-Agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(8000),
+        signal,
       })
         .then((r) => (r.ok ? r.text() : ""))
         .catch(() => "");
@@ -42,12 +61,13 @@ export class DuckDuckGoProvider implements SearchProvider {
     return results;
   }
 
-  async readPage(url: string): Promise<{ title: string; content: string; status: string }> {
+  async readPage(url: string, opts?: { signal?: AbortSignal }): Promise<{ title: string; content: string; status: string }> {
     try {
       const readableUrl = `https://r.jina.ai/${url}`;
+      const signal = this.combineSignal(10000, opts?.signal);
       const text = await fetch(readableUrl, {
         headers: { "X-No-Cache": "true", "User-Agent": "Mozilla/5.0" },
-        signal: AbortSignal.timeout(10000),
+        signal,
       })
         .then((r) => (r.ok ? r.text() : ""))
         .catch(() => "");

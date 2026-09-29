@@ -499,7 +499,7 @@ export class BoundedResearchService {
     let results: SearchResult[] = [];
     try {
       receipt.querySent = query;
-      const rawResults = await this.provider.search(query, 10);
+      const rawResults = await this.provider.search(query, 10, { signal });
       if (signal?.aborted) throw new Error("Aborted");
       results = rankResults(rawResults, query);
       receipt.resultCount = results.length;
@@ -527,7 +527,7 @@ export class BoundedResearchService {
         break;
       }
 
-      const page = await this.provider.readPage(result.url);
+      const page = await this.provider.readPage(result.url, { signal });
       openedPages++;
       processedUrls.add(result.url);
 

@@ -1249,7 +1249,7 @@ export async function sendChat(
     throw err;
   }
 
-  const history = alphaStore.getCompleteHistory();
+  const history = _passedHistory && _passedHistory.length > 0 ? _passedHistory : alphaStore.getCompleteHistory();
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
   const now = Date.now();
@@ -1287,11 +1287,12 @@ export async function sendChat(
   }
   const controller = new AbortController();
   currentAbortController = controller;
+  const onUserAbort = () => controller.abort();
   if (opts.signal) {
     if (opts.signal.aborted) {
       controller.abort();
     } else {
-      opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      opts.signal.addEventListener("abort", onUserAbort, { once: true });
     }
   }
 
@@ -1305,6 +1306,9 @@ export async function sendChat(
   ).finally(() => {
     if (currentAbortController === controller) currentAbortController = null;
     if (inFlight?.key === key) inFlight = null;
+    if (opts.signal) {
+      opts.signal.removeEventListener("abort", onUserAbort);
+    }
   });
   inFlight = { key, promise };
   lastLogicalPromise = promise;
@@ -1403,7 +1407,9 @@ async function runChat(
         }
 
         // Notification follow-up & recovery inquiry check
+        checkTurnDeadline();
         const inquiryReply = await notificationRecoveryManager.handleConversationalInquiry(currentUid, userText);
+        checkTurnDeadline();
         if (inquiryReply) {
           activity.clear();
           const gateRes = alphaGate.process({
@@ -1516,15 +1522,14 @@ async function runChat(
     let model = routes[0].model;
 
     while (loopCount < 5 && currentRouteIndex < routes.length) {
-      checkTurnDeadline();
-      prov = routes[currentRouteIndex].prov;
-      model = routes[currentRouteIndex].model;
-
-      activity.set(determineInitialActivity(hasImages, task, userText));
-
       let response: ChatResponse;
       try {
         checkTurnDeadline();
+        prov = routes[currentRouteIndex].prov;
+        model = routes[currentRouteIndex].model;
+
+        activity.set(determineInitialActivity(hasImages, task, userText));
+
         response = await callProvider(prov, model, currentHistory, sys, {
           allowImages: hasImages,
           maxTokens,
@@ -1535,11 +1540,7 @@ async function runChat(
         });
       } catch (err: any) {
         lastErr = err;
-        if (err?.name === "AbortError" || signal?.aborted) {
-          activity.clear();
-          throw err;
-        }
-        if (err?.name === "TimeoutError" || err?.status === 504 || getRemainingMs() <= 0) {
+        if (err instanceof WholeTurnTimeoutError || err?.name === "TimeoutError" || err?.status === 504 || getRemainingMs() <= 0) {
           activity.clear();
           if (lifecycle.getCompletedMutations().size > 0 || lifecycle.getAllOperations().some((o) => o.status === "completed")) {
             const actionResults = Array.from(lifecycle.getAllOperations())
@@ -1561,6 +1562,10 @@ async function runChat(
             }
           }
           throw err instanceof WholeTurnTimeoutError ? err : new WholeTurnTimeoutError(err?.message || "Whole-turn deadline expired.");
+        }
+        if (err?.name === "AbortError" || signal?.aborted) {
+          activity.clear();
+          throw err;
         }
         if (typeof console !== "undefined")
           console.warn(`[alpha] ${prov}:${model} failed`, err?.status, err?.message);
@@ -1806,6 +1811,9 @@ async function runChat(
     }
 
     activity.set("error");
+    if (lastErr instanceof WholeTurnTimeoutError || lastErr?.name === "TimeoutError" || lastErr?.status === 504 || getRemainingMs() <= 0) {
+      throw lastErr instanceof WholeTurnTimeoutError ? lastErr : new WholeTurnTimeoutError("Whole-turn deadline expired.");
+    }
     // One user-facing sentence — never the raw provider body.
     const st = lastErr?.status;
     const friendly =
@@ -1826,7 +1834,7 @@ async function runChat(
     const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext, { signal, deadlineMs });
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
-    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, signal, origin });
+    const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, origin });
     activity.clear();
     return out;
   } catch (e) {
