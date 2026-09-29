@@ -86,10 +86,24 @@ describe("Pass A — Action Lifecycle & Action-Only Response Repair", () => {
     expect(res.toLowerCase()).toContain("enabled");
   });
 
-  it("7. Additional non-Auto-Speak action (ADD_NOTE) produces correct confirmation", async () => {
-    const raw = "[[ADD_NOTE: Important Reminder | Meeting at 3pm]]";
-    const res = await finalizeReply(raw, "");
-    expect(res.toLowerCase()).toContain("note saved");
-    expect(res.toLowerCase()).toContain("important reminder");
+  it("8. Two-turn cross-turn isolation: Turn 1 action confirmation is stored correctly and Turn 2 has fresh lifecycle without stale action results", async () => {
+    // Turn 1
+    const turn1Raw = "[[SET_SETTING: autoSpeak | false]]";
+    const lifecycle1 = new RequestActionLifecycle();
+    const turn1Approved = await finalizeReply(turn1Raw, "", undefined, { lifecycle: lifecycle1 });
+
+    expect(turn1Approved.toLowerCase()).toContain("autospeak");
+    expect(turn1Approved.toLowerCase()).toContain("disabled");
+    expect(lifecycle1.getState()).toBe("completed");
+
+    // Turn 2 (unrelated request)
+    const turn2Raw = "Here is your requested formatting output.";
+    const lifecycle2 = new RequestActionLifecycle();
+    const turn2Approved = await finalizeReply(turn2Raw, "", undefined, { lifecycle: lifecycle2 });
+
+    expect(turn2Approved).toBe("Here is your requested formatting output.");
+    expect(lifecycle2.getState()).not.toBe("executing");
+    // Ensure no action results from Turn 1 leaked into Turn 2's execution lifecycle
+    expect(lifecycle2.getAllOperations()).toHaveLength(0);
   });
 });

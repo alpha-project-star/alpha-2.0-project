@@ -139,7 +139,8 @@ export function DesktopChatPanel() {
 
   async function send(overrideText?: string) {
     if (busyRef.current || busy) return;
-    const t = (overrideText ?? text ?? "").trim();
+    const rawInput = overrideText ?? (taRef.current ? taRef.current.value : text) ?? "";
+    const t = rawInput.trim();
     if (!t && images.length === 0 && attachedFiles.length === 0) return;
 
     // Discard rapid double-clicks (identical text within 1000ms)
@@ -164,6 +165,7 @@ export function DesktopChatPanel() {
     const currentImages = images;
     const hasFiles = filesToAttach.length > 0;
     alphaStore.setComposerText("");
+    if (taRef.current) taRef.current.value = "";
     setImages([]);
     setAttachedFiles([]);
 
@@ -463,15 +465,9 @@ export function DesktopChatPanel() {
       <div className="pt-2 flex flex-col gap-2 relative">
         <textarea
           ref={taRef}
-          value={text}
+          defaultValue={text}
           onChange={(e) => alphaStore.setComposerText(e.target.value)}
           onInput={autoGrow}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
           placeholder="Message Alpha…"
           rows={2}
           className="w-full min-w-0 bg-input/60 rounded-2xl px-4 py-3 border border-primary/40 outline-none focus:border-primary resize-none min-h-[56px] max-h-44 overflow-y-auto text-sm leading-6 break-words [overflow-wrap:anywhere]"
