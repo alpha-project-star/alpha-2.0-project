@@ -16,6 +16,8 @@ export interface CompatOpts {
   historyTurns?: number;
   /** Bounded retries for 429 / 5xx. Default 2 (so 3 attempts total). */
   retries?: number;
+  /** Absolute turn deadline in monotonic time (ms) */
+  deadlineMs?: number;
   /** Tools (OpenAI function calling format) */
   tools?: any[];
   /** tool_choice */
@@ -35,6 +37,21 @@ export interface NormalizedChatResponse {
 }
 
 export type ChatResponse = NormalizedChatResponse;
+
+export function getMonotonicTimeMs(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : Date.now();
+}
+
+export class WholeTurnTimeoutError extends Error {
+  status = 504;
+  code = "WHOLE_TURN_TIMEOUT";
+  constructor(message = "Whole-turn deadline expired.") {
+    super(message);
+    this.name = "TimeoutError";
+  }
+}
 
 const sleep = (ms: number, signal?: AbortSignal) => 
   new Promise((resolve, reject) => {
@@ -277,11 +294,20 @@ export async function sendChatOpenAICompat(
   let lastErr: any = null;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    // Hard timeout so a stalled provider surfaces an error instead of leaving
-    // the UI stuck on "Thinking…".
+    const getRemaining = () =>
+      opts.deadlineMs !== undefined
+        ? Math.max(0, opts.deadlineMs - getMonotonicTimeMs())
+        : (opts.allowImages ? 90_000 : 60_000);
+
+    const remaining = getRemaining();
+    if (remaining <= 0) {
+      throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired.`);
+    }
+
     const ctrl = new AbortController();
-    const timeoutMs = opts.allowImages ? 90_000 : 60_000;
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const defaultTimeoutMs = opts.allowImages ? 90_000 : 60_000;
+    const fetchTimeoutMs = Math.min(remaining, defaultTimeoutMs);
+    const timer = setTimeout(() => ctrl.abort(), fetchTimeoutMs);
     if (opts.signal) {
       if (opts.signal.aborted) {
         ctrl.abort();
@@ -315,17 +341,24 @@ export async function sendChatOpenAICompat(
       });
     } catch (e: any) {
       clearTimeout(timer);
-      if (e?.name === "AbortError") {
-        const err: any = new Error(
-          `${opts.model} timed out after ${Math.round(timeoutMs / 1000)}s.`,
-        );
-        err.status = 504;
+      if (opts.signal?.aborted) {
+        const err: any = new Error("Aborted");
+        err.name = "AbortError";
         throw err;
+      }
+      if (e?.name === "AbortError" || getRemaining() <= 0) {
+        throw new WholeTurnTimeoutError(
+          `${opts.model} timed out after ${Math.round(fetchTimeoutMs / 1000)}s.`,
+        );
       }
       // Network blip — one bounded retry with backoff.
       lastErr = e;
       if (attempt < maxAttempts) {
-        await sleep(500 * attempt);
+        const rem = getRemaining();
+        if (rem <= 0) {
+          throw new WholeTurnTimeoutError(`${opts.model} timed out: whole-turn deadline expired.`);
+        }
+        await sleep(Math.min(500 * attempt, rem), opts.signal);
         continue;
       }
       throw e;

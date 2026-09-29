@@ -4,7 +4,7 @@ import { ensureAuthenticatedUser } from "./auth";
 import { tryLocalIntent } from "./local-intents";
 import { handleEyeCommand } from "./vision-command";
 import { sendChatOllama } from "./ollama";
-import { sendChatOpenAICompat, stripLeakedThinking, type ChatResponse } from "./openai-compat";
+import { sendChatOpenAICompat, stripLeakedThinking, getMonotonicTimeMs, WholeTurnTimeoutError, type ChatResponse } from "./openai-compat";
 import { inspectGitHubRepo } from "./api/github.functions";
 import { fetchWeather } from "./tools/weather";
 import { lookupWikipedia, lookupArxiv } from "./tools/knowledge";
@@ -1205,12 +1205,34 @@ export async function sendChat(
     signal?: AbortSignal;
     disableTools?: boolean;
     origin?: AlphaGateCandidate["origin"];
+    timeoutMs?: number;
   } = {},
 ): Promise<string> {
   const history = alphaStore.getCompleteHistory();
   const task: TaskType = opts.task ?? "auto";
   const key = requestKey(history, task);
   const now = Date.now();
+
+  let turnTimeoutMs: number;
+  if (opts.timeoutMs !== undefined) {
+    if (typeof opts.timeoutMs !== "number" || Number.isNaN(opts.timeoutMs) || opts.timeoutMs < 0) {
+      turnTimeoutMs = 0;
+    } else {
+      turnTimeoutMs = opts.timeoutMs;
+    }
+  } else {
+    const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
+    const hasImages = !!lastUserMsg?.images?.length;
+    turnTimeoutMs = (hasImages || task === "vision") ? 120_000 : 90_000;
+  }
+
+  const startMs = getMonotonicTimeMs();
+  const deadlineMs = startMs + turnTimeoutMs;
+
+  if (turnTimeoutMs <= 0 || getMonotonicTimeMs() >= deadlineMs) {
+    throw new WholeTurnTimeoutError("Whole-turn deadline expired before request initiation.");
+  }
+
   // Duplicate submissions (double tap, re-render, voice + button, duplicate message objects) share one request.
   if (inFlight && inFlight.key === key) return inFlight.promise;
   if (lastLogicalKey === key && now - lastLogicalTime < 3500 && lastLogicalPromise) {
@@ -1225,7 +1247,11 @@ export async function sendChat(
   const controller = new AbortController();
   currentAbortController = controller;
   if (opts.signal) {
-    opts.signal.addEventListener("abort", () => controller.abort());
+    if (opts.signal.aborted) {
+      controller.abort();
+    } else {
+      opts.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
   }
 
   const promise = runChat(
@@ -1234,6 +1260,7 @@ export async function sendChat(
     controller.signal,
     opts.disableTools,
     opts.origin,
+    deadlineMs,
   ).finally(() => {
     if (currentAbortController === controller) currentAbortController = null;
     if (inFlight?.key === key) inFlight = null;
@@ -1249,11 +1276,30 @@ async function runChat(
   signal?: AbortSignal,
   disableTools?: boolean,
   origin?: AlphaGateCandidate["origin"],
+  deadlineMs?: number,
 ): Promise<string> {
   const lifecycle = new RequestActionLifecycle();
   const s = alphaStore.get().settings;
   const online = typeof navigator !== "undefined" ? navigator.onLine : true;
   const currentUid = auth.currentUser?.uid || null;
+
+  const getRemainingMs = () =>
+    deadlineMs !== undefined ? Math.max(0, deadlineMs - getMonotonicTimeMs()) : 90_000;
+
+  const checkTurnDeadline = () => {
+    if (signal?.aborted) {
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    const rem = getRemainingMs();
+    if (rem <= 0) {
+      throw new WholeTurnTimeoutError("Whole-turn deadline expired.");
+    }
+    return rem;
+  };
+
+  checkTurnDeadline();
 
   const lastUserMsg = [...history].reverse().find((m) => m.role === "user");
   const hasImages = !!lastUserMsg?.images?.length;
@@ -1428,7 +1474,7 @@ async function runChat(
     let model = routes[0].model;
 
     while (loopCount < 5 && currentRouteIndex < routes.length) {
-      if (signal?.aborted) throw new Error("Aborted");
+      checkTurnDeadline();
       prov = routes[currentRouteIndex].prov;
       model = routes[currentRouteIndex].model;
 
@@ -1436,19 +1482,43 @@ async function runChat(
 
       let response: ChatResponse;
       try {
-        if (signal?.aborted) throw new Error("Aborted");
+        checkTurnDeadline();
         response = await callProvider(prov, model, currentHistory, sys, {
           allowImages: hasImages,
           maxTokens,
           historyTurns,
           tools: disableTools ? [] : ALPHA_TOOLS,
           signal,
+          deadlineMs,
         });
       } catch (err: any) {
         lastErr = err;
         if (err?.name === "AbortError" || signal?.aborted) {
           activity.clear();
           throw err;
+        }
+        if (err?.name === "TimeoutError" || err?.status === 504 || getRemainingMs() <= 0) {
+          activity.clear();
+          if (lifecycle.getCompletedMutations().size > 0 || lifecycle.getAllOperations().some((o) => o.status === "completed")) {
+            const actionResults = Array.from(lifecycle.getAllOperations())
+              .filter((o) => o.status === "completed")
+              .map((o) => ({
+                tag: o.name,
+                status: "success" as const,
+                message: `${o.name} completed.`,
+                logicalKeys: o.logicalKeys,
+              }));
+            const gateRes = alphaGate.process({
+              rawText: "",
+              actionResults,
+              lifecycle,
+              origin,
+            });
+            if (gateRes.approvedText && gateRes.approvedText !== ALPHA_GATE_FALLBACK_TEXT) {
+              return gateRes.approvedText;
+            }
+          }
+          throw err instanceof WholeTurnTimeoutError ? err : new WholeTurnTimeoutError(err?.message || "Whole-turn deadline expired.");
         }
         if (typeof console !== "undefined")
           console.warn(`[alpha] ${prov}:${model} failed`, err?.status, err?.message);
@@ -1465,9 +1535,13 @@ async function runChat(
             String(err?.message || ""),
           );
         if (retryableElsewhere && currentRouteIndex + 1 < routes.length) {
+          const rem = getRemainingMs();
+          if (rem <= 0) {
+            throw new WholeTurnTimeoutError("Whole-turn deadline expired during model fallback.");
+          }
           currentRouteIndex++;
           activity.set("switching_model");
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, Math.min(250, rem)));
           continue;
         }
         break;
@@ -1706,7 +1780,8 @@ async function runChat(
   // No online route (no keys or offline) — fall through to local Ollama.
   activity.set(determineInitialActivity(hasImages, task, userText));
   try {
-    const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext);
+    checkTurnDeadline();
+    const localResponse = await sendChatOllama(history, buildSys(!webContext), webContext, { signal, deadlineMs });
     lastAnsweredBy = "local model (Ollama)";
     activity.set("preparing");
     const out = await finalizeReply(localResponse.finalText || "", webContext, undefined, { userId: currentUid, lifecycle, origin });
@@ -1723,7 +1798,7 @@ async function callProvider(
   model: string,
   history: ChatMessage[],
   sys: string,
-  o: { allowImages: boolean; maxTokens: number; historyTurns: number; tools?: any[]; signal?: AbortSignal },
+  o: { allowImages: boolean; maxTokens: number; historyTurns: number; tools?: any[]; signal?: AbortSignal; deadlineMs?: number },
 ): Promise<ChatResponse> {
   const s = alphaStore.get().settings;
   const shared = {
@@ -1733,6 +1808,7 @@ async function callProvider(
     allowImages: o.allowImages,
     tools: o.tools,
     signal: o.signal,
+    deadlineMs: o.deadlineMs,
     retries: 1,
     onStatus: (st: "waiting" | "retrying") => {
       if (st === "retrying") {

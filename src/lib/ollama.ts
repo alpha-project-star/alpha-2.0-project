@@ -54,6 +54,7 @@ export async function sendChatOllama(
   history: ChatMessage[],
   systemPrompt: string,
   webContext = "",
+  opts?: { signal?: AbortSignal; deadlineMs?: number },
 ): Promise<NormalizedChatResponse> {
   const model = alphaStore.get().settings.ollamaModel || "llama3.2:3b";
   const url = `${base()}/api/chat`;
@@ -63,20 +64,52 @@ export async function sendChatOllama(
     ...toOllamaMessages(history),
   ];
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      messages,
-      stream: false,
-      options: {
-        temperature: 0.7,
-        top_p: 0.9,
-        num_ctx: 8192,
-      },
-    }),
-  });
+  const now = typeof performance !== "undefined" && typeof performance.now === "function" ? performance.now() : Date.now();
+  const rem = opts?.deadlineMs !== undefined ? Math.max(0, opts.deadlineMs - now) : 60_000;
+  if (rem <= 0) {
+    const err: any = new Error("Ollama timed out: whole-turn deadline expired.");
+    err.status = 504;
+    err.name = "TimeoutError";
+    throw err;
+  }
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), Math.min(rem, 60_000));
+  if (opts?.signal) {
+    if (opts.signal.aborted) ctrl.abort();
+    else opts.signal.addEventListener("abort", () => ctrl.abort(), { once: true });
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      signal: ctrl.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model,
+        messages,
+        stream: false,
+        options: {
+          temperature: 0.7,
+          top_p: 0.9,
+          num_ctx: 8192,
+        },
+      }),
+    });
+  } catch (e: any) {
+    clearTimeout(timer);
+    if (opts?.signal?.aborted) {
+      const err: any = new Error("Aborted");
+      err.name = "AbortError";
+      throw err;
+    }
+    const err: any = new Error(`Ollama timed out after ${Math.round(rem / 1000)}s.`);
+    err.status = 504;
+    err.name = "TimeoutError";
+    throw err;
+  }
+  clearTimeout(timer);
 
   if (!res.ok) {
     const t = await res.text().catch(() => "");
