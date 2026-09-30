@@ -974,7 +974,7 @@ function getLogicalMutationKey(call: any): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
-async function reconcileAmbiguousMutation(call: any, context: ToolContext, originalError: any): Promise<any> {
+export async function reconcileAmbiguousMutation(call: any, context: ToolContext, originalError: any): Promise<any> {
   const name = call.function?.name || "";
   const { userId } = context;
   if (!userId) {
@@ -1011,7 +1011,11 @@ async function reconcileAmbiguousMutation(call: any, context: ToolContext, origi
           return { success: true, operation: name, data: candidate };
         }
       }
-    } catch {}
+    } catch (e: any) {
+      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
+        throw e;
+      }
+    }
   }
 
   if (name === "deleteReminder" && (args.id || args.idOrQuery || args.query)) {
@@ -1021,7 +1025,11 @@ async function reconcileAmbiguousMutation(call: any, context: ToolContext, origi
       if (!existing.success && existing.error?.code === "NOT_FOUND") {
         return { success: true, operation: name, data: { id: target, title: "deleted" } };
       }
-    } catch {}
+    } catch (e: any) {
+      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
+        throw e;
+      }
+    }
   }
 
   if (name === "completeReminder" && (args.id || args.idOrQuery || args.query)) {
@@ -1031,7 +1039,11 @@ async function reconcileAmbiguousMutation(call: any, context: ToolContext, origi
       if (existing.success && existing.data?.reminderState === "completed") {
         return { success: true, operation: name, data: existing.data };
       }
-    } catch {}
+    } catch (e: any) {
+      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
+        throw e;
+      }
+    }
   }
 
   return {
@@ -1296,6 +1308,10 @@ export async function sendChat(
     }
   }
 
+  const safetyTimer = setTimeout(() => {
+    controller.abort();
+  }, Math.max(1, turnTimeoutMs));
+
   const promise = runChat(
     history,
     task,
@@ -1304,6 +1320,7 @@ export async function sendChat(
     opts.origin,
     deadlineMs,
   ).finally(() => {
+    clearTimeout(safetyTimer);
     if (currentAbortController === controller) currentAbortController = null;
     if (inFlight?.key === key) inFlight = null;
     if (opts.signal) {
@@ -1315,7 +1332,7 @@ export async function sendChat(
   return promise;
 }
 
-async function runChat(
+export async function runChat(
   history: ChatMessage[],
   task: TaskType,
   signal?: AbortSignal,
@@ -1423,7 +1440,10 @@ async function runChat(
           });
           return gateRes.approvedText;
         }
-      } catch {
+      } catch (err: any) {
+        if (err instanceof WholeTurnTimeoutError || err?.name === "TimeoutError" || err?.status === 504 || err?.name === "AbortError" || signal?.aborted) {
+          throw err;
+        }
         // Fall through cleanly to general chat
       }
     }
@@ -1444,7 +1464,10 @@ async function runChat(
   try {
     authReminders = await getAuthoritativeReminders();
     checkTurnDeadline();
-  } catch (err) {
+  } catch (err: any) {
+    if (err instanceof WholeTurnTimeoutError || err?.name === "TimeoutError" || err?.status === 504 || err?.name === "AbortError" || signal?.aborted) {
+      throw err;
+    }
     console.error("Repository failure reading reminders for context:", err);
   }
   const recall = userText ? rerankContext(userText, authReminders) : "";
@@ -1675,9 +1698,27 @@ async function runChat(
           };
 
           try {
-            result = await executeTool(call, context, signal);
+            const toolPromise = executeTool(call, context, signal);
+            toolPromise.catch(() => {}); // Prevent unhandled rejection warnings if toolPromise rejects after race settles
+            const abortPromise = new Promise<never>((_, reject) => {
+              if (signal?.aborted) {
+                const err: any = new Error("Aborted");
+                err.name = "AbortError";
+                reject(err);
+              } else {
+                signal?.addEventListener("abort", () => {
+                  const err: any = new Error("Aborted");
+                  err.name = "AbortError";
+                  reject(err);
+                });
+              }
+            });
+            result = await Promise.race([toolPromise, abortPromise]);
             checkTurnDeadline();
           } catch (execErr: any) {
+            if (execErr instanceof WholeTurnTimeoutError || execErr?.name === "TimeoutError" || execErr?.status === 504 || execErr?.name === "AbortError" || signal?.aborted) {
+              throw execErr;
+            }
             if (isMutation) {
               result = await reconcileAmbiguousMutation(call, context, execErr);
               checkTurnDeadline();
@@ -1791,7 +1832,10 @@ async function runChat(
           tools: [], // Force text completion, no further tool loop
           signal,
         });
-      } catch {
+      } catch (err: any) {
+        if (err instanceof WholeTurnTimeoutError || err?.name === "TimeoutError" || err?.status === 504 || err?.name === "AbortError" || signal?.aborted) {
+          throw err;
+        }
         finalResponse = {
           finalText: lifecycle.hasCompletedMutations()
             ? "I've completed the requested action."

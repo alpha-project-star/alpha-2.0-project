@@ -1,9 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { sendChat, fetchLiveWebContext } from "../src/lib/alpha.functions";
+import { sendChat, fetchLiveWebContext, reconcileAmbiguousMutation, runChat } from "../src/lib/alpha.functions";
 import { WholeTurnTimeoutError, getMonotonicTimeMs, sendChatOpenAICompat } from "../src/lib/openai-compat";
+import * as toolRegistryModule from "../src/lib/tool-registry";
 import { RequestActionLifecycle } from "../src/lib/request-lifecycle";
 import { alphaGate, ALPHA_GATE_FALLBACK_TEXT } from "../src/lib/alpha-gate";
 import { alphaStore } from "../src/lib/alpha-store";
+import { auth } from "../src/lib/firebase";
 
 describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
   let fetchSpy: any;
@@ -19,6 +21,9 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
       openRouterKey: "sk-or-v1-test-key-1234567890",
     });
     alphaStore.get().settings.openRouterKey = "sk-or-v1-test-key-1234567890";
+
+    // Stub auth.currentUser to bypass bootstrapPromise hanging issues in test environments
+    (auth as any).currentUser = { uid: "user123" };
 
     fetchSpy = vi.spyOn(globalThis, "fetch");
     fetchSpy.mockReset();
@@ -424,5 +429,232 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
     });
     expect(gateRes.approvedText).not.toContain("OpenAI assistant");
     expect(gateRes.approvedText).toBe("I am here to help you today.");
+  });
+
+  it("15. A stalled deep-page read during search aborts via AbortSignal", async () => {
+    let pageReadSignal: AbortSignal | undefined;
+    fetchSpy.mockImplementation((url: string, init: any) => {
+      if (url.includes("r.jina.ai")) {
+        pageReadSignal = init?.signal;
+        return new Promise((_, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            const err: any = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] })));
+    });
+
+    const startMs = getMonotonicTimeMs();
+    const promise = fetchLiveWebContext("stalled url", undefined, startMs + 100);
+    const timerPromise = vi.advanceTimersByTimeAsync(150);
+
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+    await timerPromise;
+    expect(pageReadSignal?.aborted).toBe(true);
+  });
+
+  it("16. A stalled tool execution respects deadline and throws WholeTurnTimeoutError", async () => {
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_abc",
+                      type: "function",
+                      function: {
+                        name: "createReminder",
+                        arguments: JSON.stringify({ title: "Stalled Tool Reminder" }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const controller = new AbortController();
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
+      createReminder: vi.fn().mockImplementation(() => {
+        return new Promise((_, reject) => {
+          if (controller.signal.aborted) {
+            const err: any = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          } else {
+            controller.signal.addEventListener("abort", () => {
+              const err: any = new Error("Aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }
+        });
+      }),
+    } as any);
+
+    const promise = sendChat([{ id: "m1", role: "user", text: "stalled tool test", ts: Date.now() }], {
+      timeoutMs: 100,
+      signal: controller.signal,
+    });
+    promise.catch(() => {});
+    
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(150);
+
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+  });
+
+  it("17. Two concurrent runChat() requests run in absolute isolation without cross-interference", async () => {
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      const body = JSON.parse(init?.body || "{}");
+      const userContent = body.messages?.[body.messages.length - 1]?.content || "";
+      const replyText = userContent.includes("Request A") ? "Isolated Reply A" : "Isolated Reply B";
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: replyText } }],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const ctrlA = new AbortController();
+    const ctrlB = new AbortController();
+    const startMs = getMonotonicTimeMs();
+
+    const promiseA = runChat(
+      [{ id: "msg_a", role: "user", text: "Request A content", ts: Date.now() }],
+      "auto",
+      ctrlA.signal,
+      false,
+      undefined,
+      startMs + 5000
+    );
+
+    const promiseB = runChat(
+      [{ id: "msg_b", role: "user", text: "Request B content", ts: Date.now() }],
+      "auto",
+      ctrlB.signal,
+      false,
+      undefined,
+      startMs + 5000
+    );
+
+    await vi.advanceTimersByTimeAsync(100);
+    const [resA, resB] = await Promise.all([promiseA, promiseB]);
+
+    expect(resA).toBe("Isolated Reply A");
+    expect(resB).toBe("Isolated Reply B");
+  });
+
+  it("18. A genuinely late tool result that attempts to update history is blocked after timeout", async () => {
+    let resolveTool: any;
+
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_abc",
+                      type: "function",
+                      function: {
+                        name: "createReminder",
+                        arguments: JSON.stringify({ title: "Late Reminder" }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const controller = new AbortController();
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
+      createReminder: vi.fn().mockImplementation(() => {
+        return new Promise((resolve, reject) => {
+          controller.signal.addEventListener("abort", () => {
+            const err: any = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+          resolveTool = resolve;
+        });
+      }),
+    } as any);
+
+    const promise = sendChat([{ id: "m1", role: "user", text: "test late tool", ts: Date.now() }], {
+      timeoutMs: 50,
+      signal: controller.signal,
+    });
+    promise.catch(() => {});
+    
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+
+    // Let the late tool resolve
+    resolveTool({ success: true, data: { id: "rem_late", title: "Late Reminder" } });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Verify the late result did not append any new message to history
+    const history = alphaStore.getCompleteHistory();
+    const toolMsg = history.find((m) => m.role === "tool");
+    expect(toolMsg).toBeUndefined();
+  });
+
+  it("19. Mutation reconciliation after timeout correctly prevents duplicate execution", async () => {
+    const mockReminder = { id: "rem_dup_1", title: "Duplicate Reminder", createdAt: Date.now() - 5000 };
+    const listMock = vi.fn().mockResolvedValue({ success: true, data: [mockReminder] });
+    
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: listMock,
+    } as any);
+
+    const call = {
+      function: {
+        name: "createReminder",
+        arguments: JSON.stringify({ title: "Duplicate Reminder" }),
+      },
+    };
+
+    const result = await reconcileAmbiguousMutation(call, { userId: "user123" }, new Error("timeout"));
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual(mockReminder);
+    expect(listMock).toHaveBeenCalled();
+  });
+
+  it("20. WholeTurnTimeoutError and AbortError propagate out of nested catches instead of being swallowed", async () => {
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockImplementation(() => {
+        throw new WholeTurnTimeoutError("Nested deadline expired.");
+      }),
+    } as any);
+
+    const promise = sendChat([{ id: "msg_nested", role: "user", text: "nested error test", ts: Date.now() }], { timeoutMs: 1000 });
+    promise.catch(() => {});
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
   });
 });
