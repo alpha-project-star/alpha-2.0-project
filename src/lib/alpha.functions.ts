@@ -1711,7 +1711,7 @@ export async function runChat(
         text: response.finalText || "",
         ts: Date.now(),
         tool_calls: response.toolCalls,
-        intermediate: true, // Internal intermediate step
+        intermediate: !response.finalText, // Only internal if no user-facing prose is present
       };
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);

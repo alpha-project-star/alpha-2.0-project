@@ -188,7 +188,7 @@ export function DesktopChatPanel() {
         images: outImages.length ? outImages : undefined,
         ts: Date.now(),
       });
-      const reply = await sendChat(alphaStore.get().chat, { task });
+      const reply = await sendChat(alphaStore.getCompleteHistory(), { task });
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {

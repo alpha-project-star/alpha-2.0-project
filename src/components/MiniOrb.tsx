@@ -51,7 +51,7 @@ export function MiniOrb({ size = 56 }: { size?: number }) {
     busyRef.current = true;
     try {
       await alphaStore.appendChat({ id: uid(), role: "user", text: trimmed, ts: Date.now() });
-      const reply = await sendChat(alphaStore.get().chat);
+      const reply = await sendChat(alphaStore.getCompleteHistory());
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       speakWith(reply, { auto: true });
     } catch (e: any) {

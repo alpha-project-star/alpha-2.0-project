@@ -132,7 +132,7 @@ function OrbHome() {
         return;
       }
 
-      const reply = await sendChat(alphaStore.get().chat, { task: outImages ? "auto" : "fast" });
+      const reply = await sendChat(alphaStore.getCompleteHistory(), { task: outImages ? "auto" : "fast" });
       await alphaStore.appendChat({ id: uid(), role: "model", text: reply, ts: Date.now() });
       setStatus("Speaking…");
       await speakWith(reply);

@@ -744,10 +744,6 @@ export const alphaStore = {
   },
   getCompleteHistory(): ChatMessage[] {
     reloadState();
-    return [...(state.chat || [])];
-  },
-  getDiagnosticHistory(): ChatMessage[] {
-    reloadState();
     const visible = state.chat || [];
     const internal = state.internalHistory || [];
     const combined = [...visible, ...internal];
