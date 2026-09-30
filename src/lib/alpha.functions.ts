@@ -992,17 +992,22 @@ export async function reconcileAmbiguousMutation(
   }
 
   // If we have a pending promise, try to await it bounded by the deadline
+  const remaining = deadlineMs !== undefined ? deadlineMs - getMonotonicTimeMs() : Infinity;
+  if (remaining <= 0) return originalError;
+
   if (pendingPromise) {
     try {
-      const remaining = deadlineMs !== undefined ? Math.max(0, deadlineMs - getMonotonicTimeMs()) : 90000;
-      if (remaining > 0) {
-        const timeout = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout during reconciliation")), remaining)
-        );
-        return await Promise.race([pendingPromise, timeout]);
+      const timeout = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("TIMEOUT")), remaining)
+      );
+      return await Promise.race([pendingPromise, timeout]);
+    } catch (e: any) {
+      if (e instanceof Error && e.message === "TIMEOUT") {
+        // Continue to state-based reconciliation
+      } else if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError" || e?.aborted) {
+        throw e;
       }
-    } catch (e) {
-      // Ignore, original error is what we are reconciling
+      // Else ignore and continue to state-based reconciliation
     }
   }
 
@@ -1018,6 +1023,8 @@ export async function reconcileAmbiguousMutation(
   }
 
   const tool = getReminderTool(userId);
+
+  if (deadlineMs !== undefined && deadlineMs - getMonotonicTimeMs() <= 0) return originalError;
 
   if (name === "createReminder" && args.title) {
     try {
