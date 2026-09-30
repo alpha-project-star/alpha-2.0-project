@@ -43,14 +43,24 @@ export class AlphaGate {
     }
 
     // 1. Input Validation & Action Execution Gate
-    const raw = candidate?.rawText;
+    let raw = candidate?.rawText || "";
+    if (candidate?.deferredProse && candidate.deferredProse.length > 0) {
+      const combinedProse = candidate.deferredProse
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .join("\n\n");
+      if (combinedProse) {
+        raw = combinedProse + (raw ? "\n\n" + raw : "");
+      }
+    }
+
     const hasExecution = Boolean(
       (candidate?.actionResults && candidate.actionResults.length > 0) ||
       (candidate?.toolSummary && candidate.toolSummary.hasMutation) ||
       (candidate?.lifecycle && (candidate.lifecycle.hasCompletedMutations() || candidate.lifecycle.hasFailedMutations()))
     );
 
-    if ((typeof raw !== "string" || !raw.trim()) && !hasExecution) {
+    if (!raw.trim() && !hasExecution) {
       return {
         approvedText: ALPHA_GATE_FALLBACK_TEXT,
         status: "fallback",

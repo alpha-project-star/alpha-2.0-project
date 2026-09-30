@@ -28,6 +28,7 @@ export interface NativeToolExecutionSummary {
 
 export interface AlphaGateCandidate {
   rawText: string;
+  deferredProse?: string[];
   origin: AlphaGateOrigin;
   modelIdentity?: string;
   webContext?: string;

@@ -1,3 +1,4 @@
+import { auth } from "./firebase";
 import { expressSignatureTrait } from "./signature-trait";
 import { alphaStore, conversationSummary, uid, type ChatMessage } from "./alpha-store";
 import { ensureAuthenticatedUser } from "./auth";
@@ -1600,6 +1601,9 @@ export async function runChat(
 
     let lastErr: any = null;
     const currentHistory = [...history];
+    const authUser = await ensureAuthenticatedUser();
+    const currentUid = authUser?.uid || auth.currentUser?.uid || null;
+    const deferredProse: string[] = [];
     let loopCount = 0;
     let finalResponse: ChatResponse | null = null;
     const callResults = new Map<string, any>();
@@ -1705,13 +1709,16 @@ export async function runChat(
 
       // Tool execution round
       activity.set("calling_tool");
+      if (response.finalText) {
+        deferredProse.push(response.finalText);
+      }
       const assistantMsg: ChatMessage = {
         id: uid(),
         role: "model",
         text: response.finalText || "",
         ts: Date.now(),
         tool_calls: response.toolCalls,
-        intermediate: !response.finalText, // Only internal if no user-facing prose is present
+        intermediate: true, // Always intermediate (hidden) when tool calls are present to defer prose
       };
       currentHistory.push(assistantMsg);
       await alphaStore.appendChat(assistantMsg);
@@ -1939,7 +1946,7 @@ export async function runChat(
     if (finalResponse) {
       lastAnsweredBy = routeLabel(prov, model);
       activity.set("preparing");
-      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal, origin });
+      const finalText = await finalizeReply(finalResponse.finalText || "", webContext, toolSummary, { userId: currentUid, lifecycle, signal, origin, deferredProse });
       checkTurnDeadline();
       void maybeCompactSummary(history, finalText);
       activity.clear();
@@ -2066,7 +2073,7 @@ export async function finalizeReply(
   raw: string,
   webContext: string,
   toolSummary?: NativeToolExecutionSummary,
-  options?: ExecuteActionTagsOptions & { origin?: AlphaGateCandidate["origin"] },
+  options?: ExecuteActionTagsOptions & { origin?: AlphaGateCandidate["origin"]; deferredProse?: string[] },
 ): Promise<string> {
   if (options?.signal?.aborted) throw new Error("Aborted");
   const hasTags = /\[\[[A-Z_]+:/.test(raw);
@@ -2093,6 +2100,7 @@ export async function finalizeReply(
 
   const gateResult = alphaGate.process({
     rawText: text,
+    deferredProse: options?.deferredProse,
     origin: options?.origin ?? "model",
     toolSummary,
     actionResults: results,

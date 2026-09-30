@@ -258,9 +258,26 @@ export async function sendChatOpenAICompat(
   }
   const url = opts.baseUrl.replace(/\/+$/, "") + "/chat/completions";
   const messages: any[] = [{ role: "system", content: systemPrompt }];
-  const turns = history.filter((m) => m.role !== "system").slice(-(opts.historyTurns ?? 20));
-  // Only the newest user turn keeps its images — resending historical base64
-  // images balloons the payload and stalls vision providers.
+
+  // 1. History Integrity: Ensure assistant tool-calls and tool-results are always paired.
+  // OpenAI 400s if an assistant message has tool_calls without matching results, or if results appear without the call.
+  const allTurns = history.filter((m) => m.role !== "system");
+  const availableToolResults = new Set(allTurns.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+  const availableToolCalls = new Set(allTurns.flatMap((m) => m.tool_calls || []).map((tc) => tc.id));
+
+  const turns = allTurns
+    .filter((m) => {
+      if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
+        return m.tool_calls.every((tc: any) => availableToolResults.has(tc.id));
+      }
+      if (m.role === "tool") {
+        return availableToolCalls.has(m.tool_call_id);
+      }
+      return true;
+    })
+    .slice(-(opts.historyTurns ?? 20));
+
+  // 2. Vision/Image Handling: Only the newest user turn keeps its images.
   const lastImageIdx = (() => {
     for (let i = turns.length - 1; i >= 0; i--)
       if (turns[i].role === "user" && turns[i].images?.length) return i;

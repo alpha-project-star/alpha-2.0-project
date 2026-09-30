@@ -754,7 +754,27 @@ export const alphaStore = {
       if (m.id) seen.add(m.id);
       deduped.push(m);
     }
-    return deduped.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return deduped.sort((a, b) => {
+      const tsA = a.ts || 0;
+      const tsB = b.ts || 0;
+      if (tsA !== tsB) return tsA - tsB;
+
+      // Tie-breaker for equal timestamps: user < model < tool < system
+      const roleOrder: Record<string, number> = { user: 0, model: 1, tool: 2, system: 3 };
+      const orderA = roleOrder[a.role] ?? 99;
+      const orderB = roleOrder[b.role] ?? 99;
+      if (orderA !== orderB) return orderA - orderB;
+
+      // If roles are same, model message with tool_calls must come BEFORE model message with text (prose)
+      if (a.role === "model" && b.role === "model") {
+        const hasCallsA = Boolean(a.tool_calls && a.tool_calls.length > 0);
+        const hasCallsB = Boolean(b.tool_calls && b.tool_calls.length > 0);
+        if (hasCallsA && !hasCallsB) return -1;
+        if (!hasCallsA && hasCallsB) return 1;
+      }
+
+      return 0;
+    });
   },
   appendChat(msg: ChatMessage): Promise<void> {
     if (msg.images?.length && !msg.images.some(img => img === "[image_transient]")) {

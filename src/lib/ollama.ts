@@ -13,10 +13,22 @@ function splitDataUrl(u: string): { data: string } | null {
   return m ? { data: m[2] } : null;
 }
 
-/** Convert Alpha chat messages into Ollama's /api/chat shape. */
+/** Convert Alpha chat messages into Ollama's /api/chat shape with tool integrity. */
 function toOllamaMessages(history: ChatMessage[]) {
-  return history
-    .filter((m) => m.role !== "system")
+  const allTurns = history.filter((m) => m.role !== "system");
+  const availableToolResults = new Set(allTurns.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
+  const availableToolCalls = new Set(allTurns.flatMap((m) => m.tool_calls || []).map((tc) => tc.id));
+
+  return allTurns
+    .filter((m) => {
+      if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
+        return m.tool_calls.every((tc: any) => availableToolResults.has(tc.id));
+      }
+      if (m.role === "tool") {
+        return availableToolCalls.has(m.tool_call_id);
+      }
+      return true;
+    })
     .slice(-40)
     .map((m) => {
       const role = m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant";
