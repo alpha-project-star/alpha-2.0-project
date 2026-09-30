@@ -981,13 +981,41 @@ const isCancellationError = (err: any) =>
   err?.name === "AbortError" ||
   err?.aborted;
 
-async function boundAwait<T>(promise: Promise<T>, deadlineMs: number | undefined): Promise<T> {
+async function boundAwait<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  deadlineMs: number | undefined
+): Promise<T> {
+  if (signal?.aborted) throw signal.reason || new Error("AbortError");
   const remaining = deadlineMs !== undefined ? deadlineMs - getMonotonicTimeMs() : Infinity;
-  if (remaining <= 0) throw new Error("TIMEOUT");
-  const timeout = new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("TIMEOUT")), remaining)
-  );
-  return await Promise.race([promise, timeout]);
+  if (remaining <= 0) throw new WholeTurnTimeoutError("Turn deadline expired");
+  if (deadlineMs === undefined) return await promise;
+
+  return await new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abortHandler = () => {
+      clearTimeout(timer);
+      reject(signal?.reason || new Error("AbortError"));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abortHandler);
+      reject(new WholeTurnTimeoutError("Turn deadline expired"));
+    }, remaining);
+
+    signal?.addEventListener("abort", abortHandler);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abortHandler);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abortHandler);
+        reject(err);
+      }
+    );
+  });
 }
 
 export async function reconcileAmbiguousMutation(
@@ -996,8 +1024,10 @@ export async function reconcileAmbiguousMutation(
   originalError: any,
   pendingPromise?: Promise<any>,
   deadlineMs?: number,
+  signal?: AbortSignal,
 ): Promise<any> {
   if (isCancellationError(originalError)) throw originalError;
+  if (signal?.aborted) throw signal.reason || new Error("AbortError");
 
   const name = call.function?.name || "";
   const { userId } = context;
@@ -1012,13 +1042,9 @@ export async function reconcileAmbiguousMutation(
   // If we have a pending promise, try to await it bounded by the deadline
   if (pendingPromise) {
     try {
-      return await boundAwait(pendingPromise, deadlineMs);
+      return await boundAwait(pendingPromise, signal, deadlineMs);
     } catch (e: any) {
-      if (e instanceof Error && e.message === "TIMEOUT") {
-        // Continue to state-based reconciliation
-      } else if (isCancellationError(e)) {
-        throw e;
-      }
+      if (isCancellationError(e)) throw e;
       // Else ignore and continue to state-based reconciliation
     }
   }
@@ -1035,12 +1061,11 @@ export async function reconcileAmbiguousMutation(
   }
 
   const tool = getReminderTool(userId);
-
-  if (deadlineMs !== undefined && deadlineMs - getMonotonicTimeMs() <= 0) return originalError;
+  if (deadlineMs !== undefined && deadlineMs - getMonotonicTimeMs() <= 0) throw new WholeTurnTimeoutError("Turn deadline expired");
 
   if (name === "createReminder" && args.title) {
     try {
-      const list = await boundAwait(tool.listReminders(), deadlineMs);
+      const list = await boundAwait(tool.listReminders(), signal, deadlineMs);
       if (list.success && Array.isArray(list.data)) {
         const candidate = list.data.find(
           (r: any) =>
@@ -1059,7 +1084,7 @@ export async function reconcileAmbiguousMutation(
   if (name === "deleteReminder" && (args.id || args.idOrQuery || args.query)) {
     try {
       const target = args.id || args.idOrQuery || args.query;
-      const existing = await boundAwait(tool.getReminder(target), deadlineMs);
+      const existing = await boundAwait(tool.getReminder(target), signal, deadlineMs);
       if (!existing.success && existing.error?.code === "NOT_FOUND") {
         return { success: true, operation: name, data: { id: target, title: "deleted" } };
       }
@@ -1071,7 +1096,7 @@ export async function reconcileAmbiguousMutation(
   if (name === "completeReminder" && (args.id || args.idOrQuery || args.query)) {
     try {
       const target = args.id || args.idOrQuery || args.query;
-      const existing = await boundAwait(tool.getReminder(target), deadlineMs);
+      const existing = await boundAwait(tool.getReminder(target), signal, deadlineMs);
       if (existing.success && existing.data?.reminderState === "completed") {
         return { success: true, operation: name, data: existing.data };
       }
@@ -1755,12 +1780,12 @@ export async function runChat(
           } catch (execErr: any) {
             if (isMutation && (execErr instanceof WholeTurnTimeoutError || execErr?.name === "TimeoutError" || execErr?.status === 504 || execErr?.name === "AbortError" || signal?.aborted)) {
               // Reconcile if mutation tool dispatched and outcome is ambiguous
-              result = await reconcileAmbiguousMutation(call, context, execErr, pendingToolPromises.get(invocationKey), deadlineMs);
+              result = await reconcileAmbiguousMutation(call, context, execErr, pendingToolPromises.get(invocationKey), deadlineMs, signal);
               checkTurnDeadline();
             } else if (execErr instanceof WholeTurnTimeoutError || execErr?.name === "TimeoutError" || execErr?.status === 504 || execErr?.name === "AbortError" || signal?.aborted) {
               throw execErr;
             } else if (isMutation) {
-              result = await reconcileAmbiguousMutation(call, context, execErr, undefined, deadlineMs);
+              result = await reconcileAmbiguousMutation(call, context, execErr, undefined, deadlineMs, signal);
               checkTurnDeadline();
             } else {
               result = {
