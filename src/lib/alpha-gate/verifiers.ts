@@ -118,12 +118,12 @@ export function reconcileDeferredProse(
     if (claimsAction) {
       // If we have associated tool calls, they MUST have all succeeded.
       if (block.toolCalls && block.toolCalls.length > 0) {
-        const anyFailed = block.toolCalls.some((tc) => {
+        const anyFailedOrMissing = block.toolCalls.some((tc) => {
           const key = (tc as any)._executionKey;
-          const foundResult = summary?.results?.find(r => r.executionKey === key);
-          return foundResult && !foundResult.success;
+          // Every call in the block must have a corresponding SUCCESSFUL result
+          return !toolResults.has(key) || !toolResults.get(key);
         });
-        if (anyFailed) continue;
+        if (anyFailedOrMissing) continue;
 
         // If no evidence of success exists for a mutation claim, omit it.
         const hasMutationTool = block.toolCalls.some(tc => 

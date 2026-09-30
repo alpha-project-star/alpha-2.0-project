@@ -39,6 +39,7 @@ export interface ChatMessage {
   /** Tools requested by the model in this turn. */
   tool_calls?: any[];
   intermediate?: boolean;
+  seq?: number;
 }
 
 export type { Task, Goal, Run, Step, Observation, Result } from "./execution";
@@ -284,6 +285,7 @@ export const ChatMessageSchema = z.object({
   tool_call_id: z.string().optional(),
   tool_calls: z.array(z.any()).optional(),
   intermediate: z.boolean().optional(),
+  seq: z.number().optional(),
 });
 
 export const NoteSchema = z.object({
@@ -754,12 +756,11 @@ export const alphaStore = {
       if (m.id) seen.add(m.id);
       deduped.push(m);
     }
-    // Stable sort by timestamp, preserving discovery order (internal < visible) on tie
+    // Sort by timestamp, then by sequence number to preserve execution order
     return deduped.sort((a, b) => {
-      const tsA = a.ts || 0;
-      const tsB = b.ts || 0;
-      if (tsA !== tsB) return tsA - tsB;
-      return 0; // Stability handles discovery order
+      const tsDiff = (a.ts || 0) - (b.ts || 0);
+      if (tsDiff !== 0) return tsDiff;
+      return (a.seq || 0) - (b.seq || 0);
     });
   },
   appendChat(msg: ChatMessage): Promise<void> {
@@ -768,6 +769,13 @@ export const alphaStore = {
     }
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
+
+      // Assign a strictly monotonic sequence number to preserve append order
+      const seqKey = "alpha.nextSeq.v1";
+      let nextSeq = Number(localStorage.getItem(seqKey) || "0");
+      msg.seq = nextSeq++;
+      localStorage.setItem(seqKey, String(nextSeq));
+
       const isIntermediate = msg.intermediate || msg.role === "tool" || (msg.role === "model" && !msg.text && msg.tool_calls?.length);
       if (isIntermediate) {
         const existingInternal = state.internalHistory || [];

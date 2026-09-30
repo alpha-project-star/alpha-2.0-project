@@ -289,10 +289,23 @@ export async function sendChatOpenAICompat(
     }
   }
 
-  // Final check: Remove any assistant calls whose results were lost/orphaned
-  let resolvedTurns = validMessages.filter((m) => {
+  // Final check: Remove any assistant calls whose results were lost/orphaned,
+  // AND remove every tool result belonging to calls in those removed messages.
+  const removedCallIds = new Set<string>();
+  const filteredTurns = validMessages.filter((m) => {
     if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-      return m.tool_calls.every((tc: any) => seenResultIds.has(tc.id));
+      const allSucceeded = m.tool_calls.every((tc: any) => seenResultIds.has(tc.id));
+      if (!allSucceeded) {
+        m.tool_calls.forEach((tc: any) => removedCallIds.add(tc.id));
+        return false;
+      }
+    }
+    return true;
+  });
+
+  let resolvedTurns = filteredTurns.filter((m) => {
+    if (m.role === "tool" && m.tool_call_id && removedCallIds.has(m.tool_call_id)) {
+      return false;
     }
     return true;
   });
@@ -312,6 +325,28 @@ export async function sendChatOpenAICompat(
       break;
     }
     resolvedTurns = resolvedTurns.slice(startIdx);
+
+    // After truncation, validate the retained history again.
+    // Every retained tool call must have a result, and every result must have a call.
+    const retainedCallIds = new Set<string>();
+    const retainedResultIds = new Set<string>();
+    resolvedTurns.forEach(m => {
+      if (m.role === "model" && m.tool_calls) {
+        m.tool_calls.forEach((tc: any) => retainedCallIds.add(tc.id));
+      } else if (m.role === "tool" && m.tool_call_id) {
+        retainedResultIds.add(m.tool_call_id);
+      }
+    });
+
+    resolvedTurns = resolvedTurns.filter(m => {
+      if (m.role === "model" && m.tool_calls) {
+        return m.tool_calls.every((tc: any) => retainedResultIds.has(tc.id));
+      }
+      if (m.role === "tool" && m.tool_call_id) {
+        return retainedCallIds.has(m.tool_call_id);
+      }
+      return true;
+    });
   }
 
   const turns = resolvedTurns;

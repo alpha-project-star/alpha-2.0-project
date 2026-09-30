@@ -93,7 +93,7 @@ export default defineConfig({
       nitro({
         preset: "node-server",
         devServer: {
-          port: 3000,
+          port: 3001,
           host: "0.0.0.0",
         },
         rollupConfig: {
