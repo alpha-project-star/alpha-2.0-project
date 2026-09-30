@@ -974,6 +974,22 @@ function getLogicalMutationKey(call: any): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
+const isCancellationError = (err: any) =>
+  err instanceof WholeTurnTimeoutError ||
+  err?.name === "TimeoutError" ||
+  err?.status === 504 ||
+  err?.name === "AbortError" ||
+  err?.aborted;
+
+async function boundAwait<T>(promise: Promise<T>, deadlineMs: number | undefined): Promise<T> {
+  const remaining = deadlineMs !== undefined ? deadlineMs - getMonotonicTimeMs() : Infinity;
+  if (remaining <= 0) throw new Error("TIMEOUT");
+  const timeout = new Promise((_, reject) =>
+    setTimeout(() => reject(new Error("TIMEOUT")), remaining)
+  );
+  return await Promise.race([promise, timeout]);
+}
+
 export async function reconcileAmbiguousMutation(
   call: any,
   context: ToolContext,
@@ -981,6 +997,8 @@ export async function reconcileAmbiguousMutation(
   pendingPromise?: Promise<any>,
   deadlineMs?: number,
 ): Promise<any> {
+  if (isCancellationError(originalError)) throw originalError;
+
   const name = call.function?.name || "";
   const { userId } = context;
   if (!userId) {
@@ -992,19 +1010,13 @@ export async function reconcileAmbiguousMutation(
   }
 
   // If we have a pending promise, try to await it bounded by the deadline
-  const remaining = deadlineMs !== undefined ? deadlineMs - getMonotonicTimeMs() : Infinity;
-  if (remaining <= 0) return originalError;
-
   if (pendingPromise) {
     try {
-      const timeout = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("TIMEOUT")), remaining)
-      );
-      return await Promise.race([pendingPromise, timeout]);
+      return await boundAwait(pendingPromise, deadlineMs);
     } catch (e: any) {
       if (e instanceof Error && e.message === "TIMEOUT") {
         // Continue to state-based reconciliation
-      } else if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError" || e?.aborted) {
+      } else if (isCancellationError(e)) {
         throw e;
       }
       // Else ignore and continue to state-based reconciliation
@@ -1028,7 +1040,7 @@ export async function reconcileAmbiguousMutation(
 
   if (name === "createReminder" && args.title) {
     try {
-      const list = await tool.listReminders();
+      const list = await boundAwait(tool.listReminders(), deadlineMs);
       if (list.success && Array.isArray(list.data)) {
         const candidate = list.data.find(
           (r: any) =>
@@ -1040,37 +1052,31 @@ export async function reconcileAmbiguousMutation(
         }
       }
     } catch (e: any) {
-      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
-        throw e;
-      }
+      if (isCancellationError(e)) throw e;
     }
   }
 
   if (name === "deleteReminder" && (args.id || args.idOrQuery || args.query)) {
     try {
       const target = args.id || args.idOrQuery || args.query;
-      const existing = await tool.getReminder(target);
+      const existing = await boundAwait(tool.getReminder(target), deadlineMs);
       if (!existing.success && existing.error?.code === "NOT_FOUND") {
         return { success: true, operation: name, data: { id: target, title: "deleted" } };
       }
     } catch (e: any) {
-      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
-        throw e;
-      }
+      if (isCancellationError(e)) throw e;
     }
   }
 
   if (name === "completeReminder" && (args.id || args.idOrQuery || args.query)) {
     try {
       const target = args.id || args.idOrQuery || args.query;
-      const existing = await tool.getReminder(target);
+      const existing = await boundAwait(tool.getReminder(target), deadlineMs);
       if (existing.success && existing.data?.reminderState === "completed") {
         return { success: true, operation: name, data: existing.data };
       }
     } catch (e: any) {
-      if (e instanceof WholeTurnTimeoutError || e?.name === "TimeoutError" || e?.name === "AbortError") {
-        throw e;
-      }
+      if (isCancellationError(e)) throw e;
     }
   }
 
