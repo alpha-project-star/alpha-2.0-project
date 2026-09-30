@@ -993,25 +993,40 @@ async function boundAwait<T>(
 
   return await new Promise<T>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const abortHandler = () => {
-      clearTimeout(timer);
-      reject(signal?.reason || new Error("AbortError"));
+
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      if (signal) signal.removeEventListener("abort", abortHandler);
     };
+
+    const abortHandler = () => {
+      cleanup();
+      const reason = signal?.reason;
+      const err = (reason instanceof Error) ? reason : new Error(String(reason || "Aborted"));
+      err.name = "AbortError";
+      reject(err);
+    };
+
+    signal?.addEventListener("abort", abortHandler);
+
+    // Check for race: signal aborted between check and registration
+    if (signal?.aborted) {
+      abortHandler();
+      return;
+    }
+
     timer = setTimeout(() => {
-      signal?.removeEventListener("abort", abortHandler);
+      cleanup();
       reject(new WholeTurnTimeoutError("Turn deadline expired"));
     }, remaining);
 
-    signal?.addEventListener("abort", abortHandler);
     promise.then(
       (value) => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abortHandler);
+        cleanup();
         resolve(value);
       },
       (err) => {
-        clearTimeout(timer);
-        signal?.removeEventListener("abort", abortHandler);
+        cleanup();
         reject(err);
       }
     );
