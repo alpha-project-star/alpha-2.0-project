@@ -974,7 +974,13 @@ function getLogicalMutationKey(call: any): string | null {
   return keys.length > 0 ? keys[0] : null;
 }
 
-export async function reconcileAmbiguousMutation(call: any, context: ToolContext, originalError: any, pendingPromise?: Promise<any>): Promise<any> {
+export async function reconcileAmbiguousMutation(
+  call: any,
+  context: ToolContext,
+  originalError: any,
+  pendingPromise?: Promise<any>,
+  deadlineMs?: number,
+): Promise<any> {
   const name = call.function?.name || "";
   const { userId } = context;
   if (!userId) {
@@ -985,10 +991,16 @@ export async function reconcileAmbiguousMutation(call: any, context: ToolContext
     };
   }
 
-  // If we have a pending promise, try to await it one last time
+  // If we have a pending promise, try to await it bounded by the deadline
   if (pendingPromise) {
     try {
-      return await pendingPromise;
+      const remaining = deadlineMs !== undefined ? Math.max(0, deadlineMs - getMonotonicTimeMs()) : 90000;
+      if (remaining > 0) {
+        const timeout = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout during reconciliation")), remaining)
+        );
+        return await Promise.race([pendingPromise, timeout]);
+      }
     } catch (e) {
       // Ignore, original error is what we are reconciling
     }
@@ -1730,12 +1742,12 @@ export async function runChat(
           } catch (execErr: any) {
             if (isMutation && (execErr instanceof WholeTurnTimeoutError || execErr?.name === "TimeoutError" || execErr?.status === 504 || execErr?.name === "AbortError" || signal?.aborted)) {
               // Reconcile if mutation tool dispatched and outcome is ambiguous
-              result = await reconcileAmbiguousMutation(call, context, execErr, pendingToolPromises.get(invocationKey));
+              result = await reconcileAmbiguousMutation(call, context, execErr, pendingToolPromises.get(invocationKey), deadlineMs);
               checkTurnDeadline();
             } else if (execErr instanceof WholeTurnTimeoutError || execErr?.name === "TimeoutError" || execErr?.status === 504 || execErr?.name === "AbortError" || signal?.aborted) {
               throw execErr;
             } else if (isMutation) {
-              result = await reconcileAmbiguousMutation(call, context, execErr);
+              result = await reconcileAmbiguousMutation(call, context, execErr, undefined, deadlineMs);
               checkTurnDeadline();
             } else {
               result = {
