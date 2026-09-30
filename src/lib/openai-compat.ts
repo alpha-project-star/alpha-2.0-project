@@ -121,11 +121,11 @@ export function stripLeakedThinking(text: string): string {
   
   // 2. Remove block patterns with clear final headers
   const blockRegexes = [
-    // Pattern A: Clear reasoning-to-answer transition. Consumes header and reasoning, leaves the answer.
-    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis|scratchpad)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result|conclusion)\s*:?\s*)/i,
-    // Pattern B: Unambiguous internal headers that can be stripped even if they occupy the whole string.
-    // Excludes ambiguous terms like "analysis" or "reasoning" unless they follow Pattern A.
-    /^(?:thought process|internal monologue|internal dialogue|scratchpad)\s*:?[\s\S]*$/i,
+    // Pattern A: Restrictive reasoning-to-answer transition.
+    // Uses high-confidence internal identifiers and definitive final-answer markers only.
+    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|thought process|internal monologue|internal dialogue)\s*:?[\s\S]*?(?:\n\s*(?:final answer|final response)\s*:?\s*)/i,
+    // Pattern B: High-confidence unambiguous internal headers that can be stripped if they occupy the whole string.
+    /^(?:thinking process|thought process|internal monologue|internal dialogue)\s*:?[\s\S]*$/i,
     /^<ctrl94>\s*(?:thinking|thought|reasoning)[\s\S]*?(?:\n\n|$)/im, // Blockquote thinking
   ];
 
@@ -211,10 +211,10 @@ export function extractNormalizedResponse(
 
   // 3. Extract text-headers in content
   const headers = [
-    // Match reasoning-to-answer transition
-    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|reasoning|thought process|internal monologue|analysis|scratchpad)\s*:?[\s\S]*?(?:\n\s*(?:final answer|answer|response|result|conclusion)\s*:?\s*)/i,
-    // Match unambiguous internal headers only
-    /^(?:thought process|internal monologue|internal dialogue|scratchpad)\s*:?[\s\S]*$/i,
+    // Match high-confidence reasoning-to-answer transition
+    /^(?:here'?s\s+(?:a|my)\s+)?(?:thinking process|thought process|internal monologue|internal dialogue)\s*:?[\s\S]*?(?:\n\s*(?:final answer|final response)\s*:?\s*)/i,
+    // Match high-confidence unambiguous internal headers only
+    /^(?:thinking process|thought process|internal monologue|internal dialogue)\s*:?[\s\S]*$/i,
   ];
 
   for (const rx of headers) {
