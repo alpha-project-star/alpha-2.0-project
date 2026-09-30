@@ -73,11 +73,22 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
 const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
-const MUTATION_TOOLS_REGEX: Record<string, RegExp> = {
-  createReminder: /\b(?:saved|added|created|set|scheduled)\b/i,
-  updateReminder: /\b(?:updated|changed)\b/i,
-  deleteReminder: /\b(?:deleted|removed|canceled|cancelled)\b/i,
-  completeReminder: /\b(?:completed|done|marked|noted|remembered)\b/i,
+// Mapping of tool names to keywords indicative of their action
+const TOOL_ACTION_KEYWORDS: Record<string, string[]> = {
+  createReminder: ["create", "add", "save", "set", "schedule"],
+  updateReminder: ["update", "change", "edit"],
+  deleteReminder: ["delete", "remove", "cancel", "clear"],
+  completeReminder: ["complete", "done", "mark", "finish"],
+  addNote: ["save", "add", "create"],
+  updateNote: ["update", "change"],
+  deleteNote: ["delete", "remove"],
+  addMemory: ["save", "add", "remember"],
+  updateMemory: ["update", "change"],
+  deleteMemory: ["delete", "remove"],
+  addBill: ["save", "add"],
+  updateBill: ["update", "change"],
+  deleteBill: ["delete", "remove"],
+  markBillPaid: ["paid", "pay"],
 };
 
 /**
@@ -132,16 +143,17 @@ export function reconcileDeferredProse(
         continue;
       }
 
-      // If it's an action claim, it MUST have an associated successful tool call that matches the operation
+      // If it's an action claim, it MUST have associated successful tool calls for every operation described.
       if (!block.toolCalls || block.toolCalls.length === 0) continue;
 
-      const isVerified = block.toolCalls.some((tc) => {
+      // Ensure every tool call in the block succeeded, AND the claim matches the operation name
+      const isVerified = block.toolCalls.every((tc) => {
         const key = (tc as any)._executionKey;
         const res = toolResultsMap.get(key);
         if (!res || !res.success) return false;
 
-        const rx = MUTATION_TOOLS_REGEX[res.name];
-        return rx ? rx.test(s) : true; // Fallback to true if unknown mutation tool but succeeded
+        const keywords = TOOL_ACTION_KEYWORDS[res.name] || [];
+        return keywords.some(kw => s.toLowerCase().includes(kw));
       });
 
       if (isVerified) {

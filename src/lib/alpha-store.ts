@@ -934,18 +934,21 @@ export const alphaStore = {
 
       // Maintain sequence integrity: handle missing sequences and advance counter
       const seqKey = "alpha.nextSeq.v1";
-      let nextSeq = Number(localStorage.getItem(seqKey) || "0");
-      
-      const processedMsgs = msgs.map((m, idx) => {
+      const currentMax = Math.max(
+        ...state.chat.map(m => m.seq || 0),
+        ...(state.internalHistory || []).map(m => m.seq || 0),
+        0
+      );
+      let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), currentMax + 1);
+
+      const processedMsgs = msgs.map((m) => {
         if (m.seq !== undefined && typeof m.seq === "number") {
           return m;
         }
-        // Assign deterministic sequence for legacy/missing metadata in recorded order
-        return { ...m, seq: nextSeq + idx };
+        // Assign deterministic sequence for legacy/missing metadata in order
+        return { ...m, seq: nextSeq++ };
       });
 
-      const maxSeq = Math.max(...processedMsgs.map(m => m.seq || 0), nextSeq - 1);
-      nextSeq = maxSeq + 1;
       localStorage.setItem(seqKey, String(nextSeq));
 
       const visible: ChatMessage[] = [];

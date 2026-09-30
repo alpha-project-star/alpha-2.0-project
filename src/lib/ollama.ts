@@ -1,5 +1,5 @@
 import { alphaStore, conversationSummary, type ChatMessage } from "./alpha-store";
-import { stripLeakedThinking, extractNormalizedResponse, getMonotonicTimeMs, type NormalizedChatResponse } from "./openai-compat";
+import { stripLeakedThinking, extractNormalizedResponse, getMonotonicTimeMs, applyHistoryIntegrity, type NormalizedChatResponse } from "./openai-compat";
 
 /** Normalise the endpoint the user typed. */
 function base(): string {
