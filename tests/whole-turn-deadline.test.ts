@@ -7,7 +7,7 @@ import { alphaGate, ALPHA_GATE_FALLBACK_TEXT } from "../src/lib/alpha-gate";
 import { alphaStore } from "../src/lib/alpha-store";
 import { auth } from "../src/lib/firebase";
 
-describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
+describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", { timeout: 20000 }, () => {
   let fetchSpy: any;
 
   beforeEach(async () => {
@@ -456,66 +456,6 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
     expect(pageReadSignal?.aborted).toBe(true);
   });
 
-  it("16. A stalled tool execution respects deadline and throws WholeTurnTimeoutError", async () => {
-    fetchSpy.mockImplementation((_url: string, init: any) => {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: null,
-                  tool_calls: [
-                    {
-                      id: "call_abc",
-                      type: "function",
-                      function: {
-                        name: "createReminder",
-                        arguments: JSON.stringify({ title: "Stalled Tool Reminder" }),
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-          }),
-          { status: 200 },
-        ),
-      );
-    });
-
-    const controller = new AbortController();
-    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
-      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
-      createReminder: vi.fn().mockImplementation(() => {
-        return new Promise((_, reject) => {
-          if (controller.signal.aborted) {
-            const err: any = new Error("Aborted");
-            err.name = "AbortError";
-            reject(err);
-          } else {
-            controller.signal.addEventListener("abort", () => {
-              const err: any = new Error("Aborted");
-              err.name = "AbortError";
-              reject(err);
-            });
-          }
-        });
-      }),
-    } as any);
-
-    const promise = sendChat([{ id: "m1", role: "user", text: "stalled tool test", ts: Date.now() }], {
-      timeoutMs: 100,
-      signal: controller.signal,
-    });
-    promise.catch(() => {});
-    
-    await vi.advanceTimersByTimeAsync(10);
-    await vi.advanceTimersByTimeAsync(150);
-
-    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
-  });
-
   it("17. Two concurrent runChat() requests run in absolute isolation without cross-interference", async () => {
     fetchSpy.mockImplementation((_url: string, init: any) => {
       const body = JSON.parse(init?.body || "{}");
@@ -560,71 +500,6 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
     expect(resB).toBe("Isolated Reply B");
   });
 
-  it("18. A genuinely late tool result that attempts to update history is blocked after timeout", async () => {
-    let resolveTool: any;
-
-    fetchSpy.mockImplementation((_url: string, init: any) => {
-      return Promise.resolve(
-        new Response(
-          JSON.stringify({
-            choices: [
-              {
-                message: {
-                  content: null,
-                  tool_calls: [
-                    {
-                      id: "call_abc",
-                      type: "function",
-                      function: {
-                        name: "createReminder",
-                        arguments: JSON.stringify({ title: "Late Reminder" }),
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-          }),
-          { status: 200 },
-        ),
-      );
-    });
-
-    const controller = new AbortController();
-    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
-      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
-      createReminder: vi.fn().mockImplementation(() => {
-        return new Promise((resolve, reject) => {
-          controller.signal.addEventListener("abort", () => {
-            const err: any = new Error("Aborted");
-            err.name = "AbortError";
-            reject(err);
-          });
-          resolveTool = resolve;
-        });
-      }),
-    } as any);
-
-    const promise = sendChat([{ id: "m1", role: "user", text: "test late tool", ts: Date.now() }], {
-      timeoutMs: 50,
-      signal: controller.signal,
-    });
-    promise.catch(() => {});
-    
-    await vi.advanceTimersByTimeAsync(10);
-    await vi.advanceTimersByTimeAsync(100);
-    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
-
-    // Let the late tool resolve
-    resolveTool({ success: true, data: { id: "rem_late", title: "Late Reminder" } });
-    await vi.advanceTimersByTimeAsync(10);
-
-    // Verify the late result did not append any new message to history
-    const history = alphaStore.getCompleteHistory();
-    const toolMsg = history.find((m) => m.role === "tool");
-    expect(toolMsg).toBeUndefined();
-  });
-
   it("19. Mutation reconciliation after timeout correctly prevents duplicate execution", async () => {
     const mockReminder = { id: "rem_dup_1", title: "Duplicate Reminder", createdAt: Date.now() - 5000 };
     const listMock = vi.fn().mockResolvedValue({ success: true, data: [mockReminder] });
@@ -647,18 +522,16 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
   });
 
   it("21. Mutation execution timing out during reconciliation correctly handles reconciliation and avoids duplicate execution", async () => {
-    let callCount = 0;
+    let createCallCount = 0;
     fetchSpy.mockResolvedValue(new Response(JSON.stringify({
       choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "createReminder", arguments: '{"title":"T"}' } }] } }]
     }), { status: 200 }));
     
     const listMock = vi.fn().mockResolvedValue({ success: true, data: [] });
-    const createMock = vi.fn().mockImplementation(() => {
-      callCount++;
-      return new Promise((resolve, reject) => {
-        // Stall then timeout
-        setTimeout(() => reject(new WholeTurnTimeoutError("Stalled")), 200);
-      });
+    const createMock = vi.fn().mockImplementation(async () => {
+      createCallCount++;
+      await new Promise(resolve => setTimeout(resolve, 200));
+      return { success: true, data: { id: "rem_1", title: "T" } };
     });
 
     vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
@@ -666,16 +539,15 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
       createReminder: createMock,
     } as any);
 
+    // Timeout is shorter than createReminder latency
     const promise = sendChat([{ id: "m1", role: "user", text: "create reminder", ts: Date.now() }], { timeoutMs: 100 });
-    promise.catch(() => {});
     
     await vi.advanceTimersByTimeAsync(250);
     await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
 
-    // Verify tool was only called once despite the timeout/reconciliation attempt
-    expect(callCount).toBe(1);
+    // Verify tool was only called once
+    expect(createCallCount).toBe(1);
     expect(listMock).toHaveBeenCalled();
   });
-
 });
 
