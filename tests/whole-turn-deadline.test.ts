@@ -456,6 +456,66 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", { timeo
     expect(pageReadSignal?.aborted).toBe(true);
   });
 
+  it("16. A stalled tool execution respects deadline and throws WholeTurnTimeoutError", async () => {
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_abc",
+                      type: "function",
+                      function: {
+                        name: "createReminder",
+                        arguments: JSON.stringify({ title: "Stalled Tool Reminder" }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const controller = new AbortController();
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
+      createReminder: vi.fn().mockImplementation(() => {
+        return new Promise((_, reject) => {
+          if (controller.signal.aborted) {
+            const err: any = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          } else {
+            controller.signal.addEventListener("abort", () => {
+              const err: any = new Error("Aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }
+        });
+      }),
+    } as any);
+
+    const promise = sendChat([{ id: "m1", role: "user", text: "stalled tool test", ts: Date.now() }], {
+      timeoutMs: 100,
+      signal: controller.signal,
+    });
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(150);
+
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+  });
+
   it("17. Two concurrent runChat() requests run in absolute isolation without cross-interference", async () => {
     fetchSpy.mockImplementation((_url: string, init: any) => {
       const body = JSON.parse(init?.body || "{}");
@@ -498,6 +558,71 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", { timeo
 
     expect(resA).toBe("Isolated Reply A");
     expect(resB).toBe("Isolated Reply B");
+  });
+
+  it("18. A genuinely late tool result that attempts to update history is blocked after timeout", async () => {
+    let resolveTool: any;
+
+    fetchSpy.mockImplementation((_url: string, init: any) => {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: null,
+                  tool_calls: [
+                    {
+                      id: "call_abc",
+                      type: "function",
+                      function: {
+                        name: "createReminder",
+                        arguments: JSON.stringify({ title: "Late Reminder" }),
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+    });
+
+    const controller = new AbortController();
+    vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
+      listReminders: vi.fn().mockResolvedValue({ success: true, data: [] }),
+      createReminder: vi.fn().mockImplementation(() => {
+        return new Promise((resolve, reject) => {
+          controller.signal.addEventListener("abort", () => {
+            const err: any = new Error("Aborted");
+            err.name = "AbortError";
+            reject(err);
+          });
+          resolveTool = resolve;
+        });
+      }),
+    } as any);
+
+    const promise = sendChat([{ id: "m1", role: "user", text: "test late tool", ts: Date.now() }], {
+      timeoutMs: 50,
+      signal: controller.signal,
+    });
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+
+    // Let the late tool resolve
+    resolveTool({ success: true, data: { id: "rem_late", title: "Late Reminder" } });
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Verify the late result did not append any new message to history
+    const history = alphaStore.getCompleteHistory();
+    const toolMsg = history.find((m) => m.role === "tool");
+    expect(toolMsg).toBeUndefined();
   });
 
   it("19. Mutation reconciliation after timeout correctly prevents duplicate execution", async () => {
