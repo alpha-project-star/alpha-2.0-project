@@ -746,7 +746,7 @@ export const alphaStore = {
     reloadState();
     const visible = state.chat || [];
     const internal = state.internalHistory || [];
-    const combined = [...visible, ...internal];
+    const combined = [...internal, ...visible];
     const seen = new Set<string>();
     const deduped: ChatMessage[] = [];
     for (const m of combined) {
@@ -754,27 +754,12 @@ export const alphaStore = {
       if (m.id) seen.add(m.id);
       deduped.push(m);
     }
+    // Stable sort by timestamp, preserving discovery order (internal < visible) on tie
     return deduped.sort((a, b) => {
       const tsA = a.ts || 0;
       const tsB = b.ts || 0;
       if (tsA !== tsB) return tsA - tsB;
-
-      // Tie-breaker for equal timestamps: user < model-call < tool-result < model-answer < system
-      const getPriority = (m: ChatMessage) => {
-        if (m.role === "user") return 0;
-        if (m.role === "model") {
-          return (m.tool_calls && m.tool_calls.length > 0) ? 1 : 3;
-        }
-        if (m.role === "tool") return 2;
-        if (m.role === "system") return 4;
-        return 99;
-      };
-
-      const pA = getPriority(a);
-      const pB = getPriority(b);
-      if (pA !== pB) return pA - pB;
-
-      return 0;
+      return 0; // Stability handles discovery order
     });
   },
   appendChat(msg: ChatMessage): Promise<void> {

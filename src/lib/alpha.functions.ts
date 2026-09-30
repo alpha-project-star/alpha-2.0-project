@@ -1603,7 +1603,7 @@ export async function runChat(
     const currentHistory = [...history];
     const authUser = await ensureAuthenticatedUser();
     const currentUid = authUser?.uid || auth.currentUser?.uid || null;
-    const deferredProse: string[] = [];
+    const deferredProse: DeferredProseBlock[] = [];
     let loopCount = 0;
     let finalResponse: ChatResponse | null = null;
     const callResults = new Map<string, any>();
@@ -1710,7 +1710,11 @@ export async function runChat(
       // Tool execution round
       activity.set("calling_tool");
       if (response.finalText) {
-        deferredProse.push(response.finalText);
+        const callsWithKeys = response.toolCalls?.map((tc: any) => ({
+          ...tc,
+          _executionKey: getCanonicalExecutionKey(tc),
+        }));
+        deferredProse.push({ text: response.finalText, toolCalls: callsWithKeys });
       }
       const assistantMsg: ChatMessage = {
         id: uid(),
@@ -2073,7 +2077,7 @@ export async function finalizeReply(
   raw: string,
   webContext: string,
   toolSummary?: NativeToolExecutionSummary,
-  options?: ExecuteActionTagsOptions & { origin?: AlphaGateCandidate["origin"]; deferredProse?: string[] },
+  options?: ExecuteActionTagsOptions & { origin?: AlphaGateCandidate["origin"]; deferredProse?: DeferredProseBlock[] },
 ): Promise<string> {
   if (options?.signal?.aborted) throw new Error("Aborted");
   const hasTags = /\[\[[A-Z_]+:/.test(raw);

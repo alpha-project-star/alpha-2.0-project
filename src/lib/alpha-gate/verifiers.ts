@@ -6,7 +6,7 @@ import {
 } from "../actions";
 import { stripLeakedThinking } from "../openai-compat";
 import type { RequestActionLifecycle } from "../request-lifecycle";
-import type { AlphaGateActionStatus, NativeToolExecutionSummary } from "./types";
+import type { AlphaGateActionStatus, DeferredProseBlock, NativeToolExecutionSummary } from "./types";
 
 /**
  * Strips reasoning tags and scratchpads while strictly preserving legitimate user/model prose.
@@ -56,7 +56,7 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
     text = text.replace(rx, "");
   }
 
-  // 2. Trailing or inline infrastructure banners
+  // 2. Trailing or infrastructure banners
   const bannerPatterns = [
     /\b(?:Running on Groq|Powered by Groq|Hosted by Groq|Serving via Groq)\b\.?\s*/gi,
     /\b(?:Running on OpenRouter|Powered by OpenRouter)\b\.?\s*/gi,
@@ -74,11 +74,11 @@ const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
 /**
- * Reconciles deferred preliminary prose against execution results and the final answer.
- * Filters out redundant, contradictory, or internal-only statements.
+ * Reconciles deferred preliminary prose against specific tool outcomes and the final answer.
+ * Filters out redundant, contradictory, or unverified action claims.
  */
 export function reconcileDeferredProse(
-  deferred: string[],
+  deferred: DeferredProseBlock[],
   summary?: NativeToolExecutionSummary,
   finalAnswer?: string,
 ): string[] {
@@ -87,8 +87,16 @@ export function reconcileDeferredProse(
   const result: string[] = [];
   const finalLower = (finalAnswer || "").toLowerCase();
 
+  // Create a map of tool call success for efficient lookup
+  const toolResults = new Map<string, boolean>();
+  if (summary?.results) {
+    for (const r of summary.results) {
+      if (r.executionKey) toolResults.set(r.executionKey, r.success);
+    }
+  }
+
   for (const block of deferred) {
-    const trimmed = block.trim();
+    const trimmed = block.text?.trim();
     if (!trimmed) continue;
 
     // 1. Discard internal status cues or reasoning-like short fragments
@@ -100,15 +108,32 @@ export function reconcileDeferredProse(
     }
 
     // 2. Discard if essentially identical to what's already in the final answer
-    if (trimmed.length > 10 && finalLower.includes(trimmed.toLowerCase())) {
+    if (trimmed.length > 15 && finalLower.includes(trimmed.toLowerCase())) {
       continue;
     }
 
-    // 3. Preliminary mutation claims are risky.
-    // If the block claims an action and we have failures, it's safer to omit the preliminary statement.
+    // 3. Outcome-aware action validation.
+    // If the block claims a mutation, verify that the tools associated with this specific block succeeded.
     const claimsAction = claimsMutationWithoutTag(trimmed) || FALSE_MUTATION_CLAIM_REGEX.test(trimmed);
-    if (claimsAction && summary && summary.hasFailedMutation) {
-      continue;
+    if (claimsAction) {
+      // If we have associated tool calls, they MUST have all succeeded.
+      if (block.toolCalls && block.toolCalls.length > 0) {
+        const anyFailed = block.toolCalls.some((tc) => {
+          const key = (tc as any)._executionKey;
+          const foundResult = summary?.results?.find(r => r.executionKey === key);
+          return foundResult && !foundResult.success;
+        });
+        if (anyFailed) continue;
+
+        // If no evidence of success exists for a mutation claim, omit it.
+        const hasMutationTool = block.toolCalls.some(tc => 
+          ["createReminder", "updateReminder", "deleteReminder", "completeReminder"].includes(tc.function?.name)
+        );
+        if (hasMutationTool && (!summary || !summary.hasMutation)) continue;
+      } else if (summary && summary.hasFailedMutation) {
+        // Fallback: If no tool association but we know mutations failed, omit generic action claims.
+        continue;
+      }
     }
 
     result.push(trimmed);

@@ -259,38 +259,64 @@ export async function sendChatOpenAICompat(
   const url = opts.baseUrl.replace(/\/+$/, "") + "/chat/completions";
   const messages: any[] = [{ role: "system", content: systemPrompt }];
 
-  // 1. History Integrity: Ensure assistant tool-calls and tool-results are always paired and preserved.
+  // 1. History Integrity: Ensure assistant tool-calls and tool-results are always paired, unique, and sequential.
   const allTurns = history.filter((m) => m.role !== "system");
-  const availableToolResults = new Set(allTurns.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
-  const availableToolCalls = new Set(allTurns.flatMap((m) => m.tool_calls || []).map((tc) => tc.id));
+  const validMessages: ChatMessage[] = [];
+  const pendingCalls = new Set<string>();
+  const seenCallIds = new Set<string>();
+  const seenResultIds = new Set<string>();
 
-  // Filter orphaned messages
-  let validTurns = allTurns.filter((m) => {
+  for (const m of allTurns) {
     if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-      // Message containing calls must have results for ALL calls
-      return m.tool_calls.every((tc: any) => availableToolResults.has(tc.id));
+      // Reject duplicate call IDs and ensure sequence
+      const newCalls = m.tool_calls.filter((tc: any) => tc.id && !seenCallIds.has(tc.id));
+      if (newCalls.length > 0) {
+        validMessages.push({ ...m, tool_calls: newCalls });
+        newCalls.forEach((tc: any) => {
+          pendingCalls.add(tc.id);
+          seenCallIds.add(tc.id);
+        });
+      }
+    } else if (m.role === "tool") {
+      // Tool result MUST match a pending call ID and cannot be a duplicate result
+      if (m.tool_call_id && pendingCalls.has(m.tool_call_id) && !seenResultIds.has(m.tool_call_id)) {
+        validMessages.push(m);
+        pendingCalls.delete(m.tool_call_id);
+        seenResultIds.add(m.tool_call_id);
+      }
+    } else {
+      validMessages.push(m);
     }
-    if (m.role === "tool") {
-      // Tool result must have a matching call message
-      return availableToolCalls.has(m.tool_call_id);
+  }
+
+  // Final check: Remove any assistant calls whose results were lost/orphaned
+  let resolvedTurns = validMessages.filter((m) => {
+    if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
+      return m.tool_calls.every((tc: any) => seenResultIds.has(tc.id));
     }
     return true;
   });
 
-  // Truncation while preserving pair groups at the boundary
+  // 2. Group-Aware Truncation: Never split a tool-call from its results at the boundary.
   const limit = opts.historyTurns ?? 20;
-  if (validTurns.length > limit) {
-    let startIdx = validTurns.length - limit;
-    // Safety: Never start history at a 'tool' result role; back up to include the preceding model call.
-    while (startIdx > 0 && validTurns[startIdx].role === "tool") {
-      startIdx--;
+  if (resolvedTurns.length > limit) {
+    let startIdx = resolvedTurns.length - limit;
+    while (startIdx > 0) {
+      const m = resolvedTurns[startIdx];
+      const prev = resolvedTurns[startIdx - 1];
+      // Do not start with a tool result or split a call from its results
+      if (m.role === "tool" || (prev.role === "model" && prev.tool_calls && prev.tool_calls.length > 0)) {
+        startIdx--;
+        continue;
+      }
+      break;
     }
-    validTurns = validTurns.slice(startIdx);
+    resolvedTurns = resolvedTurns.slice(startIdx);
   }
 
-  const turns = validTurns;
+  const turns = resolvedTurns;
 
-  // 2. Vision/Image Handling: Only the newest user turn keeps its images.
+  // 3. Vision/Image Handling: Only the newest user turn keeps its images.
   const lastImageIdx = (() => {
     for (let i = turns.length - 1; i >= 0; i--)
       if (turns[i].role === "user" && turns[i].images?.length) return i;

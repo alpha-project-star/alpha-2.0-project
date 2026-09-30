@@ -26,9 +26,14 @@ export interface NativeToolExecutionSummary {
   executedLogicalKeys?: string[];
 }
 
+export interface DeferredProseBlock {
+  text: string;
+  toolCalls?: any[];
+}
+
 export interface AlphaGateCandidate {
   rawText: string;
-  deferredProse?: string[];
+  deferredProse?: DeferredProseBlock[];
   origin: AlphaGateOrigin;
   modelIdentity?: string;
   webContext?: string;
