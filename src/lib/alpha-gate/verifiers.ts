@@ -74,6 +74,50 @@ const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
 /**
+ * Reconciles deferred preliminary prose against execution results and the final answer.
+ * Filters out redundant, contradictory, or internal-only statements.
+ */
+export function reconcileDeferredProse(
+  deferred: string[],
+  summary?: NativeToolExecutionSummary,
+  finalAnswer?: string,
+): string[] {
+  if (!deferred || deferred.length === 0) return [];
+
+  const result: string[] = [];
+  const finalLower = (finalAnswer || "").toLowerCase();
+
+  for (const block of deferred) {
+    const trimmed = block.trim();
+    if (!trimmed) continue;
+
+    // 1. Discard internal status cues or reasoning-like short fragments
+    if (
+      trimmed.length < 5 ||
+      /^(?:ok|checking|searching|working on it|one moment|hold on)\.?$/i.test(trimmed)
+    ) {
+      continue;
+    }
+
+    // 2. Discard if essentially identical to what's already in the final answer
+    if (trimmed.length > 10 && finalLower.includes(trimmed.toLowerCase())) {
+      continue;
+    }
+
+    // 3. Preliminary mutation claims are risky.
+    // If the block claims an action and we have failures, it's safer to omit the preliminary statement.
+    const claimsAction = claimsMutationWithoutTag(trimmed) || FALSE_MUTATION_CLAIM_REGEX.test(trimmed);
+    if (claimsAction && summary && summary.hasFailedMutation) {
+      continue;
+    }
+
+    result.push(trimmed);
+  }
+
+  return result;
+}
+
+/**
  * Strips false or unverified mutation claim sentences/prose from text.
  * Preserves legitimate surrounding prose.
  */

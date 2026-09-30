@@ -45,12 +45,13 @@ export class AlphaGate {
     // 1. Input Validation & Action Execution Gate
     let raw = candidate?.rawText || "";
     if (candidate?.deferredProse && candidate.deferredProse.length > 0) {
-      const combinedProse = candidate.deferredProse
-        .map((p) => p.trim())
-        .filter(Boolean)
-        .join("\n\n");
-      if (combinedProse) {
-        raw = combinedProse + (raw ? "\n\n" + raw : "");
+      const filteredProse = reconcileDeferredProse(
+        candidate.deferredProse,
+        candidate.toolSummary,
+        raw
+      );
+      if (filteredProse.length > 0) {
+        raw = filteredProse.join("\n\n") + (raw ? "\n\n" + raw : "");
       }
     }
 

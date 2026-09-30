@@ -15,22 +15,36 @@ function splitDataUrl(u: string): { data: string } | null {
 
 /** Convert Alpha chat messages into Ollama's /api/chat shape with tool integrity. */
 function toOllamaMessages(history: ChatMessage[]) {
+  // 1. History Integrity: Ensure assistant tool-calls and tool-results are always paired and preserved.
   const allTurns = history.filter((m) => m.role !== "system");
   const availableToolResults = new Set(allTurns.filter((m) => m.role === "tool").map((m) => m.tool_call_id));
   const availableToolCalls = new Set(allTurns.flatMap((m) => m.tool_calls || []).map((tc) => tc.id));
 
-  return allTurns
-    .filter((m) => {
-      if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-        return m.tool_calls.every((tc: any) => availableToolResults.has(tc.id));
-      }
-      if (m.role === "tool") {
-        return availableToolCalls.has(m.tool_call_id);
-      }
-      return true;
-    })
-    .slice(-40)
-    .map((m) => {
+  // Filter orphaned messages
+  let validTurns = allTurns.filter((m) => {
+    if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
+      // Message containing calls must have results for ALL calls
+      return m.tool_calls.every((tc: any) => availableToolResults.has(tc.id));
+    }
+    if (m.role === "tool") {
+      // Tool result must have a matching call message
+      return availableToolCalls.has(m.tool_call_id);
+    }
+    return true;
+  });
+
+  // Truncation while preserving pair groups at the boundary
+  const limit = 40;
+  if (validTurns.length > limit) {
+    let startIdx = validTurns.length - limit;
+    // Safety: Never start history at a 'tool' result role; back up to include the preceding model call.
+    while (startIdx > 0 && validTurns[startIdx].role === "tool") {
+      startIdx--;
+    }
+    validTurns = validTurns.slice(startIdx);
+  }
+
+  return validTurns.map((m) => {
       const role = m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant";
       const msg: any = { role, content: m.text || "" };
       if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
