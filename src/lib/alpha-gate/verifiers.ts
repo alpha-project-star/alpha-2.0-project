@@ -73,9 +73,16 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
 const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
+const MUTATION_TOOLS_REGEX: Record<string, RegExp> = {
+  createReminder: /\b(?:saved|added|created|set|scheduled)\b/i,
+  updateReminder: /\b(?:updated|changed)\b/i,
+  deleteReminder: /\b(?:deleted|removed|canceled|cancelled)\b/i,
+  completeReminder: /\b(?:completed|done|marked|noted|remembered)\b/i,
+};
+
 /**
  * Reconciles deferred preliminary prose against specific tool outcomes and the final answer.
- * Filters out redundant, contradictory, or unverified action claims.
+ * Filters out redundant, contradictory, or unverified action claims at the sentence level.
  */
 export function reconcileDeferredProse(
   deferred: DeferredProseBlock[],
@@ -87,11 +94,13 @@ export function reconcileDeferredProse(
   const result: string[] = [];
   const finalLower = (finalAnswer || "").toLowerCase();
 
-  // Create a map of tool call success for efficient lookup
-  const toolResults = new Map<string, boolean>();
+  // Create a map of tool call results for efficient lookup
+  const toolResultsMap = new Map<string, { success: boolean; name: string }>();
   if (summary?.results) {
     for (const r of summary.results) {
-      if (r.executionKey) toolResults.set(r.executionKey, r.success);
+      if (r.executionKey) {
+        toolResultsMap.set(r.executionKey, { success: r.success, name: r.name });
+      }
     }
   }
 
@@ -112,31 +121,38 @@ export function reconcileDeferredProse(
       continue;
     }
 
-    // 3. Outcome-aware action validation.
-    // If the block claims a mutation, verify that the tools associated with this specific block succeeded.
-    const claimsAction = claimsMutationWithoutTag(trimmed) || FALSE_MUTATION_CLAIM_REGEX.test(trimmed);
-    if (claimsAction) {
-      // If we have associated tool calls, they MUST have all succeeded.
-      if (block.toolCalls && block.toolCalls.length > 0) {
-        const anyFailedOrMissing = block.toolCalls.some((tc) => {
-          const key = (tc as any)._executionKey;
-          // Every call in the block must have a corresponding SUCCESSFUL result
-          return !toolResults.has(key) || !toolResults.get(key);
-        });
-        if (anyFailedOrMissing) continue;
+    // 3. Sentence-level validation against specific tool outcomes
+    const sentences = trimmed.match(/[^.!?\n]+[.!?]*/g) || [trimmed];
+    const keptSentences: string[] = [];
 
-        // If no evidence of success exists for a mutation claim, omit it.
-        const hasMutationTool = block.toolCalls.some(tc => 
-          ["createReminder", "updateReminder", "deleteReminder", "completeReminder"].includes(tc.function?.name)
-        );
-        if (hasMutationTool && (!summary || !summary.hasMutation)) continue;
-      } else if (summary && summary.hasFailedMutation) {
-        // Fallback: If no tool association but we know mutations failed, omit generic action claims.
+    for (const s of sentences) {
+      const isAction = claimsMutationWithoutTag(s) || FALSE_MUTATION_CLAIM_REGEX.test(s);
+      if (!isAction) {
+        keptSentences.push(s.trim());
         continue;
+      }
+
+      // If it's an action claim, it MUST have an associated successful tool call that matches the operation
+      if (!block.toolCalls || block.toolCalls.length === 0) continue;
+
+      const isVerified = block.toolCalls.some((tc) => {
+        const key = (tc as any)._executionKey;
+        const res = toolResultsMap.get(key);
+        if (!res || !res.success) return false;
+
+        const rx = MUTATION_TOOLS_REGEX[res.name];
+        return rx ? rx.test(s) : true; // Fallback to true if unknown mutation tool but succeeded
+      });
+
+      if (isVerified) {
+        keptSentences.push(s.trim());
       }
     }
 
-    result.push(trimmed);
+    const filteredText = keptSentences.filter(Boolean).join(" ");
+    if (filteredText) {
+      result.push(filteredText);
+    }
   }
 
   return result;

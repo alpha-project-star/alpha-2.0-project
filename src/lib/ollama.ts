@@ -15,110 +15,24 @@ function splitDataUrl(u: string): { data: string } | null {
 
 /** Convert Alpha chat messages into Ollama's /api/chat shape with tool integrity. */
 function toOllamaMessages(history: ChatMessage[]) {
-  // 1. History Integrity: Ensure assistant tool-calls and tool-results are always paired, unique, and sequential.
-  const allTurns = history.filter((m) => m.role !== "system");
-  const validMessages: ChatMessage[] = [];
-  const pendingCalls = new Set<string>();
-  const seenCallIds = new Set<string>();
-  const seenResultIds = new Set<string>();
-
-  for (const m of allTurns) {
-    if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-      // Reject duplicate call IDs and ensure sequence
-      const newCalls = m.tool_calls.filter((tc: any) => tc.id && !seenCallIds.has(tc.id));
-      if (newCalls.length > 0) {
-        validMessages.push({ ...m, tool_calls: newCalls });
-        newCalls.forEach((tc: any) => {
-          pendingCalls.add(tc.id);
-          seenCallIds.add(tc.id);
-        });
-      }
-    } else if (m.role === "tool") {
-      // Tool result MUST match a pending call ID and cannot be a duplicate result
-      if (m.tool_call_id && pendingCalls.has(m.tool_call_id) && !seenResultIds.has(m.tool_call_id)) {
-        validMessages.push(m);
-        pendingCalls.delete(m.tool_call_id);
-        seenResultIds.add(m.tool_call_id);
-      }
-    } else {
-      validMessages.push(m);
-    }
-  }
-
-  // Final check: Remove any assistant calls whose results were lost/orphaned,
-  // AND remove every tool result belonging to calls in those removed messages.
-  const removedCallIds = new Set<string>();
-  const filteredTurns = validMessages.filter((m) => {
-    if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-      const allSucceeded = m.tool_calls.every((tc: any) => seenResultIds.has(tc.id));
-      if (!allSucceeded) {
-        m.tool_calls.forEach((tc: any) => removedCallIds.add(tc.id));
-        return false;
-      }
-    }
-    return true;
-  });
-
-  let resolvedTurns = filteredTurns.filter((m) => {
-    if (m.role === "tool" && m.tool_call_id && removedCallIds.has(m.tool_call_id)) {
-      return false;
-    }
-    return true;
-  });
-
-  // 2. Group-Aware Truncation: Never split a tool-call from its results at the boundary.
+  // 1. History Integrity & Truncation
   const limit = 40;
-  if (resolvedTurns.length > limit) {
-    let startIdx = resolvedTurns.length - limit;
-    while (startIdx > 0) {
-      const m = resolvedTurns[startIdx];
-      const prev = resolvedTurns[startIdx - 1];
-      // Do not start with a tool result or split a call from its results
-      if (m.role === "tool" || (prev.role === "model" && prev.tool_calls && prev.tool_calls.length > 0)) {
-        startIdx--;
-        continue;
-      }
-      break;
+  const turns = applyHistoryIntegrity(history, limit);
+
+  return turns.map((m) => {
+    const role = m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant";
+    const msg: any = { role, content: m.text || "" };
+    if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+    if (m.tool_calls) msg.tool_calls = m.tool_calls;
+    if (m.images?.length) {
+      const imgs = m.images
+        .map(splitDataUrl)
+        .filter(Boolean)
+        .map((x) => (x as any).data);
+      if (imgs.length) msg.images = imgs;
     }
-    resolvedTurns = resolvedTurns.slice(startIdx);
-
-    // After truncation, validate the retained history again.
-    // Every retained tool call must have a result, and every result must have a call.
-    const retainedCallIds = new Set<string>();
-    const retainedResultIds = new Set<string>();
-    resolvedTurns.forEach(m => {
-      if (m.role === "model" && m.tool_calls) {
-        m.tool_calls.forEach((tc: any) => retainedCallIds.add(tc.id));
-      } else if (m.role === "tool" && m.tool_call_id) {
-        retainedResultIds.add(m.tool_call_id);
-      }
-    });
-
-    resolvedTurns = resolvedTurns.filter(m => {
-      if (m.role === "model" && m.tool_calls) {
-        return m.tool_calls.every((tc: any) => retainedResultIds.has(tc.id));
-      }
-      if (m.role === "tool" && m.tool_call_id) {
-        return retainedCallIds.has(m.tool_call_id);
-      }
-      return true;
-    });
-  }
-
-  return resolvedTurns.map((m) => {
-      const role = m.role === "user" ? "user" : m.role === "tool" ? "tool" : "assistant";
-      const msg: any = { role, content: m.text || "" };
-      if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
-      if (m.tool_calls) msg.tool_calls = m.tool_calls;
-      if (m.images?.length) {
-        const imgs = m.images
-          .map(splitDataUrl)
-          .filter(Boolean)
-          .map((x) => (x as any).data);
-        if (imgs.length) msg.images = imgs;
-      }
-      return msg;
-    });
+    return msg;
+  });
 }
 
 /** GET /api/tags — list installed local models. Used by Settings to show what's available. */

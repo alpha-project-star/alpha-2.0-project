@@ -770,9 +770,20 @@ export const alphaStore = {
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
 
-      // Assign a strictly monotonic sequence number to preserve append order
+      // Ensure newly recorded messages receive unique, monotonically increasing sequence numbers
       const seqKey = "alpha.nextSeq.v1";
       let nextSeq = Number(localStorage.getItem(seqKey) || "0");
+      
+      // Safety: ensure nextSeq is at least as high as any existing message in state
+      const currentMax = Math.max(
+        ...state.chat.map(m => m.seq || 0),
+        ...(state.internalHistory || []).map(m => m.seq || 0),
+        0
+      );
+      if (nextSeq <= currentMax) {
+        nextSeq = currentMax + 1;
+      }
+
       msg.seq = nextSeq++;
       localStorage.setItem(seqKey, String(nextSeq));
 
@@ -920,9 +931,26 @@ export const alphaStore = {
     }
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
+
+      // Maintain sequence integrity: handle missing sequences and advance counter
+      const seqKey = "alpha.nextSeq.v1";
+      let nextSeq = Number(localStorage.getItem(seqKey) || "0");
+      
+      const processedMsgs = msgs.map((m, idx) => {
+        if (m.seq !== undefined && typeof m.seq === "number") {
+          return m;
+        }
+        // Assign deterministic sequence for legacy/missing metadata in recorded order
+        return { ...m, seq: nextSeq + idx };
+      });
+
+      const maxSeq = Math.max(...processedMsgs.map(m => m.seq || 0), nextSeq - 1);
+      nextSeq = maxSeq + 1;
+      localStorage.setItem(seqKey, String(nextSeq));
+
       const visible: ChatMessage[] = [];
       const internal: ChatMessage[] = [];
-      for (const m of msgs) {
+      for (const m of processedMsgs) {
         const isIntermediate = m.intermediate || m.role === "tool" || (m.role === "model" && !m.text && m.tool_calls?.length);
         if (isIntermediate) {
           internal.push(m);
@@ -935,6 +963,8 @@ export const alphaStore = {
       state = { ...state, chat: nextChat };
 
       if (internal.length > 0) {
+        // NOTE: setChat for internal history currently appends in this implementation.
+        // We preserve this behavior but ensure sequences are correct.
         const existingInternal = state.internalHistory || [];
         const nextInternal = [...existingInternal, ...internal].slice(-400);
         writeLS(K.internalHistory, nextInternal);
