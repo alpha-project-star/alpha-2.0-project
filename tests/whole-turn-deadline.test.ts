@@ -646,15 +646,36 @@ describe("Alpha Pass C3-R2 — Complete Whole-Turn Deadline Invariants", () => {
     expect(listMock).toHaveBeenCalled();
   });
 
-  it("20. WholeTurnTimeoutError and AbortError propagate out of nested catches instead of being swallowed", async () => {
+  it("21. Mutation execution timing out during reconciliation correctly handles reconciliation and avoids duplicate execution", async () => {
+    let callCount = 0;
+    fetchSpy.mockResolvedValue(new Response(JSON.stringify({
+      choices: [{ message: { content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "createReminder", arguments: '{"title":"T"}' } }] } }]
+    }), { status: 200 }));
+    
+    const listMock = vi.fn().mockResolvedValue({ success: true, data: [] });
+    const createMock = vi.fn().mockImplementation(() => {
+      callCount++;
+      return new Promise((resolve, reject) => {
+        // Stall then timeout
+        setTimeout(() => reject(new WholeTurnTimeoutError("Stalled")), 200);
+      });
+    });
+
     vi.spyOn(toolRegistryModule, "getReminderTool").mockReturnValue({
-      listReminders: vi.fn().mockImplementation(() => {
-        throw new WholeTurnTimeoutError("Nested deadline expired.");
-      }),
+      listReminders: listMock,
+      createReminder: createMock,
     } as any);
 
-    const promise = sendChat([{ id: "msg_nested", role: "user", text: "nested error test", ts: Date.now() }], { timeoutMs: 1000 });
+    const promise = sendChat([{ id: "m1", role: "user", text: "create reminder", ts: Date.now() }], { timeoutMs: 100 });
     promise.catch(() => {});
+    
+    await vi.advanceTimersByTimeAsync(250);
     await expect(promise).rejects.toThrow(WholeTurnTimeoutError);
+
+    // Verify tool was only called once despite the timeout/reconciliation attempt
+    expect(callCount).toBe(1);
+    expect(listMock).toHaveBeenCalled();
   });
+
 });
+
