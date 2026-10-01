@@ -932,7 +932,7 @@ export const alphaStore = {
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
 
-      // Maintain sequence integrity: handle missing sequences and advance counter
+      // Maintain sequence integrity: handle missing/colliding sequences and advance counter
       const seqKey = "alpha.nextSeq.v1";
       const currentMax = Math.max(
         ...state.chat.map(m => m.seq || 0),
@@ -941,12 +941,23 @@ export const alphaStore = {
       );
       let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), currentMax + 1);
 
+      // Collect all already-used sequences from existing messages and incoming messages
+      const usedSeqs = new Set<number>();
+      for (const m of state.chat) if (m.seq != null) usedSeqs.add(m.seq);
+      for (const m of (state.internalHistory || [])) if (m.seq != null) usedSeqs.add(m.seq);
+
       const processedMsgs = msgs.map((m) => {
-        if (m.seq !== undefined && typeof m.seq === "number") {
+        if (m.seq != null && !usedSeqs.has(m.seq)) {
+          usedSeqs.add(m.seq);
           return m;
         }
-        // Assign deterministic sequence for legacy/missing metadata in order
-        return { ...m, seq: nextSeq++ };
+        // Colliding or missing sequence - needs a fresh, deterministic allocation
+        let newSeq = nextSeq++;
+        while (usedSeqs.has(newSeq)) {
+          newSeq = nextSeq++;
+        }
+        usedSeqs.add(newSeq);
+        return { ...m, seq: newSeq };
       });
 
       localStorage.setItem(seqKey, String(nextSeq));
@@ -966,8 +977,6 @@ export const alphaStore = {
       state = { ...state, chat: nextChat };
 
       if (internal.length > 0) {
-        // NOTE: setChat for internal history currently appends in this implementation.
-        // We preserve this behavior but ensure sequences are correct.
         const existingInternal = state.internalHistory || [];
         const nextInternal = [...existingInternal, ...internal].slice(-400);
         writeLS(K.internalHistory, nextInternal);

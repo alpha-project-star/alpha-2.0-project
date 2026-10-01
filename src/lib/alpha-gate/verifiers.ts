@@ -73,22 +73,22 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
 const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
-// Mapping of tool names to keywords indicative of their action
-const TOOL_ACTION_KEYWORDS: Record<string, string[]> = {
-  createReminder: ["create", "add", "save", "set", "schedule"],
-  updateReminder: ["update", "change", "edit"],
-  deleteReminder: ["delete", "remove", "cancel", "clear"],
-  completeReminder: ["complete", "done", "mark", "finish"],
-  addNote: ["save", "add", "create"],
-  updateNote: ["update", "change"],
-  deleteNote: ["delete", "remove"],
-  addMemory: ["save", "add", "remember"],
-  updateMemory: ["update", "change"],
-  deleteMemory: ["delete", "remove"],
-  addBill: ["save", "add"],
-  updateBill: ["update", "change"],
-  deleteBill: ["delete", "remove"],
-  markBillPaid: ["paid", "pay"],
+// Mapping of tool names to regex for bounded action validation
+const TOOL_ACTION_VALIDATORS: Record<string, RegExp> = {
+  createReminder: /\b(?:create|add|save|set|schedule)\b/i,
+  updateReminder: /\b(?:update|change|edit)\b/i,
+  deleteReminder: /\b(?:delete|remove|cancel|clear)\b/i,
+  completeReminder: /\b(?:complete|done|mark|finish)\b/i,
+  addNote: /\b(?:save|add|create)\b/i,
+  updateNote: /\b(?:update|change)\b/i,
+  deleteNote: /\b(?:delete|remove)\b/i,
+  addMemory: /\b(?:save|add|remember)\b/i,
+  updateMemory: /\b(?:update|change)\b/i,
+  deleteMemory: /\b(?:delete|remove)\b/i,
+  addBill: /\b(?:save|add)\b/i,
+  updateBill: /\b(?:update|change)\b/i,
+  deleteBill: /\b(?:delete|remove)\b/i,
+  markBillPaid: /\b(?:paid|pay)\b/i,
 };
 
 /**
@@ -105,12 +105,14 @@ export function reconcileDeferredProse(
   const result: string[] = [];
   const finalLower = (finalAnswer || "").toLowerCase();
 
-  // Create a map of tool call results for efficient lookup
-  const toolResultsMap = new Map<string, { success: boolean; name: string }>();
+  // Create a map of tool call results for efficient lookup, handling potential duplicates as ambiguous
+  const toolResultsMap = new Map<string, Array<{ success: boolean; name: string }>>();
   if (summary?.results) {
     for (const r of summary.results) {
       if (r.executionKey) {
-        toolResultsMap.set(r.executionKey, { success: r.success, name: r.name });
+        const existing = toolResultsMap.get(r.executionKey) || [];
+        existing.push({ success: r.success, name: r.name });
+        toolResultsMap.set(r.executionKey, existing);
       }
     }
   }
@@ -146,14 +148,17 @@ export function reconcileDeferredProse(
       // If it's an action claim, it MUST have associated successful tool calls for every operation described.
       if (!block.toolCalls || block.toolCalls.length === 0) continue;
 
-      // Ensure every tool call in the block succeeded, AND the claim matches the operation name
+      // Ensure every tool call in the block succeeded, AND the claim matches the operation name exactly
       const isVerified = block.toolCalls.every((tc) => {
         const key = (tc as any)._executionKey;
-        const res = toolResultsMap.get(key);
-        if (!res || !res.success) return false;
+        const results = toolResultsMap.get(key);
+        
+        // Unambiguous, successful result required
+        if (!results || results.length !== 1 || !results[0].success) return false;
 
-        const keywords = TOOL_ACTION_KEYWORDS[res.name] || [];
-        return keywords.some(kw => s.toLowerCase().includes(kw));
+        const res = results[0];
+        const rx = TOOL_ACTION_VALIDATORS[res.name];
+        return rx ? rx.test(s) : false; // Fail closed for unknown tools
       });
 
       if (isVerified) {
