@@ -942,27 +942,28 @@ export const alphaStore = {
       
       let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), ...Array.from(usedSeqs), 0) + 1;
 
-      const processedMsgs: ChatMessage[] = [];
-      const needsAllocation: ChatMessage[] = [];
+      const processedMsgs: ChatMessage[] = new Array(msgs.length);
+      const toAllocate: Array<{ msg: ChatMessage; index: number }> = [];
 
-      // First pass: Reserve valid incoming unique sequences
-      for (const m of msgs) {
+      // First pass: Reserve valid incoming unique sequences, preserving index
+      for (let i = 0; i < msgs.length; i++) {
+        const m = msgs[i];
         if (m.seq != null && !usedSeqs.has(m.seq)) {
           usedSeqs.add(m.seq);
-          processedMsgs.push(m);
+          processedMsgs[i] = m;
         } else {
-          needsAllocation.push(m);
+          toAllocate.push({ msg: m, index: i });
         }
       }
 
       // Second pass: Allocate fresh, deterministic sequences
-      for (const m of needsAllocation) {
+      for (const { msg, index } of toAllocate) {
         let newSeq = nextSeq++;
         while (usedSeqs.has(newSeq)) {
           newSeq = nextSeq++;
         }
         usedSeqs.add(newSeq);
-        processedMsgs.push({ ...m, seq: newSeq });
+        processedMsgs[index] = { ...msg, seq: newSeq };
       }
 
       localStorage.setItem(seqKey, String(nextSeq));

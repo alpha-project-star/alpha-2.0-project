@@ -135,6 +135,7 @@ export function reconcileDeferredProse(
     }
 
     // 3. Sentence-level validation against specific tool outcomes
+    // Split only if punctuation is followed by whitespace and then a capital letter (start of new sentence)
     const sentences = trimmed.split(/(?<=[.!?])\s+(?=[A-Z])/);
     const keptSentences: string[] = [];
 
@@ -148,18 +149,22 @@ export function reconcileDeferredProse(
       // If it's an action claim, it MUST have associated successful tool calls for every operation described.
       if (!block.toolCalls || block.toolCalls.length === 0) continue;
 
-      // Ensure every tool call in the block succeeded, AND the claim matches the operation name exactly
-      const isVerified = block.toolCalls.every((tc) => {
+      // Ensure all tool calls in the block succeeded
+      const allSucceeded = block.toolCalls.every((tc) => {
         const key = (tc as any)._executionKey;
         const results = toolResultsMap.get(key);
-        
-        // Unambiguous, successful result required
-        if (!results || results.length !== 1 || !results[0].success) return false;
-
-        const res = results[0];
-        const rx = TOOL_ACTION_VALIDATORS[res.name];
-        return rx ? rx.test(s) : false; // Fail closed for unknown tools
+        return results && results.length === 1 && results[0].success;
       });
+      
+      // Ensure at least one call matches the claim's operation
+      const matchesClaim = block.toolCalls.some((tc) => {
+        const key = (tc as any)._executionKey;
+        const res = toolResultsMap.get(key)![0];
+        const rx = TOOL_ACTION_VALIDATORS[res.name];
+        return rx ? rx.test(s) : false;
+      });
+
+      const isVerified = allSucceeded && matchesClaim;
 
       if (isVerified) {
         keptSentences.push(s.trim());

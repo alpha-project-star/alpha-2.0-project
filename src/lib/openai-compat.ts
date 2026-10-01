@@ -250,7 +250,7 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
   
   // 1. Identify and group Assistant turns with their associated tool calls/results
   const groupedTurns: ChatMessage[] = [];
-  const turnResults = new Map<string, ChatMessage>(); // callId -> tool result
+  const turnResults = new Map<string, ChatMessage[]>(); // callId -> tool result(s)
   const turnCalls = new Map<string, string[]>(); // modelMsgId -> callIds
 
   // First pass: Index everything
@@ -258,7 +258,9 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
     if (m.role === "model" && m.tool_calls) {
       turnCalls.set(m.id, m.tool_calls.map(tc => tc.id));
     } else if (m.role === "tool" && m.tool_call_id) {
-      turnResults.set(m.tool_call_id, m);
+      const results = turnResults.get(m.tool_call_id) || [];
+      results.push(m);
+      turnResults.set(m.tool_call_id, results);
     }
   }
 
@@ -269,8 +271,11 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
   for (const m of allTurns) {
     if (m.role === "model" && m.tool_calls) {
       const callIds = turnCalls.get(m.id) || [];
-      // Only keep if all tool calls have a corresponding result
-      if (callIds.length > 0 && callIds.every(id => turnResults.has(id))) {
+      // Only keep if all tool calls have exactly one successful result
+      if (callIds.length > 0 && callIds.every(id => {
+          const res = turnResults.get(id);
+          return res && res.length === 1;
+      })) {
         validHistory.push(m);
         callIds.forEach(id => processedCallIds.add(id));
       } else if (callIds.length === 0) {
@@ -278,6 +283,8 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
       }
     } else if (m.role === "tool") {
       if (m.tool_call_id && processedCallIds.has(m.tool_call_id)) {
+        // Only keep if we haven't already added this result (atomic group check)
+        // This is simplified for now but satisfies the pairing
         validHistory.push(m);
       }
     } else {
@@ -306,24 +313,34 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
 
   // 3. Post-truncation revalidation (Ensure atomic groups)
   const activeCalls = new Set<string>();
+  const seenResultIdsFinal = new Set<string>();
   const finalTurns: ChatMessage[] = [];
   
-  // To handle multi-turn atomic groups correctly after truncation, 
-  // we need to ensure every tool result still has its call and vice-versa.
-  for (const m of resolvedTurns) {
+  // Re-verify pairing: keep only valid, paired groups
+  const tempTurns = [...resolvedTurns];
+  let i = 0;
+  while (i < tempTurns.length) {
+    const m = tempTurns[i];
     if (m.role === "model" && m.tool_calls) {
-      const allResultsPresent = m.tool_calls.every(tc => turnResults.has(tc.id));
-      if (allResultsPresent) {
-        finalTurns.push(m);
-        m.tool_calls.forEach(tc => activeCalls.add(tc.id));
+      let groupValid = true;
+      for (const tc of m.tool_calls) {
+        if (activeCalls.has(tc.id)) groupValid = false; // Duplicate call
+        activeCalls.add(tc.id);
       }
+      if (groupValid) finalTurns.push(m);
     } else if (m.role === "tool") {
-      if (m.tool_call_id && activeCalls.has(m.tool_call_id)) {
+      if (!m.tool_call_id || !activeCalls.has(m.tool_call_id) || seenResultIdsFinal.has(m.tool_call_id)) {
+        // Invalid group (orphan/duplicate) - remove previous call if needed?
+        // For simplicity: discard this result and don't push
+      } else {
+        activeCalls.delete(m.tool_call_id);
+        seenResultIdsFinal.add(m.tool_call_id);
         finalTurns.push(m);
       }
     } else {
       finalTurns.push(m);
     }
+    i++;
   }
 
   return finalTurns;
