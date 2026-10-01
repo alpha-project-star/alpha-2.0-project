@@ -934,23 +934,31 @@ export const alphaStore = {
 
       // Maintain sequence integrity: handle missing/colliding sequences and advance counter
       const seqKey = "alpha.nextSeq.v1";
-      const currentMax = Math.max(
-        ...state.chat.map(m => m.seq || 0),
-        ...(state.internalHistory || []).map(m => m.seq || 0),
-        0
-      );
-      let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), currentMax + 1);
-
-      // Collect all already-used sequences from existing messages and incoming messages
+      
+      // Collect all already-used sequences from existing messages
       const usedSeqs = new Set<number>();
       for (const m of state.chat) if (m.seq != null) usedSeqs.add(m.seq);
       for (const m of (state.internalHistory || [])) if (m.seq != null) usedSeqs.add(m.seq);
-
-      const processedMsgs = msgs.map((m) => {
+      
+      // Reserve incoming valid, unique sequences first
+      for (const m of msgs) {
         if (m.seq != null && !usedSeqs.has(m.seq)) {
           usedSeqs.add(m.seq);
-          return m;
         }
+      }
+      
+      let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), ...Array.from(usedSeqs), 0) + 1;
+
+      const processedMsgs = msgs.map((m) => {
+        if (m.seq != null && !usedSeqs.has(m.seq)) { // Should not happen with reservation pass
+           usedSeqs.add(m.seq);
+           return m;
+        }
+        if (m.seq != null && usedSeqs.has(m.seq)) {
+           // Sequence already reserved or taken
+           return m; 
+        }
+
         // Colliding or missing sequence - needs a fresh, deterministic allocation
         let newSeq = nextSeq++;
         while (usedSeqs.has(newSeq)) {
