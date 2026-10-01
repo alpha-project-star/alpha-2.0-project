@@ -135,7 +135,7 @@ export function reconcileDeferredProse(
     }
 
     // 3. Sentence-level validation against specific tool outcomes
-    const sentences = trimmed.split(/(?<=[.!?])\s+/);
+    const sentences = trimmed.split(/(?<=[.!?])\s+(?=[A-Z])/);
     const keptSentences: string[] = [];
 
     for (const s of sentences) {

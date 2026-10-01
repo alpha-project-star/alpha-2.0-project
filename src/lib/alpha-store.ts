@@ -942,21 +942,28 @@ export const alphaStore = {
       
       let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), ...Array.from(usedSeqs), 0) + 1;
 
-      const processedMsgs = msgs.map((m) => {
-        // If seq is valid and not yet used in current state or this batch, preserve it
-        if (m.seq != null && !usedSeqs.has(m.seq)) {
-           usedSeqs.add(m.seq);
-           return m;
-        }
+      const processedMsgs: ChatMessage[] = [];
+      const needsAllocation: ChatMessage[] = [];
 
-        // Duplicate or collision - needs a fresh, deterministic allocation
+      // First pass: Reserve valid incoming unique sequences
+      for (const m of msgs) {
+        if (m.seq != null && !usedSeqs.has(m.seq)) {
+          usedSeqs.add(m.seq);
+          processedMsgs.push(m);
+        } else {
+          needsAllocation.push(m);
+        }
+      }
+
+      // Second pass: Allocate fresh, deterministic sequences
+      for (const m of needsAllocation) {
         let newSeq = nextSeq++;
         while (usedSeqs.has(newSeq)) {
           newSeq = nextSeq++;
         }
         usedSeqs.add(newSeq);
-        return { ...m, seq: newSeq };
-      });
+        processedMsgs.push({ ...m, seq: newSeq });
+      }
 
       localStorage.setItem(seqKey, String(nextSeq));
 
