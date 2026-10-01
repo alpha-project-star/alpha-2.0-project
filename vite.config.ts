@@ -88,6 +88,7 @@ export default defineConfig({
     !isTest &&
       tanstackStart({
         server: { entry: "server" },
+        client: { entry: "./src/client.tsx" },
       }),
     !isTest &&
       nitro({
