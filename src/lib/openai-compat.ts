@@ -317,26 +317,26 @@ export function applyHistoryIntegrity(history: ChatMessage[], limit: number): Ch
     resolvedTurns = resolvedTurns.slice(startIdx);
   }
 
-  // 3. After Truncation Re-validation: Require strict pairing in the final window
-  const retainedCallIds = new Set<string>();
-  const retainedResultIds = new Set<string>();
-  resolvedTurns.forEach((m) => {
-    if (m.role === "model" && m.tool_calls) {
-      m.tool_calls.forEach((tc: any) => retainedCallIds.add(tc.id));
-    } else if (m.role === "tool" && m.tool_call_id) {
-      retainedResultIds.add(m.tool_call_id);
-    }
-  });
+  // 3. After Truncation Re-validation: Require strict 1:1 pairing in the final window
+  const activeCalls = new Set<string>();
+  const seenResultIdsFinal = new Set<string>();
 
-  return resolvedTurns.filter((m) => {
-    if (m.role === "model" && m.tool_calls && m.tool_calls.length > 0) {
-      return m.tool_calls.every((tc: any) => retainedResultIds.has(tc.id));
+  for (const m of resolvedTurns) {
+    if (m.role === "model" && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        if (activeCalls.has(tc.id)) return false; // Duplicate call ID
+        activeCalls.add(tc.id);
+      }
+    } else if (m.role === "tool") {
+      if (!m.tool_call_id || !activeCalls.has(m.tool_call_id) || seenResultIdsFinal.has(m.tool_call_id)) {
+        return false; // Result before call, invalid, or duplicate
+      }
+      activeCalls.delete(m.tool_call_id);
+      seenResultIdsFinal.add(m.tool_call_id);
     }
-    if (m.role === "tool") {
-      return m.tool_call_id && retainedCallIds.has(m.tool_call_id);
-    }
-    return true;
-  });
+  }
+
+  return activeCalls.size === 0 ? resolvedTurns : [];
 }
 
 /**

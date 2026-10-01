@@ -940,26 +940,16 @@ export const alphaStore = {
       for (const m of state.chat) if (m.seq != null) usedSeqs.add(m.seq);
       for (const m of (state.internalHistory || [])) if (m.seq != null) usedSeqs.add(m.seq);
       
-      // Reserve incoming valid, unique sequences first
-      for (const m of msgs) {
-        if (m.seq != null && !usedSeqs.has(m.seq)) {
-          usedSeqs.add(m.seq);
-        }
-      }
-      
       let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), ...Array.from(usedSeqs), 0) + 1;
 
       const processedMsgs = msgs.map((m) => {
-        if (m.seq != null && !usedSeqs.has(m.seq)) { // Should not happen with reservation pass
+        // If seq is valid and not yet used in current state or this batch, preserve it
+        if (m.seq != null && !usedSeqs.has(m.seq)) {
            usedSeqs.add(m.seq);
            return m;
         }
-        if (m.seq != null && usedSeqs.has(m.seq)) {
-           // Sequence already reserved or taken
-           return m; 
-        }
 
-        // Colliding or missing sequence - needs a fresh, deterministic allocation
+        // Duplicate or collision - needs a fresh, deterministic allocation
         let newSeq = nextSeq++;
         while (usedSeqs.has(newSeq)) {
           newSeq = nextSeq++;
