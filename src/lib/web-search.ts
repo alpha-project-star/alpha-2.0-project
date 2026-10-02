@@ -199,7 +199,8 @@ export const SEARCH_OFFER_HINT =
 export const SEARCH_FORBIDDEN_HINT = `SEARCH PERMISSION: no search ran this turn and none was requested. Answer from your own knowledge, flag anything uncertain, and do not imply you looked anything up.`;
 
 export const SEARCH_CAPABILITY_HINT =
-  `CAPABILITY CONFIRMATION: You DO have a real, live, accurate web search tool integrated into your engine (using live DuckDuckGo, web scraping via Jina reader, and Wikipedia retrieval). ` +
-  `When asked if you have web search ability or a web searching tool, confirm clearly and enthusiastically that YES, you have a real live web search tool wired into your system. ` +
-  `Explain how it works: whenever the user asks you to look something up, search the web, or asks about current news, weather, prices, or live facts, your engine fetches real-time web results with direct citation links. Invite them to test it with any query.`;
+  `CAPABILITY CONFIRMATION: You DO have a real, live web search capability integrated into your engine (orchestrated via live DuckDuckGo, web scraping via Jina reader, and Wikipedia retrieval). ` +
+  `Web search is automatically handled by Alpha's orchestrator before generating your response (not via a model-callable function tool). ` +
+  `When asked if you have web search ability, confirm clearly and enthusiastically that YES, Alpha has an integrated real-time web search capability wired into the system. ` +
+  `Explain how it works: whenever the user asks you to look something up online, search the web, or asks about current facts, your engine fetches real-time web results with direct citation links. Invite them to test it with any query.`;
 

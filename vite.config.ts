@@ -1,3 +1,5 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
@@ -5,7 +7,28 @@ import tsconfigPaths from "vite-tsconfig-paths";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import { nitro } from "nitro/vite";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const isTest = Boolean(process.env.VITEST);
+
+export function asyncHooksPolyfillPlugin() {
+  const stubPath = path.resolve(__dirname, "./src/lib/async-hooks-stub.ts");
+  const routerPath = path.resolve(__dirname, "./src/router.tsx");
+  return {
+    name: "async-hooks-browser-polyfill",
+    enforce: "pre" as const,
+    resolveId(source: string, _importer?: string, options?: { ssr?: boolean }) {
+      if (source === "#tanstack-router-entry") {
+        return routerPath;
+      }
+      if (!options?.ssr && (source === "node:async_hooks" || source === "async_hooks")) {
+        return stubPath;
+      }
+      return null;
+    },
+  };
+}
 
 export function serverBoundaryPlugin() {
   return {
@@ -69,7 +92,10 @@ const onwarn = (warning: any, warn: any) => {
 export default defineConfig({
   resolve: {
     alias: {
-      "@": "/src",
+      "@": path.resolve(__dirname, "./src"),
+      "#tanstack-router-entry": path.resolve(__dirname, "./src/router.tsx"),
+      "node:async_hooks": path.resolve(__dirname, "./src/lib/async-hooks-stub.ts"),
+      async_hooks: path.resolve(__dirname, "./src/lib/async-hooks-stub.ts"),
     },
     dedupe: [
       "react",
@@ -81,12 +107,14 @@ export default defineConfig({
     ],
   },
   plugins: [
+    asyncHooksPolyfillPlugin(),
     removeUseClientDirectivePlugin(),
     serverBoundaryPlugin(),
     tailwindcss(),
     tsconfigPaths({ projects: ["./tsconfig.json"] }),
     !isTest &&
       tanstackStart({
+        autoCodeSplitting: false,
         server: { entry: "server" },
         client: { entry: "./src/client.tsx" },
       }),
@@ -136,6 +164,10 @@ export default defineConfig({
     port: 3000,
     strictPort: true,
     allowedHosts: true,
+    cors: true,
+    headers: {
+      "Access-Control-Allow-Origin": "*",
+    },
   },
 });
 

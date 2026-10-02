@@ -1,6 +1,15 @@
-import { hydrateRoot } from "react-dom/client";
-import { StartClient } from "@tanstack/react-start-client";
+import { hydrateRoot, createRoot } from "react-dom/client";
+import { RouterProvider } from "@tanstack/react-router";
 import { getRouter } from "./router";
 
 const router = getRouter();
-hydrateRoot(document, <StartClient router={router} />);
+
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  if (rootElement.hasChildNodes()) {
+    hydrateRoot(rootElement, <RouterProvider router={router} />);
+  } else {
+    createRoot(rootElement).render(<RouterProvider router={router} />);
+  }
+}
+

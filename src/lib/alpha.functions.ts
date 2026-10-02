@@ -422,9 +422,9 @@ You MUST adhere to these exact presentation rules. Your identity is constant acr
    - Use bullets ("- ") for unordered items.
    - Use numbers ("1.") ONLY for strict sequential steps.
    - NEVER nest lists more than one level deep.
-5. NO LEAKAGE:
+5. NO LEAKAGE & ORCHESTRATOR-MANAGED SEARCH:
    - NEVER output XML tags, tool-call syntax, reasoning headers, or internal monologues to the user.
-   - If a LIVE WEB SEARCH RESULTS block is present, use it for context but NEVER call a 'web_search' or 'search' tool yourself — those are handled by the orchestrator before you are called.
+   - WEB SEARCH IS ORCHESTRATOR-MANAGED: Web search is executed exclusively by Alpha's orchestrator before model generation. You do NOT have a callable 'web_search' or 'search' function tool; only call tools explicitly defined in your tool schema. When a LIVE WEB SEARCH RESULTS block is present, use those verified results as external evidence. Never attempt to invoke 'web_search' yourself.
 
 RESPONSE STRATEGY
 General order:
@@ -513,7 +513,7 @@ You are fully aware of your own toolkit inside this app:
 - /memories — long-term memory the user wants you to keep (topic, detail).
 - /image — image generation dashboard.
 - /settings — provider keys, model routing, voice prefs, Alpha data.
-- Live Web Search Context — Integrated real-time web search engine (DuckDuckGo + live web scrapers + Wikipedia). Your orchestrator automatically handles web search whenever needed. You have active web search context whenever online. When the user asks you to look something up online, search the web, check current facts, verify news, track prices/stocks/releases, or when real-time information is needed, your engine executes a real web search and feeds fresh results into your context under "LIVE WEB SEARCH RESULTS". If asked whether you have a web search ability or tool, confirm clearly and affirmatively that YES, you have a real live web search capability wired into your system and can search the web whenever asked. You are scrupulously honest: if you don't know something and haven't searched for it, say so and offer to search.
+- Live Web Search Context (Orchestrator-Managed) — Integrated real-time web search capability (DuckDuckGo + live web scrapers + Wikipedia). Your orchestrator automatically executes web search prior to model generation whenever needed and injects verified findings under "LIVE WEB SEARCH RESULTS". You do NOT have a callable 'web_search' tool function — the orchestrator handles all search execution before calling you. If asked whether you have a web search capability, confirm that YES, Alpha has an integrated real-time web search capability managed by its orchestrator. You are scrupulously honest: if you don't know something and haven't searched for it, say so and offer to search.
 - Weather Tool — Real-time weather and forecasts for any location via Open-Meteo.
 - Calculator (evaluateMath) — Secure sandbox for deterministic mathematical, scientific, and financial calculations.
 - Knowledge Lookup — Wikipedia and arXiv research paper search.
@@ -733,7 +733,7 @@ export async function fetchLiveWebContext(
     if (deadlineMs !== undefined && deadlineMs - getMonotonicTimeMs() <= 0) {
       throw new WholeTurnTimeoutError("Whole-turn deadline expired during search.");
     }
-    return `LIVE WEB SEARCH RESULTS: search timed out for "${query}". Proceed using existing knowledge.`;
+    return `LIVE WEB SEARCH RESULTS: the live search for "${query}" timed out at ${new Date().toLocaleString()} and could not be completed. Inform the user plainly that the live search timed out; do not fabricate information, do not claim the search succeeded, and do not output a Sources section.`;
   }
 
   const sources: CanonicalWebSource[] =
@@ -917,6 +917,18 @@ export async function executeTool(call: any, context: ToolContext, signal?: Abor
           res = { success: false, error: "Invalid music action" };
         }
         break;
+      }
+      case 'web_search':
+      case 'search': {
+        activity.set("calling_tool");
+        return {
+          success: false,
+          operation: name,
+          error: {
+            code: 'ORCHESTRATOR_MANAGED',
+            message: "Web search is managed automatically by Alpha's orchestrator before generation. Use the provided LIVE WEB SEARCH RESULTS context or answer using available knowledge."
+          }
+        };
       }
       default:
         activity.set("calling_tool");
@@ -1918,7 +1930,7 @@ export async function runChat(
       try {
         finalResponse = await callProvider(prov, model, currentHistory, sys, {
           allowImages: hasImages,
-          maxTokens: Math.min(maxTokens, 300),
+          maxTokens,
           historyTurns,
           tools: [], // Force text completion, no further tool loop
           signal,

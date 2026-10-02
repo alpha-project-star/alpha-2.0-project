@@ -771,8 +771,9 @@ export const alphaStore = {
       reloadState();
 
       // Ensure newly recorded messages receive unique, monotonically increasing sequence numbers
+      const storage = getStorage();
       const seqKey = "alpha.nextSeq.v1";
-      let nextSeq = Number(localStorage.getItem(seqKey) || "0");
+      let nextSeq = Number(storage?.getItem(seqKey) || "0");
       
       // Safety: ensure nextSeq is at least as high as any existing message in state
       const currentMax = Math.max(
@@ -785,7 +786,9 @@ export const alphaStore = {
       }
 
       msg.seq = nextSeq++;
-      localStorage.setItem(seqKey, String(nextSeq));
+      try {
+        storage?.setItem(seqKey, String(nextSeq));
+      } catch {}
 
       const isIntermediate = msg.intermediate || msg.role === "tool" || (msg.role === "model" && !msg.text && msg.tool_calls?.length);
       if (isIntermediate) {
@@ -894,9 +897,10 @@ export const alphaStore = {
         { id: "default", title: "Main Conversation", createdAt: Date.now(), updatedAt: Date.now() }
       ];
 
+      const storage = getStorage();
       try {
-        localStorage.removeItem(getScopedKey(`alpha.chat_session.${sessionId}.v1`));
-        localStorage.removeItem(getScopedKey(`alpha.internal_session.${sessionId}.v1`));
+        storage?.removeItem(getScopedKey(`alpha.chat_session.${sessionId}.v1`));
+        storage?.removeItem(getScopedKey(`alpha.internal_session.${sessionId}.v1`));
       } catch {}
 
       writeLS(K.sessions, remainingSessions);
@@ -949,7 +953,8 @@ export const alphaStore = {
         }
       }
 
-      let storedNextSeq = Number(localStorage.getItem(seqKey) || "0");
+      const storage = getStorage();
+      const storedNextSeq = Number(storage?.getItem(seqKey) || "0");
       let nextSeq = Math.max(storedNextSeq, maxSeqSeen + 1, 1);
 
       const processedMsgs: ChatMessage[] = new Array(msgs.length);
@@ -985,7 +990,9 @@ export const alphaStore = {
       }
 
       const finalNextSeq = Math.max(nextSeq, maxSeqSeen + 1, 1);
-      localStorage.setItem(seqKey, String(finalNextSeq));
+      try {
+        storage?.setItem(seqKey, String(finalNextSeq));
+      } catch {}
 
       const visible: ChatMessage[] = [];
       const internal: ChatMessage[] = [];
