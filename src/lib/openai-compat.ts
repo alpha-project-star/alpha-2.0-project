@@ -242,108 +242,126 @@ export function extractNormalizedResponse(
 }
 
 /**
+ * Rigorously validates conversation turn integrity for tool-calling models.
+ * Enforces:
+ * - Assistant tool-calls and tool-results are strictly contiguous and 1:1 paired.
+ * - Every retained tool result belongs to the immediately preceding assistant tool-call group.
+ * - Every tool call in an assistant message has exactly one corresponding result.
+ * - Tool-call IDs are non-empty, unique within the message, and globally unique across turns.
+ * - Duplicate results, duplicate calls, orphaned results, and unresolved calls are rejected.
+ * - Assistant messages with unmatched tool calls (including at the end of history) are removed.
+ * - Invalid groups are discarded without damaging unrelated valid messages.
+ * - Original chronological message order is strictly preserved.
+ */
+export function validateTurnIntegrity(messages: ChatMessage[]): ChatMessage[] {
+  if (!messages || messages.length === 0) return [];
+
+  const result: ChatMessage[] = [];
+  const globallySeenCallIds = new Set<string>();
+
+  let i = 0;
+  while (i < messages.length) {
+    const m = messages[i];
+
+    // Case 1: Assistant message with tool calls
+    if (
+      (m.role === "model" || (m as any).role === "assistant") &&
+      m.tool_calls &&
+      m.tool_calls.length > 0
+    ) {
+      const modelMsg = m;
+      const callIds: string[] = [];
+      let callIdsValid = true;
+
+      for (const tc of modelMsg.tool_calls) {
+        const id = tc?.id;
+        if (!id || typeof id !== "string" || id.trim().length === 0) {
+          callIdsValid = false;
+          break;
+        }
+        if (callIds.includes(id) || globallySeenCallIds.has(id)) {
+          callIdsValid = false;
+          break;
+        }
+        callIds.push(id);
+      }
+
+      // Collect contiguous tool result messages immediately following this model message
+      let j = i + 1;
+      const toolResultMsgs: ChatMessage[] = [];
+      const seenResultIds = new Set<string>();
+      let resultsValid = callIdsValid;
+
+      while (j < messages.length && messages[j].role === "tool") {
+        const toolMsg = messages[j];
+        const resId = toolMsg.tool_call_id;
+
+        if (!resId || typeof resId !== "string" || resId.trim().length === 0) {
+          resultsValid = false;
+        } else if (!callIds.includes(resId) || seenResultIds.has(resId)) {
+          resultsValid = false;
+        } else {
+          seenResultIds.add(resId);
+        }
+
+        toolResultMsgs.push(toolMsg);
+        j++;
+      }
+
+      // Exact 1:1 pairing check:
+      // Must be valid, and every callId must have received exactly one result
+      if (
+        resultsValid &&
+        seenResultIds.size === callIds.length &&
+        toolResultMsgs.length === callIds.length
+      ) {
+        result.push(modelMsg);
+        for (const tm of toolResultMsgs) {
+          result.push(tm);
+        }
+        for (const id of callIds) {
+          globallySeenCallIds.add(id);
+        }
+      }
+
+      i = j;
+    }
+    // Case 2: Orphaned tool result (not following a model tool-call message)
+    else if (m.role === "tool") {
+      i++;
+    }
+    // Case 3: Regular conversation message (user, system, text-only model/assistant)
+    else {
+      result.push(m);
+      i++;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Applies strict history integrity rules and group-aware truncation.
  * Enforces exact call/result pairing before and after truncation, selectively pruning invalid groups.
  */
 export function applyHistoryIntegrity(history: ChatMessage[], limit: number): ChatMessage[] {
   const allTurns = history.filter((m) => m.role !== "system");
-  
-  // 1. Identify and group Assistant turns with their associated tool calls/results
-  const groupedTurns: ChatMessage[] = [];
-  const turnResults = new Map<string, ChatMessage[]>(); // callId -> tool result(s)
-  const turnCalls = new Map<string, string[]>(); // modelMsgId -> callIds
 
-  // First pass: Index everything
-  for (const m of allTurns) {
-    if (m.role === "model" && m.tool_calls) {
-      turnCalls.set(m.id, m.tool_calls.map(tc => tc.id));
-    } else if (m.role === "tool" && m.tool_call_id) {
-      const results = turnResults.get(m.tool_call_id) || [];
-      results.push(m);
-      turnResults.set(m.tool_call_id, results);
-    }
-  }
+  // 1. Before Truncation Pass: Validate initial history integrity
+  const validTurns = validateTurnIntegrity(allTurns);
 
-  // Second pass: Validate integrity and build ordered history
-  const validHistory: ChatMessage[] = [];
-  const processedCallIds = new Set<string>();
-
-  for (const m of allTurns) {
-    if (m.role === "model" && m.tool_calls) {
-      const callIds = turnCalls.get(m.id) || [];
-      // Only keep if all tool calls have exactly one successful result
-      if (callIds.length > 0 && callIds.every(id => {
-          const res = turnResults.get(id);
-          return res && res.length === 1;
-      })) {
-        validHistory.push(m);
-        callIds.forEach(id => processedCallIds.add(id));
-      } else if (callIds.length === 0) {
-        validHistory.push(m);
-      }
-    } else if (m.role === "tool") {
-      if (m.tool_call_id && processedCallIds.has(m.tool_call_id)) {
-        // Only keep if we haven't already added this result (atomic group check)
-        // This is simplified for now but satisfies the pairing
-        validHistory.push(m);
-      }
-    } else {
-      validHistory.push(m);
-    }
-  }
-
-  // 2. Group-Aware Truncation
-  let resolvedTurns = validHistory;
+  // 2. Group-Aware Truncation: Never split a tool-call from its results at the boundary
+  let resolvedTurns = validTurns;
   if (resolvedTurns.length > limit) {
     let startIdx = resolvedTurns.length - limit;
-    while (startIdx > 0) {
-      const m = resolvedTurns[startIdx];
-      const prev = resolvedTurns[startIdx - 1];
-      if (
-        m.role === "tool" ||
-        (prev.role === "model" && prev.tool_calls && prev.tool_calls.length > 0)
-      ) {
-        startIdx--;
-        continue;
-      }
-      break;
+    while (startIdx > 0 && resolvedTurns[startIdx].role === "tool") {
+      startIdx--;
     }
     resolvedTurns = resolvedTurns.slice(startIdx);
   }
 
-  // 3. Post-truncation revalidation (Ensure atomic groups)
-  const activeCalls = new Set<string>();
-  const seenResultIdsFinal = new Set<string>();
-  const finalTurns: ChatMessage[] = [];
-  
-  // Re-verify pairing: keep only valid, paired groups
-  const tempTurns = [...resolvedTurns];
-  let i = 0;
-  while (i < tempTurns.length) {
-    const m = tempTurns[i];
-    if (m.role === "model" && m.tool_calls) {
-      let groupValid = true;
-      for (const tc of m.tool_calls) {
-        if (activeCalls.has(tc.id)) groupValid = false; // Duplicate call
-        activeCalls.add(tc.id);
-      }
-      if (groupValid) finalTurns.push(m);
-    } else if (m.role === "tool") {
-      if (!m.tool_call_id || !activeCalls.has(m.tool_call_id) || seenResultIdsFinal.has(m.tool_call_id)) {
-        // Invalid group (orphan/duplicate) - remove previous call if needed?
-        // For simplicity: discard this result and don't push
-      } else {
-        activeCalls.delete(m.tool_call_id);
-        seenResultIdsFinal.add(m.tool_call_id);
-        finalTurns.push(m);
-      }
-    } else {
-      finalTurns.push(m);
-    }
-    i++;
-  }
-
-  return finalTurns;
+  // 3. Post-truncation Revalidation: Run the exact same complete validator on the retained slice
+  return validateTurnIntegrity(resolvedTurns);
 }
 
 /**

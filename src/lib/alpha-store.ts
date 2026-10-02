@@ -932,15 +932,25 @@ export const alphaStore = {
     return withCrossContextLock("alpha_store_lock", () => {
       reloadState();
 
-      // Maintain sequence integrity: handle missing/colliding sequences and advance counter
+      // Maintain sequence integrity: allocate unique, monotonic sequence numbers,
+      // preserve legacy ordering for missing sequences, and advance the global counter.
       const seqKey = "alpha.nextSeq.v1";
-      
-      // Collect all already-used sequences from existing messages
+
+      // Any message currently in internalHistory whose ID is not in msgs persists.
+      // Its sequence number must be protected from collision.
+      const incomingIds = new Set(msgs.map((m) => m.id));
       const usedSeqs = new Set<number>();
-      for (const m of state.chat) if (m.seq != null) usedSeqs.add(m.seq);
-      for (const m of (state.internalHistory || [])) if (m.seq != null) usedSeqs.add(m.seq);
-      
-      let nextSeq = Math.max(Number(localStorage.getItem(seqKey) || "0"), ...Array.from(usedSeqs), 0) + 1;
+      let maxSeqSeen = 0;
+
+      for (const m of state.internalHistory || []) {
+        if (m.seq != null && !incomingIds.has(m.id)) {
+          usedSeqs.add(m.seq);
+          if (m.seq > maxSeqSeen) maxSeqSeen = m.seq;
+        }
+      }
+
+      let storedNextSeq = Number(localStorage.getItem(seqKey) || "0");
+      let nextSeq = Math.max(storedNextSeq, maxSeqSeen + 1, 1);
 
       const processedMsgs: ChatMessage[] = new Array(msgs.length);
       const toAllocate: Array<{ msg: ChatMessage; index: number }> = [];
@@ -948,25 +958,34 @@ export const alphaStore = {
       // First pass: Reserve valid incoming unique sequences, preserving index
       for (let i = 0; i < msgs.length; i++) {
         const m = msgs[i];
-        if (m.seq != null && !usedSeqs.has(m.seq)) {
+        if (
+          m.seq != null &&
+          typeof m.seq === "number" &&
+          !isNaN(m.seq) &&
+          m.seq >= 0 &&
+          !usedSeqs.has(m.seq)
+        ) {
           usedSeqs.add(m.seq);
+          if (m.seq > maxSeqSeen) maxSeqSeen = m.seq;
           processedMsgs[i] = m;
         } else {
           toAllocate.push({ msg: m, index: i });
         }
       }
 
-      // Second pass: Allocate fresh, deterministic sequences
+      // Second pass: Allocate fresh, deterministic sequences in original input order
       for (const { msg, index } of toAllocate) {
-        let newSeq = nextSeq++;
-        while (usedSeqs.has(newSeq)) {
-          newSeq = nextSeq++;
+        while (usedSeqs.has(nextSeq)) {
+          nextSeq++;
         }
-        usedSeqs.add(newSeq);
-        processedMsgs[index] = { ...msg, seq: newSeq };
+        const allocatedSeq = nextSeq++;
+        usedSeqs.add(allocatedSeq);
+        if (allocatedSeq > maxSeqSeen) maxSeqSeen = allocatedSeq;
+        processedMsgs[index] = { ...msg, seq: allocatedSeq };
       }
 
-      localStorage.setItem(seqKey, String(nextSeq));
+      const finalNextSeq = Math.max(nextSeq, maxSeqSeen + 1, 1);
+      localStorage.setItem(seqKey, String(finalNextSeq));
 
       const visible: ChatMessage[] = [];
       const internal: ChatMessage[] = [];

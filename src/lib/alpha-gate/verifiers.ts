@@ -73,23 +73,76 @@ export function stripProviderIdentityLeaks(input: string): { text: string; strip
 const FALSE_MUTATION_CLAIM_REGEX =
   /\b(?:i(?:'ve| have)?\s+(?:just\s+)?(?:already\s+)?(?:saved|added|created|deleted|removed|updated|changed|set|scheduled|cleared|marked|noted|remembered|canceled|cancelled|completed)|(?:done|saved|added|deleted|removed|updated|noted|remembered|canceled|cancelled|completed)\s*[.!]|\b(?:i(?:'ll| will)\s+(?:go ahead and\s+)?(?:delete|remove|save|update|create|set|schedule|clear|mark))\b|it'?s\s+(?:saved|added|deleted|done|set|noted|remembered|completed|cancelled))\b/i;
 
-// Mapping of tool names to regex for bounded action validation
-const TOOL_ACTION_VALIDATORS: Record<string, RegExp> = {
-  createReminder: /\b(?:create|add|save|set|schedule)\b/i,
-  updateReminder: /\b(?:update|change|edit)\b/i,
-  deleteReminder: /\b(?:delete|remove|cancel|clear)\b/i,
-  completeReminder: /\b(?:complete|done|mark|finish)\b/i,
-  addNote: /\b(?:save|add|create)\b/i,
-  updateNote: /\b(?:update|change)\b/i,
-  deleteNote: /\b(?:delete|remove)\b/i,
-  addMemory: /\b(?:save|add|remember)\b/i,
-  updateMemory: /\b(?:update|change)\b/i,
-  deleteMemory: /\b(?:delete|remove)\b/i,
-  addBill: /\b(?:save|add)\b/i,
-  updateBill: /\b(?:update|change)\b/i,
-  deleteBill: /\b(?:delete|remove)\b/i,
-  markBillPaid: /\b(?:paid|pay)\b/i,
+// Mapping of tool names to regex for bounded, operation-specific action validation.
+// Verifies that a sentence specifically describes the actual operation performed,
+// not merely a generic verb like "add", "save", or "update".
+const OPERATION_CLAIM_MATCHERS: Record<string, RegExp> = {
+  createReminder: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:created|scheduled|set|added|saved))|(?:created|scheduled|set|added|saved))\s+(?:a|the|your)?\s*(?:new\s+)?(?:reminder|appointment|alarm|alert)\b|\b(?:reminder|appointment|alarm|alert)\s+(?:has been|is|was)\s+(?:created|scheduled|set|added|saved)\b/i,
+  updateReminder: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|changed|rescheduled|modified|edited))|(?:updated|changed|rescheduled|modified|edited))\s+(?:the|your|a)?\s*(?:reminder|appointment|alarm|alert)\b|\b(?:reminder|appointment|alarm|alert)\s+(?:has been|is|was)\s+(?:updated|changed|rescheduled|modified|edited)\b/i,
+  deleteReminder: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed|canceled|cancelled|cleared))|(?:deleted|removed|canceled|cancelled|cleared))\s+(?:the|your|a)?\s*(?:reminder|appointment|alarm|alert)\b|\b(?:reminder|appointment|alarm|alert)\s+(?:has been|is|was)\s+(?:deleted|removed|canceled|cancelled|cleared)\b/i,
+  completeReminder: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:completed|marked(?:\s+as)?\s+(?:done|complete|completed)|finished))|(?:completed|marked(?:\s+as)?\s+(?:done|complete|completed)|finished))\s+(?:the|your|a)?\s*(?:reminder|appointment|task)\b|\b(?:reminder|appointment|task)\s+(?:has been|is|was)\s+(?:completed|marked(?:\s+as)?\s+(?:done|complete|completed)|finished)\b/i,
+  addNote: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:created|added|saved|written|noted))|(?:created|added|saved|written|noted))\s+(?:a|the|your)?\s*(?:new\s+)?note\b|\bnote\s+(?:has been|is|was)\s+(?:created|added|saved)\b/i,
+  updateNote: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|edited|changed))|(?:updated|edited|changed))\s+(?:the|your|a)?\s*note\b|\bnote\s+(?:has been|is|was)\s+(?:updated|edited|changed)\b/i,
+  deleteNote: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed|cleared))|(?:deleted|removed|cleared))\s+(?:the|your|a)?\s*note\b|\bnote\s+(?:has been|is|was)\s+(?:deleted|removed|cleared)\b/i,
+  addMemory: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:remembered|saved|added|stored))|(?:remembered|saved))\s+(?:that|this)?\s*(?:to|in)?\s*(?:your\s+)?memory\b|\b(?:i'll|i will)\s+remember\s+that\b|\bmemory\s+(?:has been|is|was)\s+(?:saved|stored)\b/i,
+  updateMemory: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|changed|modified))|(?:updated|changed))\s+(?:the|your)?\s*memory\b|\bmemory\s+(?:has been|is|was)\s+(?:updated|changed)\b/i,
+  deleteMemory: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed|forgotten|cleared))|(?:deleted|removed|forgotten))\s+(?:that|the|your)?\s*(?:from\s+)?memory\b|\bmemory\s+(?:has been|is|was)\s+(?:deleted|cleared)\b/i,
+  addBill: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:added|saved|created|recorded))|(?:added|saved|recorded))\s+(?:the|a|your)?\s*(?:new\s+)?bill\b|\bbill\s+(?:has been|is|was)\s+(?:added|saved|recorded)\b/i,
+  updateBill: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|changed|modified))|(?:updated|changed))\s+(?:the|your|a)?\s*bill\b|\bbill\s+(?:has been|is|was)\s+(?:updated|changed)\b/i,
+  deleteBill: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed))|(?:deleted|removed))\s+(?:the|your|a)?\s*bill\b|\bbill\s+(?:has been|is|was)\s+(?:deleted|removed)\b/i,
+  markBillPaid: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:marked|recorded|paid))|(?:marked|paid))\s+(?:the|your|a)?\s*bill\s+(?:as\s+)?paid\b|\bbill\s+(?:has been|is|was)\s+marked\s+(?:as\s+)?paid\b/i,
+  addTask: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:created|added|saved|scheduled|set))|(?:created|added|saved|scheduled|set))\s+(?:a|the|your)?\s*(?:new\s+)?task\b|\btask\s+(?:has been|is|was)\s+(?:created|added|saved|scheduled|set)\b/i,
+  updateTask: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|changed|modified|edited))|(?:updated|changed|modified|edited))\s+(?:the|your|a)?\s*task\b|\btask\s+(?:has been|is|was)\s+(?:updated|changed|modified|edited)\b/i,
+  deleteTask: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed|canceled|cancelled|cleared))|(?:deleted|removed|canceled|cancelled|cleared))\s+(?:the|your|a)?\s*task\b|\btask\s+(?:has been|is|was)\s+(?:deleted|removed|canceled|cancelled|cleared)\b/i,
+  addGoal: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:created|added|saved|set))|(?:created|added|saved|set))\s+(?:a|the|your)?\s*(?:new\s+)?goal\b|\bgoal\s+(?:has been|is|was)\s+(?:created|added|saved|set)\b/i,
+  updateGoal: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:updated|changed|modified|edited))|(?:updated|changed|modified|edited))\s+(?:the|your|a)?\s*goal\b|\bgoal\s+(?:has been|is|was)\s+(?:updated|changed|modified|edited)\b/i,
+  deleteGoal: /\b(?:(?:i(?:'ve| have)?\s+(?:just\s+)?(?:deleted|removed|canceled|cancelled|cleared))|(?:deleted|removed|canceled|cancelled|cleared))\s+(?:the|your|a)?\s*goal\b|\bgoal\s+(?:has been|is|was)\s+(?:deleted|removed|canceled|cancelled|cleared)\b/i,
 };
+
+/**
+ * Safely segments text into sentences while protecting URLs, decimals, abbreviations,
+ * and code blocks from being split on punctuation.
+ */
+function splitIntoSafeSentences(text: string): string[] {
+  if (!text) return [];
+
+  const codeBlocks: string[] = [];
+  let protectedText = text.replace(/(```[\s\S]*?```|`[^`\n]+`)/g, (match) => {
+    const placeholder = `__CODE_${codeBlocks.length}__`;
+    codeBlocks.push(match);
+    return placeholder;
+  });
+
+  const urls: string[] = [];
+  protectedText = protectedText.replace(/https?:\/\/[^\s)]+/g, (match) => {
+    const placeholder = `__URL_${urls.length}__`;
+    urls.push(match);
+    return placeholder;
+  });
+
+  const decimals: string[] = [];
+  protectedText = protectedText.replace(/\b\d+\.\d+\b/g, (match) => {
+    const placeholder = `__DEC_${decimals.length}__`;
+    decimals.push(match);
+    return placeholder;
+  });
+
+  protectedText = protectedText.replace(/\b(?:e\.g\.|i\.e\.|vs\.|etc\.|mr\.|mrs\.|ms\.|dr\.)(?=\s+)/gi, (match) => {
+    return match.replace(/\./g, "__DOT__");
+  });
+
+  const segments = protectedText.split(/(?<=[.!?])\s+(?=[A-Z0-9"']|\b__)|(?:\r?\n)+/);
+
+  const restore = (seg: string): string => {
+    let restored = seg.replace(/__DOT__/g, ".");
+    restored = restored.replace(/__DEC_(\d+)__/g, (_, idx) => decimals[Number(idx)] ?? _);
+    restored = restored.replace(/__URL_(\d+)__/g, (_, idx) => urls[Number(idx)] ?? _);
+    restored = restored.replace(/__CODE_(\d+)__/g, (_, idx) => codeBlocks[Number(idx)] ?? _);
+    return restored.trim();
+  };
+
+  return segments.map(restore).filter(Boolean);
+}
 
 /**
  * Reconciles deferred preliminary prose against specific tool outcomes and the final answer.
@@ -109,10 +162,14 @@ export function reconcileDeferredProse(
   const toolResultsMap = new Map<string, Array<{ success: boolean; name: string }>>();
   if (summary?.results) {
     for (const r of summary.results) {
-      if (r.executionKey) {
-        const existing = toolResultsMap.get(r.executionKey) || [];
+      const keys = new Set<string>();
+      if (r.executionKey) keys.add(r.executionKey);
+      if ((r as any).id) keys.add((r as any).id);
+      if ((r as any).tool_call_id) keys.add((r as any).tool_call_id);
+      for (const k of keys) {
+        const existing = toolResultsMap.get(k) || [];
         existing.push({ success: r.success, name: r.name });
-        toolResultsMap.set(r.executionKey, existing);
+        toolResultsMap.set(k, existing);
       }
     }
   }
@@ -134,39 +191,72 @@ export function reconcileDeferredProse(
       continue;
     }
 
-    // 3. Sentence-level validation against specific tool outcomes
-    // Split only if punctuation is followed by whitespace and then a capital letter (start of new sentence)
-    const sentences = trimmed.split(/(?<=[.!?])\s+(?=[A-Z])/);
+    // 3. Sentence-level validation against specific tool outcomes using safe segmentation
+    const sentences = splitIntoSafeSentences(trimmed);
     const keptSentences: string[] = [];
 
     for (const s of sentences) {
       const isAction = claimsMutationWithoutTag(s) || FALSE_MUTATION_CLAIM_REGEX.test(s);
       if (!isAction) {
+        // Safe, non-action explanatory prose preserved
         keptSentences.push(s.trim());
         continue;
       }
 
-      // If it's an action claim, it MUST have associated successful tool calls for every operation described.
+      // If it's an action claim, it MUST have associated tool calls
       if (!block.toolCalls || block.toolCalls.length === 0) continue;
 
-      // Ensure all tool calls in the block succeeded
-      const allSucceeded = block.toolCalls.every((tc) => {
-        const key = (tc as any)._executionKey;
-        const results = toolResultsMap.get(key);
-        return results && results.length === 1 && results[0].success;
-      });
-      
-      // Ensure at least one call matches the claim's operation
-      const matchesClaim = block.toolCalls.some((tc) => {
-        const key = (tc as any)._executionKey;
-        const res = toolResultsMap.get(key)![0];
-        const rx = TOOL_ACTION_VALIDATORS[res.name];
-        return rx ? rx.test(s) : false;
+      // Identify which specific operations this sentence claims to have performed
+      const claimedOperations: string[] = [];
+      for (const [opName, rx] of Object.entries(OPERATION_CLAIM_MATCHERS)) {
+        if (rx.test(s)) {
+          claimedOperations.push(opName);
+        }
+      }
+
+      // Fail closed: if a mutation is claimed but cannot be mapped to any known operation, discard it
+      if (claimedOperations.length === 0) {
+        continue;
+      }
+
+      // Requirement: When a sentence describes multiple actions, verify each claimed operation
+      // against its own execution result. Every claimed operation in the sentence must be backed
+      // by an unambiguous, successful tool call.
+      const allClaimedOpsVerified = claimedOperations.every((opName) => {
+        return block.toolCalls!.some((tc) => {
+          const tcName = (tc as any).name || (tc as any).function?.name;
+          if (tcName && tcName !== opName) return false;
+
+          const key =
+            (tc as any)._executionKey ||
+            (tc as any).executionKey ||
+            (tc as any).id ||
+            (tc as any).tool_call_id;
+
+          if (key) {
+            const results = toolResultsMap.get(key);
+            return (
+              results &&
+              results.length === 1 &&
+              results[0].success &&
+              results[0].name === opName
+            );
+          }
+
+          // If no execution key is present on the tool call or results, require that
+          // summary.results has exactly one unambiguous result for this opName
+          const matchingResults = (summary?.results || []).filter(
+            (r) => r.name === opName
+          );
+          return (
+            matchingResults.length === 1 &&
+            matchingResults[0].success &&
+            matchingResults[0].name === opName
+          );
+        });
       });
 
-      const isVerified = allSucceeded && matchesClaim;
-
-      if (isVerified) {
+      if (allClaimedOpsVerified) {
         keptSentences.push(s.trim());
       }
     }
