@@ -120,7 +120,7 @@ export default defineConfig({
       }),
     !isTest &&
       nitro({
-        preset: "node-server",
+        preset: process.env.NITRO_PRESET || (process.env.VERCEL ? "vercel" : "node-server"),
         devServer: {
           port: 3001,
           host: "0.0.0.0",
